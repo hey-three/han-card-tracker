@@ -1,3 +1,7 @@
 .idea/ 
 __pycache__/ 
 *.pyc 
+
+# Local validation artifacts
+tests/.tmp/
+.mypy_cache/

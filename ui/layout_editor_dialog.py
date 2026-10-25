@@ -1,11 +1,14 @@
 import sys
+from collections.abc import Callable
+from PIL import Image
 from typing import Dict, Optional, Tuple
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QEvent, QPoint, QTimer, Qt, Signal
-from PySide6.QtGui import QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QTimer, Qt, Signal
+from PySide6.QtGui import QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,
+    QWidget,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -39,9 +42,16 @@ REGION_NAME_CN = {
 
 
 class RectCanvas(QLabel):
+    """显示截图并框选牌区的画布。"""
+
     rect_changed = Signal(str)
 
-    def __init__(self, parent=None):
+    def __init__(self, parent: QWidget | None = None) -> None:
+        """初始化画布。
+
+        Args:
+            parent: 父控件。
+        """
         super().__init__(parent)
         self._base_pixmap: Optional[QPixmap] = None
         self._display_scale = 1.0
@@ -50,7 +60,7 @@ class RectCanvas(QLabel):
         self._drawing = False
         self._start = QPoint()
         self._current = QPoint()
-        self.setAlignment(Qt.AlignTop | Qt.AlignLeft)
+        self.setAlignment(Qt.AlignmentFlag.AlignTop | Qt.AlignmentFlag.AlignLeft)
         self.setMouseTracking(True)
 
     @property
@@ -117,8 +127,13 @@ class RectCanvas(QLabel):
     def get_rects(self):
         return dict(self._rects)
 
-    def mousePressEvent(self, event):
-        if not self._base_pixmap or event.button() != Qt.LeftButton:
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """开始框选当前牌区。
+
+        Args:
+            event: 鼠标事件。
+        """
+        if not self._base_pixmap or event.button() != Qt.MouseButton.LeftButton:
             return
         self._drawing = True
         self._start = self._widget_point_to_image_point(event.position().toPoint())
@@ -131,8 +146,13 @@ class RectCanvas(QLabel):
         self._current = self._widget_point_to_image_point(event.position().toPoint())
         self._render()
 
-    def mouseReleaseEvent(self, event):
-        if not self._base_pixmap or event.button() != Qt.LeftButton:
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """完成框选当前牌区。
+
+        Args:
+            event: 鼠标事件。
+        """
+        if not self._base_pixmap or event.button() != Qt.MouseButton.LeftButton:
             return
         if self._drawing:
             self._drawing = False
@@ -143,7 +163,8 @@ class RectCanvas(QLabel):
             self.rect_changed.emit(self._active_key)
             self._render()
 
-    def _render(self):
+    def _render(self) -> None:
+        """按当前缩放绘制截图和区域边框。"""
         if not self._base_pixmap:
             self.setPixmap(QPixmap())
             return
@@ -151,17 +172,17 @@ class RectCanvas(QLabel):
         if self._display_scale < 0.999:
             target_w = max(1, int(self._base_pixmap.width() * self._display_scale))
             target_h = max(1, int(self._base_pixmap.height() * self._display_scale))
-            pixmap = self._base_pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            pixmap = self._base_pixmap.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         else:
             pixmap = QPixmap(self._base_pixmap)
 
         scale_x = pixmap.width() / float(self._base_pixmap.width())
         scale_y = pixmap.height() / float(self._base_pixmap.height())
         painter = QPainter(pixmap)
-        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
 
         for key, rect in self._rects.items():
-            color = Qt.yellow if key == self._active_key else Qt.green
+            color = Qt.GlobalColor.yellow if key == self._active_key else Qt.GlobalColor.green
             pen = QPen(color)
             pen.setWidth(2)
             painter.setPen(pen)
@@ -174,7 +195,7 @@ class RectCanvas(QLabel):
             painter.drawText(sx1 + 3, max(12, sy1 - 3), REGION_NAME_CN.get(key, key))
 
         if self._drawing:
-            pen = QPen(Qt.red)
+            pen = QPen(Qt.GlobalColor.red)
             pen.setWidth(2)
             painter.setPen(pen)
             w, h = self.image_size
@@ -194,7 +215,15 @@ class RectCanvas(QLabel):
 
 
 class PreviewDialog(QDialog):
-    def __init__(self, pixmap: QPixmap, parent=None):
+    """显示布局标注的预览窗口。"""
+
+    def __init__(self, pixmap: QPixmap, parent: QWidget | None = None) -> None:
+        """创建预览窗口。
+
+        Args:
+            pixmap: 已绘制区域标注的图像。
+            parent: 父控件。
+        """
         super().__init__(parent)
         self._source_pixmap = pixmap
         self.setWindowTitle("截图预览校验")
@@ -203,7 +232,7 @@ class PreviewDialog(QDialog):
         lay = QVBoxLayout(self)
 
         self._label = QLabel()
-        self._label.setAlignment(Qt.AlignLeft | Qt.AlignTop)
+        self._label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
 
         self._scroll = QScrollArea()
         self._scroll.setWidgetResizable(False)
@@ -230,7 +259,8 @@ class PreviewDialog(QDialog):
         super().showEvent(event)
         QTimer.singleShot(0, self._update_scaled_preview)
 
-    def _update_scaled_preview(self):
+    def _update_scaled_preview(self) -> None:
+        """按可用视口缩放预览图。"""
         if self._source_pixmap.isNull():
             return
 
@@ -244,31 +274,46 @@ class PreviewDialog(QDialog):
 
         target_w = max(1, int(round(src_w * scale)))
         target_h = max(1, int(round(src_h * scale)))
-        scaled = self._source_pixmap.scaled(target_w, target_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        scaled = self._source_pixmap.scaled(target_w, target_h, Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation)
         self._label.setPixmap(scaled)
         self._label.setFixedSize(scaled.size())
 
 
 class LayoutEditorDialog(QDialog):
+    """截图、编辑并保存斗地主牌区布局。
+
+    Attributes:
+        saved_layout_name: 成功保存的布局名称。
+        saved_set_current: 保存后是否请求主窗口切换。
+    """
+
     def __init__(
         self,
-        parent=None,
-        initial_layout_name: Optional[str] = None,
-        on_restore_topmost=None,
+        parent: QWidget | None = None,
+        initial_layout_name: str | None = None,
+        on_restore_topmost: Callable[[], None] | None = None,
         stay_on_top: bool = False,
-    ):
+    ) -> None:
+        """创建编辑窗口。
+
+        Args:
+            parent: 父控件。
+            initial_layout_name: 待编辑的已有布局。
+            on_restore_topmost: 截图后恢复置顶的回调。
+            stay_on_top: 是否置顶。
+        """
         super().__init__(parent)
-        self.setWindowFlag(Qt.WindowMinMaxButtonsHint, True)
-        self.setWindowFlag(Qt.WindowStaysOnTopHint, stay_on_top)
+        self.setWindowFlag(Qt.WindowType.WindowMinMaxButtonsHint, True)
+        self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, stay_on_top)
         self.setWindowTitle("可视化布局编辑")
         self.setMinimumSize(860, 560)
         self.resize(920, 620)
 
         self.saved_layout_name: Optional[str] = None
         self.saved_set_current = False
-        self._captured_image = None
-        self._lowered_windows = []
-        self._window_restore_states = []
+        self._captured_image: Image.Image | None = None
+        self._lowered_windows: list[QWidget] = []
+        self._window_restore_states: list[tuple[QWidget, QRect]] = []
         self._windows_pushed_back = False
         self._on_restore_topmost = on_restore_topmost
         self._stay_on_top = stay_on_top
@@ -296,7 +341,7 @@ class LayoutEditorDialog(QDialog):
         self.canvas = RectCanvas()
         self.canvas_scroll = QScrollArea()
         self.canvas_scroll.setWidgetResizable(False)
-        self.canvas_scroll.setAlignment(Qt.AlignCenter)
+        self.canvas_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.canvas_scroll.setWidget(self.canvas)
         self.canvas_scroll.viewport().installEventFilter(self)
         content.addWidget(self.canvas_scroll, 3)
@@ -371,10 +416,10 @@ class LayoutEditorDialog(QDialog):
             if idx >= 0:
                 self.combo_window_title.setCurrentIndex(idx)
 
-    def _send_app_windows_to_bottom(self):
+    def _send_app_windows_to_bottom(self) -> None:
         """截图前把本应用窗口临时移出屏幕，避免遮挡目标窗口。"""
         app = QApplication.instance()
-        if app is None:
+        if not isinstance(app, QApplication):
             return
 
         screen = self.screen() or app.primaryScreen()
@@ -514,8 +559,17 @@ class LayoutEditorDialog(QDialog):
         viewport = self.canvas_scroll.viewport().size()
         self.canvas.fit_to_viewport(viewport.width(), viewport.height())
 
-    def eventFilter(self, watched, event):
-        if watched is self.canvas_scroll.viewport() and event.type() == QEvent.Resize:
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """视口变化时安排画布缩放。
+
+        Args:
+            watched: 被观察对象。
+            event: Qt 事件。
+
+        Returns:
+            父类事件过滤结果。
+        """
+        if watched is self.canvas_scroll.viewport() and event.type() == QEvent.Type.Resize:
             QTimer.singleShot(0, self._fit_canvas_to_viewport)
         return super().eventFilter(watched, event)
 
@@ -611,18 +665,26 @@ class LayoutEditorDialog(QDialog):
             return None, msg
         return normalized, None
 
-    def _preview_layout(self):
+    def _preview_layout(self) -> bool:
+        """验证布局并显示预览。
+
+        Returns:
+            用户确认预览时为 True。
+        """
         normalized, err = self._build_normalized_layout()
         if err:
             QMessageBox.warning(self, "预览校验失败", err)
             return False
 
+        if self._captured_image is None:
+            return False
         preview = build_preview_image(self._captured_image, normalized)
         qpixmap = QPixmap.fromImage(ImageQt(preview))
         dlg = PreviewDialog(qpixmap, self)
-        return dlg.exec() == QDialog.Accepted
+        return dlg.exec() == QDialog.DialogCode.Accepted
 
-    def _save_layout(self):
+    def _save_layout(self) -> None:
+        """保存布局内容，当前布局切换交由主窗口等待后端回执。"""
         layout_name = self.edit_layout_name.text().strip()
         if not layout_name:
             QMessageBox.warning(self, "提示", "请输入布局名称")
@@ -648,14 +710,14 @@ class LayoutEditorDialog(QDialog):
                 self,
                 "覆盖已有布局",
                 f"布局“{layout_name}”已经存在，保存后会覆盖原配置。确定继续吗？",
-                QMessageBox.Yes | QMessageBox.No,
-                QMessageBox.No,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
             )
-            if overwrite != QMessageBox.Yes:
+            if overwrite != QMessageBox.StandardButton.Yes:
                 return
 
         try:
-            save_layout(layout_name, window_title, normalized, self.chk_set_current.isChecked())
+            save_layout(layout_name, window_title, normalized, False)
         except Exception as e:
             QMessageBox.critical(self, "保存失败", str(e))
             return
@@ -664,5 +726,3 @@ class LayoutEditorDialog(QDialog):
         self.saved_set_current = self.chk_set_current.isChecked()
         QMessageBox.information(self, "成功", f"布局已保存: {layout_name}")
         self.accept()
-
-

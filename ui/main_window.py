@@ -5,15 +5,18 @@
 提供斗地主记牌器的主界面，包括剩余牌统计、出牌显示等功能
 """
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy
+    QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox
 )
 from core.inference_process import InferenceWorker
 from config.settings import TOTAL_CARDS
 from utils.trans_yolo_names_to_string import trans_yolo_names_to_string
 from ui.layout_editor_dialog import LayoutEditorDialog
 from ui.settings_dialog import SettingsDialog
+from ui.settings_controller import SettingsController
 import config.settings as settings
 import time
 
@@ -36,7 +39,8 @@ class CardUI(QMainWindow):
     - busy 防抖：上一轮未结束不触发下一轮。
     """
 
-    def __init__(self):
+    def __init__(self) -> None:
+        """创建窗口、设置协调器和可恢复的推理服务。"""
         super().__init__()
 
         # -------------------------
@@ -51,7 +55,7 @@ class CardUI(QMainWindow):
         from config.settings import ALWAYS_ON_TOP
         # 使用 setWindowFlag 以避免重建窗口导致子控件丢失
         try:
-            self.setWindowFlag(Qt.WindowStaysOnTopHint, ALWAYS_ON_TOP)
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, ALWAYS_ON_TOP)
         except Exception:
             # 兜底：无论如何不要使窗口重建后丢失 central widget
             pass
@@ -65,7 +69,7 @@ class CardUI(QMainWindow):
         self.setCentralWidget(self.central_widget)
 
         # 设置窗口大小策略，允许窗口根据内容自动调整大小
-        self.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
 
         # 自动选择字典中第一个可用的配置
         from config.settings import WINDOW_LAYOUTS, CURRENT_LAYOUT
@@ -156,7 +160,7 @@ class CardUI(QMainWindow):
             key = zone["key"]
             label = zone["label"]
             lbl = QLabel(self.played_cards[key])
-            lbl.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             lbl.setObjectName("InfoLabel")
             self.played_cards_labels[key] = lbl
 
@@ -179,7 +183,7 @@ class CardUI(QMainWindow):
         for col, card in enumerate(self.card_order):
             # --- 牌名 ---
             name = QLabel(str(card))
-            name.setAlignment(Qt.AlignCenter)
+            name.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # 给 QLabel 设置 objectName，方便 QSS 精准匹配
             # （QSS 中使用 #CardNameLabel 来选中）
@@ -194,7 +198,7 @@ class CardUI(QMainWindow):
 
             # --- 数量 ---
             cnt = QLabel(str(TOTAL_CARDS.get(card, 0)))
-            cnt.setAlignment(Qt.AlignCenter)
+            cnt.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             # 数量 label 同样设置 objectName，QSS 中用 #CardCountLabel
             cnt.setObjectName("CardCountLabel")
@@ -213,7 +217,6 @@ class CardUI(QMainWindow):
         self.worker.result_ready.connect(self.on_result_ready)
         self.worker.error.connect(self.on_worker_error)
         self.worker.finished.connect(self.on_worker_finished)
-        self.worker.start()
 
         # 初始化定时器
         self._busy = False
@@ -222,16 +225,27 @@ class CardUI(QMainWindow):
         self.timer = QTimer(self)
         self.timer.setInterval(int(self.detect_interval_sec * 1000))
         self.timer.timeout.connect(self.request_one_update)
-        self.timer.start()
 
         self._is_settings_open = False
 
         # UI 刷新缓存：仅在状态变化时更新文本/样式，减少主线程开销
         self._last_count_values: dict[str, int] = {}
         self._last_depleted_values: dict[str, bool] = {}
-        self._last_played_signature = None
+        self._last_played_signature: tuple[tuple[str, tuple[tuple[str, ...], ...]], ...] | None = None
 
-    def on_settings_clicked(self):
+        self._settings_dialog: SettingsDialog | None = None
+        self.settings_controller = SettingsController(self.worker, self)
+        self.settings_controller.failed.connect(self._on_settings_error)
+        self.settings_controller.applied.connect(self._refresh_open_settings)
+        self.worker.state_changed.connect(self.on_worker_state_changed)
+        self.btn_retry = QPushButton("重启识别", self)
+        self.btn_retry.setToolTip("重新加载推理服务，并从头初始化记牌状态")
+        self.btn_retry.clicked.connect(self.on_restart_clicked)
+        self.statusBar().addPermanentWidget(self.btn_retry)
+        self.btn_retry.hide()
+        self.worker.start()
+
+    def on_settings_clicked(self) -> None:
         """
         点击设置按钮时打开设置对话框
         """
@@ -264,9 +278,36 @@ class CardUI(QMainWindow):
             on_game_change_callback=self.on_game_changed,
         )
 
+        self._settings_dialog = dialog
+        dialog.set_current_always_on_top(settings.ALWAYS_ON_TOP)
+        if settings.ALWAYS_ON_TOP:
+            dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
+        self._refresh_open_settings()
+
+        try:
+            dialog.exec()
+            # 对于 "显示在最上层" 我们在对话框关闭后统一应用，避免在 modal dialog 打开时改变 window flags
+            try:
+                always_index = dialog.combo_always_on_top.currentIndex()
+                # 如果用户选择了不同值，则调用处理函数
+                if always_index is not None:
+                    self.on_always_on_top_changed(always_index)
+            except Exception:
+                pass
+        finally:
+            self._settings_dialog = None
+            self._is_settings_open = False
+            self._touch_no_target_time()
+            self._start_timer_if_allowed()
+
+    def _refresh_open_settings(self) -> None:
+        """将已确认的运行设置显示到当前设置对话框。"""
+        dialog = self._settings_dialog
+        if dialog is None:
+            return
         # 设置当前值
         dialog.set_current_interval(f"{self.detect_interval_sec}秒")
-        dialog.set_current_layout(self.layout_name)
+        dialog.refresh_layout_list(selected_name=self.layout_name)
 
         # 设置当前设备选择
         from config.settings import DEVICE_CHOICE
@@ -279,12 +320,6 @@ class CardUI(QMainWindow):
         # 设置当前帧长度
         from config.settings import FRAME_LENGTH
         dialog.set_current_frame_length(FRAME_LENGTH)
-
-        # 设置当前是否显示在最上层
-        from config.settings import ALWAYS_ON_TOP
-        dialog.set_current_always_on_top(ALWAYS_ON_TOP)
-        if ALWAYS_ON_TOP:
-            dialog.setWindowFlag(Qt.WindowStaysOnTopHint, True)
 
         # 设置当前是否显示玩家所出的牌
         from config.settings import SHOW_PLAYED_CARDS
@@ -314,22 +349,7 @@ class CardUI(QMainWindow):
         from config.settings import YOLO_CONFIDENCE_THRESHOLD
         dialog.set_current_confidence(YOLO_CONFIDENCE_THRESHOLD)
 
-        try:
-            dialog.exec()
-            # 对于 "显示在最上层" 我们在对话框关闭后统一应用，避免在 modal dialog 打开时改变 window flags
-            try:
-                always_index = dialog.combo_always_on_top.currentIndex()
-                # 如果用户选择了不同值，则调用处理函数
-                if always_index is not None:
-                    self.on_always_on_top_changed(always_index)
-            except Exception:
-                pass
-        finally:
-            self._is_settings_open = False
-            self._touch_no_target_time()
-            self._start_timer_if_allowed()
-
-    def on_layout_editor_clicked(self, settings_dialog):
+    def on_layout_editor_clicked(self, settings_dialog: SettingsDialog) -> None:
         """打开可视化布局编辑器并刷新设置对话框中的布局列表。"""
         editor = LayoutEditorDialog(
             settings_dialog,
@@ -337,7 +357,7 @@ class CardUI(QMainWindow):
             on_restore_topmost=lambda: self._reapply_topmost_if_enabled(settings_dialog),
             stay_on_top=settings.ALWAYS_ON_TOP,
         )
-        if editor.exec() != editor.Accepted:
+        if editor.exec() != editor.DialogCode.Accepted:
             return
 
         new_layout_name = editor.saved_layout_name
@@ -348,10 +368,7 @@ class CardUI(QMainWindow):
         if should_set_current or new_layout_name == self.layout_name:
             self._switch_layout_by_name(new_layout_name)
 
-        selected_name = self.layout_name
-        if not should_set_current and new_layout_name != self.layout_name:
-            selected_name = self.layout_name
-        QTimer.singleShot(0, lambda: settings_dialog.refresh_layout_list(selected_name=selected_name))
+        QTimer.singleShot(0, lambda: settings_dialog.refresh_layout_list(selected_name=self.layout_name))
 
     def _switch_layout_by_name(self, layout_name: str) -> bool:
         """按布局名切换，避免设置窗口刷新后索引和内存列表不同步。"""
@@ -361,24 +378,44 @@ class CardUI(QMainWindow):
         self.on_layout_changed(layout_names.index(layout_name))
         return True
 
-    def on_layout_delete_clicked(self, settings_dialog, layout_name):
-        """删除布局并刷新下拉列表；若删除当前布局则自动切换到替代布局。"""
-        from config.settings import delete_window_layout
+    def on_layout_delete_clicked(self, settings_dialog: SettingsDialog, layout_name: str) -> bool:
+        """删除当前布局前先确认替代布局可用。
 
-        new_current = delete_window_layout(layout_name)
-        if not new_current:
+        Args:
+            settings_dialog: 当前设置窗口。
+            layout_name: 待删除名称。
+
+        Returns:
+            已完成删除或已提交必要切换时为 True。
+        """
+        names = list(settings.WINDOW_LAYOUTS)
+        if layout_name not in names or len(names) <= 1:
+            self._on_settings_error("布局不存在或只剩最后一个布局。")
             return False
+        request = None
+        replacement = self.layout_name
+        after = self._refresh_open_settings
+        if layout_name == self.layout_name:
+            replacement = next(name for name in names if name != layout_name)
+            request = lambda: self.worker.switch_layout(replacement)
+            after = lambda: self._apply_layout_selection(replacement)
+        return self.settings_controller.apply(
+            save=lambda: self._delete_saved_layout(layout_name),
+            request=request,
+            after=after,
+        )
 
-        settings_dialog.refresh_layout_list(selected_name=new_current)
+    def _delete_saved_layout(self, name: str) -> None:
+        """通过统一配置入口删除布局。
 
-        try:
-            if new_current != self.layout_name:
-                layout_names = list(settings.WINDOW_LAYOUTS.keys())
-                idx = layout_names.index(new_current)
-                self.on_layout_changed(idx)
-        except Exception:
-            pass
-        return True
+        Args:
+            name: 待删除名称。
+
+        Raises:
+            ValueError: 布局不存在、只剩一个布局或配置损坏。
+            OSError: 配置读写失败。
+        """
+        settings.delete_window_layout(name)
 
     def on_pause_clicked(self):
         """
@@ -412,11 +449,10 @@ class CardUI(QMainWindow):
         if hasattr(self, 'worker'):
             self.worker.touch_time()
 
-    def _start_timer_if_allowed(self):
-        """仅在允许检测时启动定时器。"""
-        if (hasattr(self, 'timer')
-                and not self.is_paused
-                and not self._is_settings_open):
+    def _start_timer_if_allowed(self) -> None:
+        """仅在服务就绪且未暂停、未打开设置时启动检测。"""
+        if (hasattr(self, "timer") and self.worker.state == "ready"
+                and not self.is_paused and not self._is_settings_open):
             self.timer.start()
 
     def _stop_timer_if_exists(self):
@@ -425,18 +461,12 @@ class CardUI(QMainWindow):
             self.timer.stop()
 
     @Slot()
-    def request_one_update(self):
-        """
-        定时触发一次后台识别：
-        - busy 防抖：上一轮没结束就 return
-        - 暂停 / 设置打开状态下不触发检测
-        """
+    def request_one_update(self) -> None:
+        """只有请求真正入队时才进入 busy 状态。"""
         if self._busy or self.is_paused or self._is_settings_open:
             return
-        self._busy = True
-        # 记录本轮开始时间（用于计算整轮耗时）
         self._last_cycle_start = time.perf_counter()
-        self.worker.request_detect()
+        self._busy = self.worker.request_detect()
 
     @Slot(dict, dict, float)
     def on_result_ready(self, remain_cards: dict, zone_cards: dict, inference_ms: float):
@@ -500,7 +530,7 @@ class CardUI(QMainWindow):
                 self.count_labels[card].style().unpolish(self.count_labels[card])
                 self.count_labels[card].style().polish(self.count_labels[card])
 
-    def _reset_ui_to_total(self):
+    def _reset_ui_to_total(self) -> None:
         """
         把 UI 的显示重置为 TOTAL_CARDS：
         - 数量恢复成总数
@@ -529,6 +559,10 @@ class CardUI(QMainWindow):
             self._last_depleted_values[card] = False
 
         self._last_played_signature = None
+        for zone in settings.PLAYED_ZONES:
+            label = self.played_cards_labels.get(zone["key"])
+            if label is not None:
+                label.setText(f"   {zone['label']}     ")
 
     def _ensure_widgets_attached(self):
         """
@@ -602,176 +636,118 @@ class CardUI(QMainWindow):
         except Exception:
             pass
 
-    @Slot()
-    def on_reset_clicked(self):
-        """
-        点击"重置"按钮（强制操作，不受 busy 影响）
-        """
-        # 1) 强制停止定时器，阻断后续识别
-        self._stop_timer_if_exists()
-
-        # 2) 强制解锁 busy
-        self._busy = False
-
-        # 3) 立刻重置 UI（用户马上看到）
-        self._reset_ui_to_total()
-
-        # 4) 通知子进程重置记牌器
-        self.worker.request_reset()
-
-        # 5) 重新启动定时器（只有在非暂停状态下才启动）
-        self._start_timer_if_allowed()
-
-    def on_interval_changed(self, index):
-        """
-        时间调整下拉框变化时调用
-        """
-        # 从设置对话框获取当前选择的间隔时间
-        interval_text = INTERVAL_TEXT_OPTIONS[index]
-        interval_sec = float(interval_text.replace("秒", ""))
-        self.detect_interval_sec = interval_sec
-
-        # 保存检测间隔到config.yaml文件
-        from config.settings import save_detect_interval
-        save_detect_interval(interval_sec)
-
-        # 停止并重新启动定时器，应用新的时间间隔（只有在非暂停状态下才启动）
-        self._stop_timer_if_exists()
-        self.timer.setInterval(int(self.detect_interval_sec * 1000))
-        self._start_timer_if_allowed()
-
-        print(f"检测间隔已更新为: {interval_sec}秒")
-
-    def on_layout_changed(self, index):
-        """
-        布局配置下拉框变化时调用
-        """
-        from config.settings import WINDOW_LAYOUTS
-        layout_names = list(WINDOW_LAYOUTS.keys())
-        selected_layout = layout_names[index]
-
-        # 更新当前布局名称
-        self.layout_name = selected_layout
-
-        # 持久化：保存到 config.yaml 并更新内存中的 CURRENT_LAYOUT
-        from config.settings import save_current_layout
-        save_current_layout(selected_layout)
-        settings.CURRENT_LAYOUT = selected_layout
-
-        # 停止定时器
-        if hasattr(self, 'timer'):
-            self.timer.stop()
-        self._busy = False
-
-        # 重置 UI
-        self._reset_ui_to_total()
-
-        # 通知子进程切换布局（子进程内部重建 Tracker）
-        self.worker.switch_layout(selected_layout)
-
-        # 重启定时器
-        self._start_timer_if_allowed()
-
-        print(f"布局配置已更新为: {selected_layout}")
-
-    def on_device_changed(self, index):
-        """设备选择改变时调用。"""
-        device_map = ["cpu", "cuda"]
-        device_choice = device_map[index]
-
-        print(f"[UI] 用户选择设备: {device_choice}")
-
-        # 保存设备选择到 config.yaml
-        from config.settings import save_device_choice
-        save_device_choice(device_choice)
-
-        # 更新主进程内存配置
-        import config.settings as settings
-        settings.DEVICE_CHOICE = device_choice
-
-        # 通知子进程重建 YoloInferencer
-        self.worker.switch_device(device_choice)
-        print(f"[UI] 设备已切换为: {device_choice}")
-
-    def on_model_changed(self, index):
-        """YOLO 模型选择改变时调用。"""
-        from config.settings import _scan_model_dirs, save_model_choice
-
-        model_dirs = _scan_model_dirs()
-        if 0 <= index < len(model_dirs):
-            model_name = model_dirs[index]
-        else:
+    def on_reset_clicked(self) -> None:
+        """等待重置回执后清空显示；服务故障时改为重启。"""
+        if self.worker.state in ("failed", "stopped"):
+            self.on_restart_clicked()
             return
+        self.settings_controller.apply(
+            save=lambda: None, request=self.worker.request_reset,
+            after=self._reset_ui_to_total,
+        )
 
-        save_model_choice(model_name)
-        # 通知子进程重建 YoloInferencer
-        self.worker.switch_model(model_name)
-        print(f"[UI] 模型已切换为: {model_name}")
+    def on_interval_changed(self, index: int) -> None:
+        """保存成功后调整 UI 定时器间隔。
 
-    def on_confidence_changed(self, index):
-        """YOLO 置信度阈值改变时调用。"""
-        from config.settings import save_confidence_choice
-
-        CONFIDENCE_VALUES = [0.3, 0.4, 0.5, 0.6, 0.7, 0.8]
-        if 0 <= index < len(CONFIDENCE_VALUES):
-            confidence = CONFIDENCE_VALUES[index]
-            save_confidence_choice(confidence)
-            # 同步到子进程
-            self.worker.update_settings({"YOLO_CONFIDENCE_THRESHOLD": confidence})
-            print(f"[UI] 置信度阈值已切换为: {confidence}")
-
-    def on_reset_time_changed(self, index):
-        """重置时间改变时调用。"""
-        reset_time = RESET_TIME_OPTIONS[index]
-
-        from config.settings import save_reset_time
-        save_reset_time(reset_time)
-
-        import config.settings as settings
-        settings.RESET_TIME = reset_time
-        # 同步到子进程
-        self.worker.update_settings({"RESET_TIME": reset_time})
-        print(f"[UI] 重置时间已切换为: {reset_time}秒")
-
-    def on_frame_length_changed(self, index):
-        """帧长度改变时调用。"""
-        frame_length = FRAME_LENGTH_OPTIONS[index]
-
-        from config.settings import save_frame_length
-        save_frame_length(frame_length)
-
-        import config.settings as settings
-        settings.FRAME_LENGTH = frame_length
-        # 同步到子进程
-        self.worker.update_settings({"FRAME_LENGTH": frame_length})
-        print(f"[UI] 帧长度已切换为: {frame_length}")
-
-    def on_always_on_top_changed(self, index):
+        Args:
+            index: 间隔选项索引。
         """
-        是否显示在最上层改变时调用
+        if 0 <= index < len(INTERVAL_TEXT_OPTIONS):
+            value = float(INTERVAL_TEXT_OPTIONS[index].replace("秒", ""))
+            self._apply_setting("detect_interval_sec", value, after=self._apply_interval)
+
+    def on_layout_changed(self, index: int) -> None:
+        """提交完整布局，执行成功后才确认选择并清空牌局。
+
+        Args:
+            index: 布局下拉列表索引。
         """
-        # 从设置对话框获取当前选择
-        always_on_top_list = [False, True]
-        always_on_top = always_on_top_list[index]
+        names = list(settings.WINDOW_LAYOUTS)
+        if not 0 <= index < len(names):
+            return
+        name = names[index]
+        self.settings_controller.apply(
+            save=lambda: settings.save_current_layout(name),
+            request=lambda: self.worker.switch_layout(name),
+            after=lambda: self._apply_layout_selection(name),
+        )
 
-        # 保存是否显示在最上层到config.yaml文件
-        from config.settings import save_always_on_top
-        save_always_on_top(always_on_top)
+    def on_device_changed(self, index: int) -> None:
+        """设备切换成功后再保存。
 
-        # 更新内存中的配置
-        import config.settings as settings
-        settings.ALWAYS_ON_TOP = always_on_top
+        Args:
+            index: CPU/GPU 索引。
+        """
+        if index not in (0, 1):
+            return
+        device = ("cpu", "cuda")[index]
+        self.settings_controller.apply(
+            save=lambda: settings.save_device_choice(device),
+            request=lambda: self.worker.switch_device(device),
+        )
 
-        self._apply_always_on_top_state(always_on_top)
+    def on_model_changed(self, index: int) -> None:
+        """模型切换成功后保存，并重置记牌显示。
 
-        print(f"[UI] 是否显示在最上层已更新为: {'是' if always_on_top else '否'}")
+        Args:
+            index: 模型列表索引。
+        """
+        models = settings._scan_model_dirs()
+        if not 0 <= index < len(models):
+            return
+        name = models[index]
+        self.settings_controller.apply(
+            save=lambda: settings.save_model_choice(name),
+            request=lambda: self.worker.switch_model(name),
+            after=self._reset_ui_to_total,
+        )
 
-    def _apply_always_on_top_state(self, always_on_top, settings_dialog=None):
+    def on_confidence_changed(self, index: int) -> None:
+        """更新推理置信度。
+
+        Args:
+            index: 置信度选项索引。
+        """
+        values = (0.3, 0.4, 0.5, 0.6, 0.7, 0.8)
+        if 0 <= index < len(values):
+            self._apply_setting("yolo_confidence_threshold", values[index], "YOLO_CONFIDENCE_THRESHOLD")
+
+    def on_reset_time_changed(self, index: int) -> None:
+        """更新无目标超时时间。
+
+        Args:
+            index: 超时选项索引。
+        """
+        if 0 <= index < len(RESET_TIME_OPTIONS):
+            self._apply_setting("reset_time", RESET_TIME_OPTIONS[index], "RESET_TIME")
+
+    def on_frame_length_changed(self, index: int) -> None:
+        """更新连续帧确认阈值。
+
+        Args:
+            index: 帧长度选项索引。
+        """
+        if 0 <= index < len(FRAME_LENGTH_OPTIONS):
+            self._apply_setting("frame_length", FRAME_LENGTH_OPTIONS[index], "FRAME_LENGTH")
+
+    def on_always_on_top_changed(self, index: int) -> None:
+        """保存成功后应用置顶状态。
+
+        Args:
+            index: 否/是选项索引。
+        """
+        if index in (0, 1) and bool(index) != settings.ALWAYS_ON_TOP:
+            self._apply_setting(
+                "always_on_top", bool(index),
+                after=lambda: self._apply_always_on_top_state(settings.ALWAYS_ON_TOP),
+            )
+
+    def _apply_always_on_top_state(self, always_on_top: bool, settings_dialog: QWidget | None = None) -> None:
         """公共函数：统一应用主窗口与设置窗口的置顶状态。"""
 
         # 简化：直接切换 flag，然后确保 widgets 已连接并刷新界面
         try:
-            self.setWindowFlag(Qt.WindowStaysOnTopHint, always_on_top)
+            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
         except Exception:
             try:
                 # 兜底
@@ -791,7 +767,7 @@ class CardUI(QMainWindow):
 
         if settings_dialog is not None:
             try:
-                settings_dialog.setWindowFlag(Qt.WindowStaysOnTopHint, always_on_top)
+                settings_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
                 settings_dialog.show()
                 settings_dialog.raise_()
             except Exception:
@@ -814,90 +790,132 @@ class CardUI(QMainWindow):
         if ALWAYS_ON_TOP:
             self._apply_always_on_top_state(True, settings_dialog=settings_dialog)
 
-    def on_show_played_cards_changed(self, index):
+    def on_show_played_cards_changed(self, index: int) -> None:
+        """保存成功后切换出牌记录显示。
+
+        Args:
+            index: 否/是选项索引。
         """
-        是否显示玩家所出的牌改变时调用
+        if index in (0, 1):
+            self._apply_setting("show_played_cards", bool(index), after=self._apply_played_visibility)
+
+    def on_debug_mode_changed(self, index: int) -> None:
+        """同步调试日志开关。
+
+        Args:
+            index: 否/是选项索引。
         """
-        # 从设置对话框获取当前选择
-        show_played_cards_list = [False, True]
-        show_played_cards = show_played_cards_list[index]
+        if index in (0, 1):
+            self._apply_setting("debug_mode", bool(index), "DEBUG_MODE")
 
-        # 保存是否显示玩家所出的牌到config.yaml文件
-        from config.settings import save_show_played_cards
-        save_show_played_cards(show_played_cards)
+    def on_save_debug_images_changed(self, index: int) -> None:
+        """同步游戏图片保存开关。
 
-        # 更新内存中的配置
-        import config.settings as settings
-        settings.SHOW_PLAYED_CARDS = show_played_cards
+        Args:
+            index: 否/是选项索引。
+        """
+        if index in (0, 1):
+            self._apply_setting("save_debug_images", bool(index), "SAVE_DEBUG_IMAGES")
 
-        # 更新内部状态
-        self._show_played_cards = show_played_cards
+    def on_game_changed(self, index: int) -> None:
+        """保持当前斗地主功能范围，只接受已注册的斗地主选项。
 
-        # 更新显示
+        Args:
+            index: 游戏列表索引。
+        """
+        names = settings._scan_game_configs()
+        if 0 <= index < len(names) and names[index] != settings.GAME_NAME:
+            self._on_settings_error("当前版本仅支持斗地主。")
+
+    def on_show_timing_changed(self, index: int) -> None:
+        """保存并刷新耗时显示开关。
+
+        Args:
+            index: 否/是选项索引。
+        """
+        if index in (0, 1):
+            self._apply_setting("show_timing", bool(index), after=self._apply_timing_visibility)
+
+    def _apply_setting(
+        self, key: str, value: object, runtime_key: str | None = None,
+        after: Callable[[], None] | None = None,
+    ) -> None:
+        """将设置回调统一交给协调器。
+
+        Args:
+            key: 持久化字段。
+            value: 新值。
+            runtime_key: 需要同步到子进程的大写属性；纯 UI 设置为 None。
+            after: 应用成功后的刷新操作。
+        """
+        request = None
+        if runtime_key is not None:
+            request = lambda: self.worker.update_settings({runtime_key: value})
+        self.settings_controller.apply(lambda: settings.save_setting(key, value), request, after)
+
+    def _apply_layout_selection(self, name: str) -> None:
+        """发布已确认的布局并重置显示。
+
+        Args:
+            name: 已应用布局名。
+        """
+        self.layout_name = name
+        self._reset_ui_to_total()
+        self._refresh_open_settings()
+
+    def _apply_interval(self) -> None:
+        """从已保存配置刷新定时器。"""
+        self.detect_interval_sec = settings.DETECT_INTERVAL_SEC
+        self.timer.setInterval(int(self.detect_interval_sec * 1000))
+
+    def _apply_played_visibility(self) -> None:
+        """从已保存配置刷新出牌记录显示。"""
+        self._show_played_cards = settings.SHOW_PLAYED_CARDS
         self._update_played_cards_visibility()
 
-        print(f"[UI] 是否显示玩家所出的牌已更新为: {'是' if show_played_cards else '否'}")
-
-    def on_debug_mode_changed(self, index):
-        """调试模式改变时调用。"""
-        debug_mode = True if index == 1 else False
-
-        from config.settings import save_debug_mode
-        save_debug_mode(debug_mode)
-
-        import config.settings as settings
-        settings.DEBUG_MODE = debug_mode
-        # 同步到子进程
-        self.worker.update_settings({"DEBUG_MODE": debug_mode})
-        print(f"[UI] 调试模式已切换为: {'是' if debug_mode else '否'}")
-
-    def on_save_debug_images_changed(self, index):
-        """保存游戏图片改变时调用。"""
-        save_debug_images = True if index == 1 else False
-
-        from config.settings import save_debug_images_choice
-        save_debug_images_choice(save_debug_images)
-
-        import config.settings as settings
-        settings.SAVE_DEBUG_IMAGES = save_debug_images
-        # 同步到子进程
-        self.worker.update_settings({"SAVE_DEBUG_IMAGES": save_debug_images})
-        print(f"[UI] 保存游戏图片已切换为: {'是' if save_debug_images else '否'}")
-
-    def on_game_changed(self, index):
-        """游戏选择改变时调用。"""
-        from config.settings import _scan_game_configs
-        game_names = _scan_game_configs()
-        if 0 <= index < len(game_names):
-            game_name = game_names[index]
-        else:
+    def _apply_timing_visibility(self) -> None:
+        """刷新耗时标题，故障状态保持可见。"""
+        if self.worker.state == "failed":
             return
+        self.setWindowTitle("Han记牌器  ·  推理 --ms  ·  整轮 --ms" if settings.SHOW_TIMING else "Han记牌器")
 
-        # 通知子进程重载游戏配置并重建 Tracker
-        self.worker.switch_game(game_name)
-        print(f"[UI] 游戏已切换为: {game_name}")
+    def _on_settings_error(self, message: str) -> None:
+        """设置失败时恢复已确认的控件值并显示原因。
 
-    def on_show_timing_changed(self, index):
+        Args:
+            message: 错误详情。
         """
-        显示耗时改变时调用
+        self._refresh_open_settings()
+        QMessageBox.warning(self._settings_dialog or self, "设置未生效", message)
+
+    @Slot(str)
+    def on_worker_state_changed(self, state: str) -> None:
+        """根据生命周期控制定时器与恢复入口。
+
+        Args:
+            state: 推理服务状态。
         """
-        show_timing = True if index == 1 else False
-
-        from config.settings import save_show_timing_choice
-        save_show_timing_choice(show_timing)
-
-        import config.settings as settings
-        settings.SHOW_TIMING = show_timing
-
-        # 立即更新标题栏
-        if show_timing:
-            self.setWindowTitle(f"Han记牌器  ·  推理 --ms  ·  整轮 --ms")
+        self._busy = False
+        self.btn_retry.setVisible(state == "failed")
+        if state == "ready":
+            self.statusBar().clearMessage()
+            self.statusBar().setToolTip("")
+            self._apply_timing_visibility()
+            self._start_timer_if_allowed()
         else:
-            self.setWindowTitle("Han记牌器")
+            self.timer.stop()
+            labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
+            self.statusBar().showMessage(labels.get(state, state))
+            self.setWindowTitle("Han记牌器  ·  " + labels.get(state, state))
 
-        print(f"[UI] 显示耗时已更新为: {'是' if show_timing else '否'}")
+    @Slot()
+    def on_restart_clicked(self) -> None:
+        """重启推理服务并重新初始化牌局显示。"""
+        self._busy = False
+        self._reset_ui_to_total()
+        self.worker.restart()
 
-    def _update_played_cards_visibility(self):
+    def _update_played_cards_visibility(self) -> None:
         """
         根据设置更新玩家所出的牌的可见性
         """
@@ -913,7 +931,7 @@ class CardUI(QMainWindow):
                     self.second_row_layout.addWidget(lbl)
                 lbl.setVisible(True)
                 lbl.setMaximumHeight(16777215)
-                lbl.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+                lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
         else:
             # 隐藏并从布局移除标签（不要 setParent(None)，否则控件会脱离父窗口并可能无法恢复）
             for key, lbl in self.played_cards_labels.items():
@@ -949,12 +967,16 @@ class CardUI(QMainWindow):
 
 
     @Slot(str)
-    def on_worker_error(self, err_text: str):
-        """
-        worker 报错（保持你原逻辑）：
-        - 不弹窗、不打扰：直接 print
+    def on_worker_error(self, err_text: str) -> None:
+        """显示推理错误，保留详情供排查。
+
+        Args:
+            err_text: 错误详情。
         """
         print("Worker error:\n", err_text)
+        message = err_text.strip().splitlines()[-1] if err_text.strip() else "识别失败"
+        self.statusBar().showMessage(message)
+        self.statusBar().setToolTip(err_text)
 
     @Slot()
     def on_worker_finished(self):
