@@ -25,8 +25,9 @@
 ## 1) 先看什么（最快进入状态）
 
 - 入口是 `main.py`：创建 `QApplication`、加载 `ui/ui.qss`、启动 `CardUI`。
-- 业务主链路：`ui/main_window.py` → `core/inference_process.py` → `core/game_controller.py` → `core/games/<game>.py` → `core/base_tracker.py` → `core/yolo_inferencer.py` → `core/screen_capture.py`。
-- 配置集中在 `config/settings.py`（运行时常量 + 保存函数）与 `config/config.yaml`（可编辑参数）。
+- 业务主链路：`ui/main_window.py` → `core/inference_process.py` → `core/controller_process.py` → `core/game_controller.py` → `core/games/<game>.py` → `core/base_tracker.py` → `core/yolo_inferencer.py` → `core/screen_capture.py`。
+- 配置集中在 `config/settings.py`（运行时常量 + 校验/保存入口）与 `config/config.yaml`（可编辑参数）；`config/store.py` 提供严格读取和原子写入。
+- 设置操作由 `ui/settings_controller.py` 协调，进程协议定义在 `core/inference_protocol.py`。
 - 游戏配置在 `config/games/` 目录下，每个游戏一个 YAML 文件（如 `doudizhu.yaml`）。
 - AI 开发规范详见 `AI开发标准/` 目录（开发总原则 + 代码注释规范 + 类型注解规范），已在第 0 节概述。
 
@@ -39,26 +40,19 @@
 - 通信方式：`multiprocessing.Queue`（命令队列 `cmd_queue` + 结果队列 `result_queue`）
 - UI 不因推理耗时而卡顿；子进程不操作任何 Qt 对象
 
-### 命令协议（`cmd_queue`）
+### 命令与回执协议
 
-| 命令 | 说明 |
-|------|------|
-| `"detect"` | 执行一次识别 |
-| `"reset"` | 重置记牌器状态 |
-| `("switch_layout", name)` | 切换布局（重建 LayoutAnalyzer + ScreenCapture + Tracker） |
-| `("switch_model", name)` | 切换模型（重建 YoloInferencer + Tracker） |
-| `("switch_device", name)` | 切换设备（重建 YoloInferencer） |
-| `("switch_game", name)` | 切换游戏（重载游戏配置 + 重建 Tracker） |
-| `("update_settings", dict)` | 同步运行时设置到子进程 |
-| `("touch_time",)` | 刷新 no_target_time（防暂停后超时重置） |
-| `None` | 终止子进程 |
+协议定义在 `core/inference_protocol.py`，由 `core/controller_process.py` 执行。
 
-### 结果协议（`result_queue`）
-
-- 成功：`("ok", {"remain_cards": dict[str, int], "zone_cards": dict[str, list[list[str]]]}, yolo_ms)`
-- 失败：`("error", str)`
-
-其中 `zone_cards` 的 key 为游戏配置中 `played_zones` 的 `key` 字段，value 为该区域的出牌记录。
+- 命令为 `Command(request_id, generation, name, payload)`；`None` 终止进程。
+- `request_id` 唯一标识请求；重置及配置切换递增 `generation`，旧代次检测结果丢弃。
+- `detect` / `reset` / `touch_time` 不需要参数。
+- `switch_layout` 携带 `{"name": 布局名, "config": 完整布局}`，含窗口标题和全部区域坐标；不能只传名称。
+- `switch_model` / `switch_device` / `switch_game` 携带名称；`update_settings` 携带受白名单限制的属性字典。
+- 回执为 `Response`：`ready` 为启动成功，`fatal` 为启动失败，`ok` / `error` 为指定请求的执行结果。
+- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；控制命令也必须回执。
+- `finished` 仅用于检测结束或进程故障，不用设置命令的回执解锁其他检测请求。
+- 回传的牌数和出牌记录在入队前复制，避免队列延迟序列化时被后续命令修改。
 
 ### 检测流水线
 
@@ -76,12 +70,13 @@
 - 区域键名从游戏配置的 `layout_regions` 动态获取
 - 排序不是置信度顺序：`LayoutAnalyzer.sort_cards_by_topright_rowwise()` 先按行（top-y 聚类）再按列（right-x 排序），避免出牌串顺序错乱
 
-### 多游戏支持
+### 游戏边界与现有分层
 
+- 当前开发范围仅为斗地主，不合入够级分支；保留现有 Tracker 分层。
 - `BaseCardTracker`（`core/base_tracker.py`）为抽象基类
 - 子类在 `core/games/` 目录下（如 `DoudizhuTracker`）
 - 工厂函数 `create_tracker()` 根据 `TRACKER_REGISTRY` 动态创建
-- 新增游戏只需：① 在 `config/games/` 添加 YAML 配置 ② 在 `core/games/` 添加 Tracker 子类 ③ 在 `TRACKER_REGISTRY` 注册
+- 注册表只启用 `doudizhu`；当前 UI 不支持切换到其他游戏，不能仅添加 YAML 就视为完成新游戏支持。
 
 ## 3) 状态机约定（核心业务规则）
 
@@ -104,7 +99,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 ### 连续帧确认
 
 - 由 `FRAME_LENGTH` 决定，`_check_card()` 要求缓存帧长度达到阈值且所有帧完全一致才算稳定
-- 缓存长度超过 `FRAME_LENGTH` 时丢弃最旧帧
+- 每次追加后将缓存裁剪到最新 `FRAME_LENGTH` 帧；运行中调小阈值，下一帧立即按新长度确认，调大则等待足够帧。
 
 ### 扣牌规则
 
@@ -131,6 +126,8 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 - 开始游戏条件：地主底牌连续帧稳定
 - 开始记牌条件：玩家手牌连续帧稳定；开始记牌时扣减手牌
 - 出牌处理：上家/下家出牌扣减剩余牌数；本家出牌仅记录不扣减（已在 `on_start_recording` 中扣减）
+- 统计口径：`remain_cards` 排除本家初始手牌及已确认的对手出牌；本家手牌持续可见不应重复扣减，本家出牌也不应再次扣减。
+- 设计依据与识别时序的验证边界见 [`docs/斗地主记牌设计说明.md`](docs/斗地主记牌设计说明.md)；审查时应区分扣牌设计与初始手牌识别条件。
 
 ## 4) 配置与持久化模式
 
@@ -144,11 +141,16 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### 关键约定
 
-- 所有设置写回都走 `config/settings.py` 的 `save_*` 函数，不要在别处直接改 YAML
-- 写配置使用"临时文件 + `os.replace`"原子替换模式（见 `save_device_choice` 等函数）
+- 配置文件只由主进程写入，入口为 `config/settings.py` 的 `save_*` / `save_setting()`；子进程只调用内存应用函数。
+- `config/store.py` 统一使用同目录唯一临时文件 + `os.replace` 原子保存；保存成功后才更新主进程内存。
+- 已有 YAML 损坏或读取失败时必须报错，不得以空字典覆盖；保存失败向调用者传播，编辑器不能误报成功。
+- `SettingsController` 等待后端成功回执后保存设置并刷新 UI；后端切换失败保留旧配置和组件。后端已成功但保存失败时停止检测，提示用户检查后重启。
+- 服务故障时允许在设置界面修正持久化配置，点击“重启识别”后由新进程使用最新快照。
+- 可视化编辑先保存布局内容（不切换 current_layout）；主窗口在布局切换确认后保存当前布局名。
+- 删除当前布局时先等待替代布局切换成功，再删除持久化记录；切换失败保留原布局。
 - `TOTAL_CARDS`、`PLAYED_ZONES`、`LAYOUT_REGIONS` 从游戏配置加载；`YOLO_TO_CARD_MAPPING` 从 `config.yaml` 加载
 - 设备切换通过 `switch_device` 命令即时生效，子进程重建 `YoloInferencer`
-- 游戏切换通过 `switch_game` 命令即时生效，子进程重载游戏配置并重建 `Tracker`
+- 底层保留 `switch_game` 命令，子进程只加载内存配置并重建 `Tracker`；当前 UI 仅支持斗地主。
 - 模型切换通过 `switch_model` 命令即时生效，子进程重建 `YoloInferencer` + `Tracker`
 - 布局切换通过 `switch_layout` 命令即时生效，子进程重建 `LayoutAnalyzer` + `ScreenCapture` + `Tracker`
 
@@ -169,7 +171,11 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### UI 更新机制
 
-- 定时触发：`CardUI.request_one_update()` 用 `QTimer` + `_busy` 防抖，每轮只允许一个后台任务
+- 生命周期为 `stopped → starting → ready`，启动失败、进程退出或通信失败进入 `failed`。
+- 定时触发：UI 用 `QTimer` + `_busy` 防抖；Worker 仅在 ready 且无未完成命令时接受检测，UI 只在发送成功后设置 busy。
+- 启动错误通过 fatal 回执显示在状态栏；推理依赖延迟到子进程异常边界内导入。
+- 故障停止检测并显示“重启识别”按钮；恢复创建新进程和新队列、重置牌局，保留用户暂停状态。
+- 关闭时停止轮询并回收队列；不等待向已死亡进程输送残留命令。
 - 增量刷新：通过 `_last_count_values` / `_last_depleted_values` / `_last_played_signature` 缓存，仅在状态变化时更新文本/样式
 - 样式依赖动态属性：`depleted` 与 `count`，更新后需 `unpolish/polish` 触发 QSS 刷新
 
@@ -239,4 +245,6 @@ python main.py
   - CPU（`device_choice == "cpu"`）：ONNX Runtime > PyTorch CPU
   - ONNX / TensorRT 引擎在首次使用时自动从 `best.pt` 导出
 - 关键三方：`ultralytics`、`torch`、`PySide6`、`opencv-python`、`PyYAML`、`pillow`
-- 本仓库未提供自动化测试；回归验证以真实窗口识别 + UI 行为检查为主
+- 回归测试位于 `tests/`，运行 `python -B -m unittest discover -s tests -v`。配置测试仅使用 `tests/.tmp/` 下的独立临时文件；Qt 测试使用 offscreen 平台。
+- 自动测试覆盖斗地主扣牌、帧阈值、配置原子保存、布局同步、切换回退、请求隔离、故障恢复及真实 spawn 启动错误回传，不加载真实 YOLO 模型。
+- 实际游戏截图、CUDA/ONNX/TensorRT 推理及打包版本仍需在具备模型依赖的环境中回归。

@@ -124,9 +124,9 @@ class BaseCardTracker(ABC):
 
         for key in self.frame_caches:
             cache = self.frame_caches[key]
-            if len(cache) >= settings.FRAME_LENGTH:
-                cache.pop(0)
             cache.append(frame_data.get(key, []))
+            # 阈值调小时一次移除全部超额旧帧，而非只移除一帧。
+            del cache[:-settings.FRAME_LENGTH]
 
     @abstractmethod
     def _get_validity_region(self) -> str:

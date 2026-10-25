@@ -1,5 +1,7 @@
 # 类图概览 - Han记牌器
 
+> 当前实现采用 Command/Response 回执协议；启动入口为 `core/controller_process.py`，设置协调器为 `ui/settings_controller.py`。完整交互见 [顺序图](sequence-diagram.md)。
+
 > 只展示类名和关系，不展开属性/方法。详细版见 [class-diagram.md](class-diagram.md)。
 
 ```mermaid
@@ -47,11 +49,39 @@ classDiagram
         +result_ready: Signal
         +error: Signal
         +finished: Signal
+        +state_changed: Signal
+        +command_completed: Signal
+        +state: str
+        +restart()
+        +can_detect() bool
         +start() / stop()
         +request_detect() / request_reset()
         +switch_layout() / switch_model() / switch_device() / switch_game()
         +update_settings() / touch_time()
     }
+    class SettingsController {
+        +apply(save, request, after) bool
+        +failed: Signal
+        +applied: Signal
+        -_pending: dict
+    }
+
+    class Command {
+        +request_id: int
+        +generation: int
+        +name: str
+        +payload: object
+    }
+
+    class Response {
+        +status: str
+        +request_id: int
+        +generation: int
+        +remain_cards: dict
+        +zone_cards: dict
+        +error: str
+    }
+
     class GameController {
         +detect()
         +reset()
@@ -164,6 +194,10 @@ classDiagram
     DoudizhuTracker --|> BaseCardTracker
 
     %% ========== 组合（创建并持有） ==========
+    CardUI *-- SettingsController
+    SettingsController --> InferenceWorker : 等待回执后保存
+    InferenceWorker ..> Command
+    InferenceWorker ..> Response
     CardUI *-- InferenceWorker
     LayoutEditorDialog *-- RectCanvas
     SettingsDialog *-- LayoutComboView

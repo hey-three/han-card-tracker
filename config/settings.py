@@ -2,6 +2,12 @@ import os
 import sys
 import shutil
 import yaml
+from collections.abc import Mapping, Sequence
+from copy import deepcopy
+from math import isfinite
+from typing import TypedDict, cast
+
+from config.store import read_config, write_config
 
 # ==================== 路径配置 ====================
 # BASE_DIR: 可写运行目录（用于持久化配置/调试输出）
@@ -51,7 +57,7 @@ GAMES_DIR = os.path.join(RESOURCE_DIR, 'config', 'games')
 
 def _scan_model_dirs() -> list[str]:
     """扫描 yolo/weights/ 下的子目录，返回包含 best.pt 的子目录名列表。"""
-    dirs = []
+    dirs: list[str] = []
     if not os.path.isdir(YOLO_WEIGHTS_DIR):
         return dirs
     for name in sorted(os.listdir(YOLO_WEIGHTS_DIR)):
@@ -309,453 +315,470 @@ ALWAYS_ON_TOP = config.get('always_on_top', False)
 # 是否显示玩家所出的牌
 SHOW_PLAYED_CARDS = config.get('show_played_cards', True)
 
-def save_device_choice(device_choice):
+class LayoutConfig(TypedDict):
+    """可跨进程传递的布局。
+
+    Attributes:
+        window_title: 截图窗口标题。
+        layout: 区域名到归一化矩形的映射。
     """
-    保存设备选择到config.yaml文件
-    device_choice: "cpu" 或 "cuda"
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
 
-        cfg['device_choice'] = device_choice
+    window_title: str
+    layout: dict[str, list[float]]
 
-        # 原子写入：先写临时文件再替换
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
 
-        print(f"设备选择已保存: {device_choice}")
-    except Exception as e:
-        print(f"保存设备选择失败: {e}")
+_SETTING_FIELDS: dict[str, tuple[str, type]] = {
+    "device_choice": ("DEVICE_CHOICE", str),
+    "yolo_model_name": ("YOLO_MODEL_NAME", str),
+    "yolo_confidence_threshold": ("YOLO_CONFIDENCE_THRESHOLD", float),
+    "yolo_iou_threshold": ("YOLO_IOU_THRESHOLD", float),
+    "reset_time": ("RESET_TIME", float),
+    "frame_length": ("FRAME_LENGTH", int),
+    "detect_interval_sec": ("DETECT_INTERVAL_SEC", float),
+    "always_on_top": ("ALWAYS_ON_TOP", bool),
+    "show_played_cards": ("SHOW_PLAYED_CARDS", bool),
+    "debug_mode": ("DEBUG_MODE", bool),
+    "save_debug_images": ("SAVE_DEBUG_IMAGES", bool),
+    "show_timing": ("SHOW_TIMING", bool),
+}
 
-def save_model_choice(model_name: str):
-    """保存 YOLO 模型选择到 config.yaml。
 
-    model_name: 子目录名（如 "yolov10.1"）
-    """
-    global YOLO_MODEL_NAME, YOLO_MODEL_PATH
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['yolo_model_name'] = model_name
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        YOLO_MODEL_NAME = model_name
-        YOLO_MODEL_PATH = _resolve_model_path(model_name)
-        print(f"模型选择已保存: {model_name}")
-    except Exception as e:
-        print(f"保存模型选择失败: {e}")
-
-def save_confidence_choice(confidence: float):
-    """保存 YOLO 置信度阈值到 config.yaml。"""
-    global YOLO_CONFIDENCE_THRESHOLD
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['yolo_confidence_threshold'] = confidence
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        YOLO_CONFIDENCE_THRESHOLD = confidence
-        print(f"置信度阈值已保存: {confidence}")
-    except Exception as e:
-        print(f"保存置信度阈值失败: {e}")
-
-def save_reset_time(reset_time):
-    """
-    保存重置时间到config.yaml文件
-    reset_time: 重置时间（秒）
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['reset_time'] = reset_time
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"重置时间已保存到文件: {reset_time}秒")
-    except Exception as e:
-        print(f"保存重置时间失败: {e}")
-
-def save_frame_length(frame_length):
-    """
-    保存帧长度到config.yaml文件
-    frame_length: 帧长度
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['frame_length'] = frame_length
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"帧长度已保存到文件: {frame_length}")
-    except Exception as e:
-        print(f"保存帧长度失败: {e}")
-
-def save_detect_interval(detect_interval):
-    """
-    保存检测间隔到config.yaml文件
-    detect_interval: 检测间隔（秒）
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['detect_interval_sec'] = detect_interval
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"检测间隔已保存到文件: {detect_interval}秒")
-    except Exception as e:
-        print(f"保存检测间隔失败: {e}")
-
-def save_always_on_top(always_on_top):
-    """
-    保存是否显示在最上层到config.yaml文件
-    always_on_top: 是否显示在最上层（True/False）
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['always_on_top'] = always_on_top
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"是否显示在最上层已保存到文件: {always_on_top}")
-    except Exception as e:
-        print(f"保存是否显示在最上层失败: {e}")
-
-def save_show_played_cards(show_played_cards):
-    """
-    保存是否显示玩家所出的牌到config.yaml文件
-    show_played_cards: 是否显示玩家所出的牌（True/False）
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['show_played_cards'] = show_played_cards
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"是否显示玩家所出的牌已保存到文件: {show_played_cards}")
-    except Exception as e:
-        print(f"保存是否显示玩家所出的牌失败: {e}")
-
-def save_debug_mode(debug_mode):
-    """
-    保存调试模式到config.yaml文件
-    debug_mode: 是否开启调试模式（True/False）
-    """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['debug_mode'] = debug_mode
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"调试模式已保存到文件: {debug_mode}")
-    except Exception as e:
-        print(f"保存调试模式失败: {e}")
-
-def save_debug_images_choice(save_debug_images):
-    """
-    保存是否保存游戏图片到config.yaml文件
-    save_debug_images: 是否保存游戏图片（True/False）
-    """
-    global SAVE_DEBUG_IMAGES
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['save_debug_images'] = save_debug_images
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        SAVE_DEBUG_IMAGES = save_debug_images
-        print(f"保存游戏图片设置已保存: {save_debug_images}")
-    except Exception as e:
-        print(f"保存游戏图片设置失败: {e}")
-
-def save_show_timing_choice(show_timing):
-    """
-    保存是否显示耗时到config.yaml文件
-    show_timing: 是否显示耗时（True/False）
-    """
-    global SHOW_TIMING
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['show_timing'] = show_timing
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        SHOW_TIMING = show_timing
-        print(f"显示耗时设置已保存: {show_timing}")
-    except Exception as e:
-        print(f"保存显示耗时设置失败: {e}")
-
-def save_game_choice(game_name: str):
-    """保存游戏选择到 config.yaml。
+def _validate_setting(key: str, value: object) -> None:
+    """校验可编辑标量设置。
 
     Args:
-        game_name: 游戏名称（如 "doudizhu"）。
+        key: YAML 配置键。
+        value: 待保存值。
+
+    Raises:
+        TypeError: 值类型不符合定义。
+        ValueError: 键未知、数值越界或名称为空。
     """
-    global GAME_NAME, GAME_CONFIG, GAME_DISPLAY_NAME, TOTAL_CARDS, YOLO_TO_CARD_MAPPING, PLAYED_ZONES, LAYOUT_REGIONS
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
+    if key not in _SETTING_FIELDS:
+        raise ValueError(f"未知设置: {key}")
+    expected = _SETTING_FIELDS[key][1]
+    valid = type(value) is expected
+    if expected is float:
+        valid = type(value) in (float, int)
+    if not valid:
+        raise TypeError(f"{key} 必须是 {expected.__name__}")
+    if isinstance(value, (float, int)) and not isinstance(value, bool):
+        if not isfinite(value) or value <= 0:
+            raise ValueError(f"{key} 必须是有限正数")
+        if key in ("yolo_confidence_threshold", "yolo_iou_threshold") and value > 1:
+            raise ValueError(f"{key} 不能大于 1")
+    if isinstance(value, str) and not value.strip():
+        raise ValueError(f"{key} 不能为空")
+    if key == "device_choice" and value not in ("cpu", "cuda"):
+        raise ValueError("设备必须是 cpu 或 cuda")
 
-        cfg['game_name'] = game_name
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
 
-        GAME_NAME = game_name
-        GAME_CONFIG = _load_game_config(game_name)
-        GAME_DISPLAY_NAME = GAME_CONFIG.get('game_name', game_name)
-        TOTAL_CARDS = GAME_CONFIG.get('total_cards', TOTAL_CARDS)
-        YOLO_TO_CARD_MAPPING = GAME_CONFIG.get('yolo_to_card_mapping') or YOLO_TO_CARD_MAPPING
-        PLAYED_ZONES = GAME_CONFIG.get('played_zones', PLAYED_ZONES)
-        LAYOUT_REGIONS = GAME_CONFIG.get('layout_regions', LAYOUT_REGIONS)
-        print(f"游戏选择已保存: {game_name}")
-    except Exception as e:
-        print(f"保存游戏选择失败: {e}")
+def validate_layout(value: object) -> LayoutConfig:
+    """校验并复制完整的斗地主布局。
 
-def save_current_layout(layout_name):
+    Args:
+        value: 包含窗口标题和全部牌区的字典。
+
+    Returns:
+        独立的、坐标已转换为浮点数的布局。
+
+    Raises:
+        TypeError: 标题、区域或坐标类型错误。
+        ValueError: 标题为空、缺少牌区或矩形越界。
     """
-    保存当前布局名称到config.yaml
-    layout_name: str
+    if not isinstance(value, Mapping):
+        raise TypeError("布局必须是字典")
+    title = value.get("window_title")
+    regions = value.get("layout")
+    if not isinstance(title, str) or not isinstance(regions, Mapping):
+        raise TypeError("布局必须包含字符串窗口标题和区域字典")
+    if not title.strip():
+        raise ValueError("窗口标题不能为空")
+    normalized: dict[str, list[float]] = {}
+    for region in LAYOUT_REGIONS:
+        key = region["key"]
+        coords = regions.get(key)
+        if not isinstance(coords, (tuple, list)) or len(coords) != 4:
+            raise ValueError(f"区域 {key} 必须包含四个坐标")
+        if any(type(x) not in (int, float) for x in coords):
+            raise TypeError(f"区域 {key} 坐标必须是数字")
+        box = [float(x) for x in coords]
+        x1, y1, x2, y2 = box
+        if not (0 <= x1 < x2 <= 1 and 0 <= y1 < y2 <= 1):
+            raise ValueError(f"区域 {key} 坐标必须在 0~1 内且矩形非空")
+        normalized[key] = box
+    return {"window_title": title, "layout": normalized}
+
+
+def _save_values(updates: Mapping[str, object]) -> None:
+    """原子保存配置，成功后才发布主进程内存值。
+
+    Args:
+        updates: 已校验的 YAML 字段及值。
+
+    Raises:
+        OSError: 配置读写失败。
+        ValueError: 已有配置损坏，拒绝覆盖。
+        yaml.YAMLError: 更新内容无法序列化。
     """
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        cfg['current_layout'] = layout_name
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        print(f"当前布局已保存到文件: {layout_name}")
-    except Exception as e:
-        print(f"保存当前布局失败: {e}")
+    cfg = read_config(CONFIG_PATH)
+    cfg.update(deepcopy(dict(updates)))
+    write_config(CONFIG_PATH, cfg)
+    config.update(deepcopy(dict(updates)))
+    for key, value in updates.items():
+        if key in _SETTING_FIELDS:
+            globals()[_SETTING_FIELDS[key][0]] = deepcopy(value)
+    if "yolo_model_name" in updates:
+        globals()["YOLO_MODEL_PATH"] = _resolve_model_path(YOLO_MODEL_NAME)
 
 
-def save_window_layout(layout_name, window_title, layout_dict, set_current=True):
+def save_setting(key: str, value: object) -> None:
+    """统一保存单个标量设置并更新主进程内存。
+
+    Args:
+        key: YAML 字段名。
+        value: 新值。
+
+    Raises:
+        TypeError: 值类型不符合设置定义。
+        ValueError: 值越界或原配置损坏。
+        OSError: 文件读写失败。
+        yaml.YAMLError: 序列化失败。
     """
-    保存/更新单个窗口布局到 config.yaml。
+    _validate_setting(key, value)
+    _save_values({key: value})
 
-    参数:
-    - layout_name: 布局名称
-    - window_title: 目标窗口标题
-    - layout_dict: 五个区域的归一化坐标字典
-    - set_current: 保存后是否切换为当前布局
+
+def runtime_snapshot() -> dict[str, object]:
+    """复制可传入新推理进程的运行配置。
+
+    Returns:
+        标量设置及全部布局的独立快照。
     """
-    global WINDOW_LAYOUTS, CURRENT_LAYOUT
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
-
-        window_layouts = cfg.get('window_layouts', {})
-        if not isinstance(window_layouts, dict):
-            window_layouts = {}
-
-        window_layouts[layout_name] = {
-            'window_title': str(window_title),
-            'layout': {
-                'player_hand': [float(x) for x in layout_dict['player_hand']],
-                'player_played': [float(x) for x in layout_dict['player_played']],
-                'opponent_left': [float(x) for x in layout_dict['opponent_left']],
-                'opponent_right': [float(x) for x in layout_dict['opponent_right']],
-                'landlord_cards': [float(x) for x in layout_dict['landlord_cards']],
-            }
-        }
-
-        cfg['window_layouts'] = window_layouts
-        if set_current:
-            cfg['current_layout'] = layout_name
-
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
-
-        WINDOW_LAYOUTS = window_layouts
-        if set_current:
-            CURRENT_LAYOUT = layout_name
-
-        print(f"布局已保存: {layout_name}")
-        if set_current:
-            print(f"当前布局已切换为: {layout_name}")
-    except Exception as e:
-        print(f"保存布局失败: {e}")
+    result = {attribute: deepcopy(globals()[attribute]) for attribute, _ in _SETTING_FIELDS.values()}
+    result["WINDOW_LAYOUTS"] = deepcopy(WINDOW_LAYOUTS)
+    return result
 
 
-def delete_window_layout(layout_name):
+def apply_runtime_settings(updates: Mapping[str, object]) -> None:
+    """仅在内存中应用子进程设置；全部验证后才发布。
+
+    Args:
+        updates: 大写运行时属性到值的映射。
+
+    Raises:
+        TypeError: 配置值类型错误。
+        ValueError: 属性不允许更新或值无效。
     """
-    删除指定布局（至少保留一个布局），并在必要时更新 current_layout。
+    reverse = {attribute: key for key, (attribute, _) in _SETTING_FIELDS.items()}
+    validated: dict[str, object] = {}
+    for attribute, value in updates.items():
+        if attribute == "WINDOW_LAYOUTS":
+            if not isinstance(value, Mapping) or not value:
+                raise ValueError("布局列表不能为空")
+            layouts: dict[str, LayoutConfig] = {}
+            for name, layout in value.items():
+                if not isinstance(name, str) or not name.strip():
+                    raise ValueError("布局名称必须是非空字符串")
+                layouts[name] = validate_layout(layout)
+            validated[attribute] = layouts
+        elif attribute in reverse:
+            _validate_setting(reverse[attribute], value)
+            validated[attribute] = deepcopy(value)
+        else:
+            raise ValueError(f"不允许更新运行属性: {attribute}")
+    globals().update(validated)
+    if "YOLO_MODEL_NAME" in validated:
+        globals()["YOLO_MODEL_PATH"] = _resolve_model_path(YOLO_MODEL_NAME)
 
-    返回:
-    - 成功: 新的 current_layout 名称
-    - 失败: None
+
+def save_device_choice(device_choice: str) -> None:
+    """保存 device_choice，成功后同步内存。
+
+    Args:
+        device_choice: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
     """
-    global WINDOW_LAYOUTS, CURRENT_LAYOUT
-    try:
-        cfg = {}
-        try:
-            with open(CONFIG_PATH, 'r', encoding='utf-8') as f:
-                loaded = yaml.safe_load(f)
-                if isinstance(loaded, dict):
-                    cfg = loaded
-        except Exception:
-            cfg = {}
+    save_setting("device_choice", device_choice)
 
-        window_layouts = cfg.get('window_layouts', {})
-        if not isinstance(window_layouts, dict) or layout_name not in window_layouts:
-            print(f"删除布局失败: 未找到布局 {layout_name}")
-            return None
 
-        if len(window_layouts) <= 1:
-            print("删除布局失败: 至少需要保留一个布局")
-            return None
+def save_model_choice(model_name: str) -> None:
+    """保存 yolo_model_name，成功后同步内存。
 
-        del window_layouts[layout_name]
-        cfg['window_layouts'] = window_layouts
+    Args:
+        model_name: 新设置值。
 
-        current = cfg.get('current_layout')
-        if current == layout_name:
-            cfg['current_layout'] = next(iter(window_layouts.keys()))
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("yolo_model_name", model_name)
 
-        tmp_path = CONFIG_PATH + '.tmp'
-        with open(tmp_path, 'w', encoding='utf-8') as f:
-            yaml.dump(cfg, f, allow_unicode=True, default_flow_style=False)
-        os.replace(tmp_path, CONFIG_PATH)
 
-        WINDOW_LAYOUTS = window_layouts
-        CURRENT_LAYOUT = cfg.get('current_layout')
+def save_confidence_choice(confidence: float) -> None:
+    """保存 yolo_confidence_threshold，成功后同步内存。
 
-        print(f"布局已删除: {layout_name}")
-        return CURRENT_LAYOUT
-    except Exception as e:
-        print(f"删除布局失败: {e}")
-        return None
+    Args:
+        confidence: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("yolo_confidence_threshold", confidence)
+
+
+def save_reset_time(reset_time: float) -> None:
+    """保存 reset_time，成功后同步内存。
+
+    Args:
+        reset_time: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("reset_time", reset_time)
+
+
+def save_frame_length(frame_length: int) -> None:
+    """保存 frame_length，成功后同步内存。
+
+    Args:
+        frame_length: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("frame_length", frame_length)
+
+
+def save_detect_interval(detect_interval: float) -> None:
+    """保存 detect_interval_sec，成功后同步内存。
+
+    Args:
+        detect_interval: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("detect_interval_sec", detect_interval)
+
+
+def save_always_on_top(always_on_top: bool) -> None:
+    """保存 always_on_top，成功后同步内存。
+
+    Args:
+        always_on_top: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("always_on_top", always_on_top)
+
+
+def save_show_played_cards(show_played_cards: bool) -> None:
+    """保存 show_played_cards，成功后同步内存。
+
+    Args:
+        show_played_cards: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("show_played_cards", show_played_cards)
+
+
+def save_debug_mode(debug_mode: bool) -> None:
+    """保存 debug_mode，成功后同步内存。
+
+    Args:
+        debug_mode: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("debug_mode", debug_mode)
+
+
+def save_debug_images_choice(save_debug_images: bool) -> None:
+    """保存 save_debug_images，成功后同步内存。
+
+    Args:
+        save_debug_images: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("save_debug_images", save_debug_images)
+
+
+def save_show_timing_choice(show_timing: bool) -> None:
+    """保存 show_timing，成功后同步内存。
+
+    Args:
+        show_timing: 新设置值。
+
+    Raises:
+        TypeError: 值类型错误。
+        ValueError: 值无效或原配置损坏。
+        OSError: 配置读写失败。
+        yaml.YAMLError: 序列化失败。
+    """
+    save_setting("show_timing", show_timing)
+
+
+def apply_game_choice(game_name: str) -> None:
+    """只更新本进程的游戏配置，不写文件。
+
+    Args:
+        game_name: 已注册的游戏名称。
+
+    Raises:
+        TypeError: 名称不是字符串。
+        ValueError: 游戏未注册。
+    """
+    from core.games import TRACKER_REGISTRY
+
+    if not isinstance(game_name, str):
+        raise TypeError("游戏名称必须是字符串")
+    if game_name not in TRACKER_REGISTRY:
+        raise ValueError(f"游戏未注册: {game_name}")
+    global GAME_NAME, GAME_CONFIG, GAME_DISPLAY_NAME, TOTAL_CARDS, PLAYED_ZONES, LAYOUT_REGIONS
+    loaded = _load_game_config(game_name)
+    GAME_NAME, GAME_CONFIG = game_name, loaded
+    GAME_DISPLAY_NAME = loaded.get("game_name", game_name)
+    TOTAL_CARDS = loaded.get("total_cards", TOTAL_CARDS)
+    PLAYED_ZONES = loaded.get("played_zones", PLAYED_ZONES)
+    LAYOUT_REGIONS = loaded.get("layout_regions", LAYOUT_REGIONS)
+
+
+def save_game_choice(game_name: str) -> None:
+    """保存游戏选择并发布内存配置。
+
+    Args:
+        game_name: 已注册的游戏名称。
+
+    Raises:
+        ValueError: 名称未注册或原配置损坏。
+        OSError: 配置读写失败。
+    """
+    from core.games import TRACKER_REGISTRY
+
+    if game_name not in TRACKER_REGISTRY:
+        raise ValueError(f"游戏未注册: {game_name}")
+    _save_values({"game_name": game_name})
+    apply_game_choice(game_name)
+
+
+def save_current_layout(layout_name: str) -> None:
+    """保存已存在的当前布局名称。
+
+    Args:
+        layout_name: 布局名称。
+
+    Raises:
+        ValueError: 名称不存在或原配置损坏。
+        OSError: 配置读写失败。
+    """
+    if layout_name not in WINDOW_LAYOUTS:
+        raise ValueError(f"布局不存在: {layout_name}")
+    _save_values({"current_layout": layout_name})
+    globals()["CURRENT_LAYOUT"] = layout_name
+
+
+def save_window_layout(
+    layout_name: str, window_title: str,
+    layout_dict: Mapping[str, Sequence[float]], set_current: bool = True,
+) -> None:
+    """校验并保存布局，失败时保留原文件和内存。
+
+    Args:
+        layout_name: 非空布局名称。
+        window_title: 目标窗口标题。
+        layout_dict: 所有牌区的归一化矩形。
+        set_current: 是否设为当前布局。
+
+    Raises:
+        TypeError: 名称、开关或布局内容类型错误。
+        ValueError: 名称为空、矩形无效或原配置损坏。
+        OSError: 配置读写失败。
+    """
+    if not isinstance(layout_name, str) or type(set_current) is not bool:
+        raise TypeError("布局名称必须为字符串，set_current 必须为布尔值")
+    if not layout_name.strip():
+        raise ValueError("布局名称不能为空")
+    layout = validate_layout({"window_title": window_title, "layout": layout_dict})
+    cfg = read_config(CONFIG_PATH)
+    layouts = deepcopy(cfg.get("window_layouts", WINDOW_LAYOUTS))
+    if not isinstance(layouts, dict):
+        raise ValueError("配置中的 window_layouts 必须是字典")
+    layouts[layout_name] = layout
+    updates: dict[str, object] = {"window_layouts": layouts}
+    if set_current:
+        updates["current_layout"] = layout_name
+    _save_values(updates)
+    globals()["WINDOW_LAYOUTS"] = layouts
+    if set_current:
+        globals()["CURRENT_LAYOUT"] = layout_name
+
+
+def delete_window_layout(layout_name: str) -> str:
+    """删除布局并返回仍然有效的当前布局，至少保留一个布局。
+
+    Args:
+        layout_name: 待删除名称。
+
+    Returns:
+        删除后的当前布局名称。
+
+    Raises:
+        ValueError: 布局不存在、仅剩一个布局或配置损坏。
+        OSError: 配置读写失败。
+    """
+    cfg = read_config(CONFIG_PATH)
+    layouts = deepcopy(cfg.get("window_layouts", WINDOW_LAYOUTS))
+    if not isinstance(layouts, dict) or layout_name not in layouts:
+        raise ValueError(f"布局不存在: {layout_name}")
+    if len(layouts) <= 1:
+        raise ValueError("至少需要保留一个布局")
+    del layouts[layout_name]
+    current = cfg.get("current_layout", CURRENT_LAYOUT)
+    if current not in layouts:
+        current = next(iter(layouts))
+    _save_values({"window_layouts": layouts, "current_layout": current})
+    globals()["WINDOW_LAYOUTS"] = layouts
+    globals()["CURRENT_LAYOUT"] = current
+    return cast(str, current)
 
 
 # ==================== 路径配置 ====================

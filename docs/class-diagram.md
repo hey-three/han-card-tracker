@@ -1,5 +1,7 @@
 # 类图 - Han记牌器
 
+> 当前实现采用 Command/Response 回执协议；启动入口为 `core/controller_process.py`，设置协调器为 `ui/settings_controller.py`。完整交互见 [顺序图](sequence-diagram.md)。
+
 > 展示项目中核心类的属性、方法及关系
 
 ```mermaid
@@ -188,6 +190,11 @@ classDiagram
         +result_ready: Signal
         +error: Signal
         +finished: Signal
+        +state_changed: Signal
+        +command_completed: Signal
+        +state: str
+        +restart()
+        +can_detect() bool
         +start()
         +stop()
         +is_alive() bool
@@ -202,6 +209,29 @@ classDiagram
         -_poll_result()
     }
 
+    class SettingsController {
+        +apply(save, request, after) bool
+        +failed: Signal
+        +applied: Signal
+        -_pending: dict
+    }
+
+    class Command {
+        +request_id: int
+        +generation: int
+        +name: str
+        +payload: object
+    }
+
+    class Response {
+        +status: str
+        +request_id: int
+        +generation: int
+        +remain_cards: dict
+        +zone_cards: dict
+        +error: str
+    }
+
     class GameController {
         -game_name: str
         -layout_name: str
@@ -213,7 +243,7 @@ classDiagram
         -debug_manager: ImageSaver
         +detect() tuple
         +reset()
-        +switch_layout(layout_name)
+        +switch_layout(layout_name, layout_config)
         +switch_model(model_name)
         +switch_device(device_name)
         +switch_game(game_name)
@@ -307,7 +337,7 @@ classDiagram
     }
 
     %% ========== 工厂函数（非类） ==========
-    %% run_controller_loop(cmd_queue, result_queue, layout_name, game_name)
+    %% run_controller_loop(cmd_queue, result_queue, layout_name, game_name, snapshot)
     %% create_tracker(game_name, layout_name, debug_manager) -> BaseCardTracker
     %% 以上两者为函数，非类，仅在关系线中标注
 
@@ -413,6 +443,10 @@ classDiagram
     LayoutItemDelegate --|> QStyledItemDelegate : 继承
     LayoutComboView --|> QListView : 继承
 
+    CardUI *-- SettingsController
+    SettingsController --> InferenceWorker : 等待回执后保存
+    InferenceWorker ..> Command
+    InferenceWorker ..> Response
     CardUI *-- InferenceWorker : 组合（创建并持有）
     CardUI o-- SettingsDialog : 聚合（按需创建）
     CardUI ..> trans_yolo_names_to_string : 依赖

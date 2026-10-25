@@ -1,54 +1,17 @@
-# -*- coding: utf-8 -*-
-"""游戏控制器模块。
+"""游戏控制器：编排截图、识别、几何分区与斗地主记牌；不写配置文件。"""
 
-GameController 运行在推理子进程中，作为后端游戏逻辑的统一管理者。
-它通过组合模式持有 ScreenCapture 和 CardDetector，编排完整的检测流程：
+from __future__ import annotations
 
-1. ScreenCapture 截图
-2. CardDetector 识别
-3. Tracker 更新状态
-
-对外只输出两样数据：
-1. ``remain_cards``: 每张牌的剩余数量
-2. ``zone_cards``: 各出牌区域的出牌记录
-
-架构::
-
-    主进程 (UI)                              子进程 (推理)
-    ┌────────────────┐                      ┌──────────────────────┐
-    │ InferenceWorker │  ──cmd_queue──►     │  GameController      │
-    │  (QObject)      │                      │   ├─ ScreenCapture   │
-    │  poll_timer     │  ◄─result_queue──   │   ├─ CardDetector    │
-    └────────────────┘                      │   └─ Tracker 子类    │
-                                            └──────────────────────┘
-
-命令协议（cmd_queue）：
-    - ``"detect"``                → 执行一次识别
-    - ``"reset"``                 → 重置记牌器状态
-    - ``("switch_layout", name)`` → 切换布局（重建所有组件）
-    - ``("switch_model", name)``  → 切换模型（重建 YoloInferencer 和 Tracker）
-    - ``("switch_device", name)`` → 切换设备（重建 YoloInferencer）
-    - ``("switch_game", name)``   → 切换游戏（重载配置 + 重建 Tracker）
-    - ``("update_settings", dict)``→ 同步运行时设置到子进程
-    - ``("touch_time",)``         → 刷新 no_target_time
-    - ``None``                    → 终止子进程
-
-结果协议（result_queue）：
-    - ``("ok", {"remain_cards": dict, "zone_cards": dict}, yolo_ms)``
-    - ``("error", str)``
-
-其中 ``zone_cards`` 的 key 为游戏配置中 ``played_zones`` 的 ``key`` 字段，
-value 为该区域的出牌记录列表（``list[list[str]]``）。
-不同游戏的区域数量和名称由配置文件决定，UI 按需动态渲染。
-"""
-
-import multiprocessing as mp
-import queue
+from collections.abc import Mapping
+from copy import deepcopy
+from typing import TYPE_CHECKING, cast
 import time
-import traceback
 
 import config.settings as settings
-from core.yolo_inferencer import YoloInferencer
+from core.base_tracker import BaseCardTracker
+
+if TYPE_CHECKING:
+    from core.yolo_inferencer import YoloInferencer
 from core.layout_analyzer import LayoutAnalyzer
 from core.games import create_tracker
 from core.screen_capture import ScreenCapture
@@ -91,7 +54,7 @@ class GameController:
                 raise ValueError("WINDOW_LAYOUTS 字典为空，没有可用的配置")
         
         self.layout_name: str = layout_name
-        self.layout_config: dict[str, object] = settings.WINDOW_LAYOUTS[self.layout_name]
+        self.layout_config: settings.LayoutConfig = settings.validate_layout(settings.WINDOW_LAYOUTS[self.layout_name])
         
         # 创建调试图片保存器（由 GameController 统一管理）
         self.debug_manager: ImageSaver = ImageSaver(settings.BASE_DIR)
@@ -101,11 +64,11 @@ class GameController:
         except Exception:
             pass
         
-        self.yolo_inferencer: YoloInferencer = YoloInferencer(self.debug_manager)
-        self.layout_analyzer: LayoutAnalyzer = LayoutAnalyzer(self.layout_config)
+        self.yolo_inferencer: YoloInferencer = self._create_inferencer()
+        self.layout_analyzer: LayoutAnalyzer = LayoutAnalyzer(dict(self.layout_config))
         window_title: str = self.layout_config["window_title"]
         self.screen_capture: ScreenCapture = ScreenCapture(window_title)
-        self.tracker: object = create_tracker(game_name, layout_name, self.debug_manager)
+        self.tracker: BaseCardTracker = create_tracker(game_name, layout_name, self.debug_manager)
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行一次完整检测：截图→识别→解析排版→映射→状态更新→格式化输出。
@@ -142,74 +105,164 @@ class GameController:
         """重置记牌器到初始状态。"""
         self.tracker.reset()
 
-    def switch_layout(self, layout_name: str) -> None:
-        """切换布局，重建所有依赖布局的组件。
+    def _create_inferencer(self) -> YoloInferencer:
+        """延迟加载重型依赖并创建推理器。
+
+        Returns:
+            按当前子进程配置创建的推理器。
+
+        Raises:
+            ImportError: 缺少推理依赖。
+            OSError: 权重不可读取。
+            RuntimeError: 模型初始化失败。
+        """
+        from core.yolo_inferencer import YoloInferencer
+
+        return YoloInferencer(self.debug_manager)
+
+    def switch_layout(self, layout_name: str, layout_config: object) -> None:
+        """使用命令携带的完整布局，所有组件创建成功后一起替换。
 
         Args:
-            layout_name: 新布局名称。
+            layout_name: 新布局名。
+            layout_config: 包含窗口标题和坐标的完整布局。
+
+        Raises:
+            TypeError: 参数类型错误。
+            ValueError: 名称或布局无效。
+            RuntimeError: 新组件构造失败，原组件保留。
         """
-        self.layout_name = layout_name
-        self.layout_config = settings.WINDOW_LAYOUTS[self.layout_name]
-        
-        self.layout_analyzer = LayoutAnalyzer(self.layout_config)
-        window_title: str = self.layout_config["window_title"]
-        self.screen_capture = ScreenCapture(window_title)
-        self.tracker = create_tracker(self.game_name, layout_name, self.debug_manager)
+        if not isinstance(layout_name, str):
+            raise TypeError("布局名称必须是字符串")
+        if not layout_name.strip():
+            raise ValueError("布局名称不能为空")
+        config = settings.validate_layout(layout_config)
+        analyzer = LayoutAnalyzer(dict(config))
+        capture = ScreenCapture(config["window_title"])
+        tracker = create_tracker(self.game_name, layout_name, self.debug_manager)
+        self.layout_name, self.layout_config = layout_name, config
+        self.layout_analyzer, self.screen_capture, self.tracker = analyzer, capture, tracker
+        settings.WINDOW_LAYOUTS[layout_name] = deepcopy(config)
+        settings.CURRENT_LAYOUT = layout_name
 
     def switch_model(self, model_name: str) -> None:
-        """切换 YOLO 模型，更新 settings 并重建 YoloInferencer 和 Tracker。
+        """模型和 Tracker 都创建成功后才发布新状态。
 
         Args:
-            model_name: 模型子目录名称。
+            model_name: 权重子目录名。
+
+        Raises:
+            TypeError: 名称类型错误。
+            ValueError: 名称无效。
+            Exception: 模型或 Tracker 创建失败，恢复原配置和组件。
         """
-        settings.YOLO_MODEL_NAME = model_name
-        settings.YOLO_MODEL_PATH = settings._resolve_model_path(model_name)
-        self.yolo_inferencer = YoloInferencer(self.debug_manager)
-        self.tracker = create_tracker(self.game_name, self.tracker.layout_name, self.debug_manager)
+        previous = settings.runtime_snapshot()
+        try:
+            settings.apply_runtime_settings({"YOLO_MODEL_NAME": model_name})
+            inferencer = self._create_inferencer()
+            tracker = create_tracker(self.game_name, self.layout_name, self.debug_manager)
+        except Exception:
+            settings.apply_runtime_settings(previous)
+            raise
+        self.yolo_inferencer, self.tracker = inferencer, tracker
 
     def switch_device(self, device_name: str) -> None:
-        """切换推理设备（CPU/GPU），重建 YoloInferencer。
+        """设备切换失败时保留原推理器及配置。
 
         Args:
-            device_name: 设备名称（``"cpu"`` 或 ``"cuda"``）。
+            device_name: cpu 或 cuda。
+
+        Raises:
+            TypeError: 设备名类型错误。
+            ValueError: 不支持的设备。
+            Exception: 推理器构造失败。
         """
-        settings.DEVICE_CHOICE = device_name
-        self.yolo_inferencer = YoloInferencer(self.debug_manager)
+        previous = settings.DEVICE_CHOICE
+        try:
+            settings.apply_runtime_settings({"DEVICE_CHOICE": device_name})
+            inferencer = self._create_inferencer()
+        except Exception:
+            settings.DEVICE_CHOICE = previous
+            raise
+        self.yolo_inferencer = inferencer
 
     def switch_game(self, game_name: str) -> None:
-        """切换游戏，重载游戏配置并重建 Tracker。
+        """在子进程内存中切换已注册游戏。
 
         Args:
-            game_name: 游戏名称（如 ``"doudizhu"``）。
+            game_name: 已注册游戏名称。
+
+        Raises:
+            TypeError: 名称类型错误。
+            ValueError: 游戏未注册。
+            Exception: Tracker 构造失败，原游戏配置恢复。
         """
-        settings.save_game_choice(game_name)
-        self.game_name = game_name
-        self.tracker = create_tracker(game_name, self.tracker.layout_name, self.debug_manager)
+        previous = self.game_name
+        try:
+            settings.apply_game_choice(game_name)
+            tracker = create_tracker(game_name, self.layout_name, self.debug_manager)
+        except Exception:
+            settings.apply_game_choice(previous)
+            raise
+        self.game_name, self.tracker = game_name, tracker
 
-    def update_settings(self, updates: dict) -> None:
-        """同步运行时设置到子进程的 settings 模块。
-
-        对于置信度/IOU 等需要同步到实例属性的设置，同时更新对应组件。
+    def update_settings(self, updates: Mapping[str, object]) -> None:
+        """应用允许热更新的参数，禁止绕过组件切换流程。
 
         Args:
-            updates: 要更新的设置键值对，如 ``{"DEBUG_MODE": True, "RESET_TIME": 3.0}``。
+            updates: 可热更新的运行时属性。
+
+        Raises:
+            TypeError: 参数值类型错误。
+            ValueError: 属性不可热更新或值无效。
         """
-        for key, value in updates.items():
-            setattr(settings, key, value)
-        # 置信度/IOU 需要同步到 YoloInferencer 实例属性
-        if "YOLO_CONFIDENCE_THRESHOLD" in updates:
-            self.yolo_inferencer.yolo_conf = settings.YOLO_CONFIDENCE_THRESHOLD
-        if "YOLO_IOU_THRESHOLD" in updates:
-            self.yolo_inferencer.yolo_iou = settings.YOLO_IOU_THRESHOLD
-        # SAVE_DEBUG_IMAGES 是运行时可热切换的选项，需要通知 debug_manager
+        allowed = {
+            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "RESET_TIME", "FRAME_LENGTH",
+            "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD",
+        }
+        if not set(updates).issubset(allowed):
+            raise ValueError("存在不能直接热更新的属性")
+        settings.apply_runtime_settings(updates)
+        self.yolo_inferencer.yolo_conf = settings.YOLO_CONFIDENCE_THRESHOLD
+        self.yolo_inferencer.yolo_iou = settings.YOLO_IOU_THRESHOLD
         if "SAVE_DEBUG_IMAGES" in updates:
-            try:
-                # Do not call bootstrap (it may reset state); instead toggle
-                # the enabled flag so that saving can be resumed into the
-                # existing session if present.
-                self.debug_manager.set_enabled(bool(updates.get("SAVE_DEBUG_IMAGES", False)))
-            except Exception:
-                pass
+            self.debug_manager.set_enabled(settings.SAVE_DEBUG_IMAGES)
+
+    def execute_command(self, name: str, payload: object) -> None:
+        """分派控制命令，统一由进程入口捕获错误并回执。
+
+        Args:
+            name: 命令名。
+            payload: 命令参数。
+
+        Raises:
+            TypeError: 参数类型不符。
+            ValueError: 命令未知或参数无效。
+            Exception: 对应控制操作执行失败。
+        """
+        if name == "reset":
+            self.reset()
+        elif name == "touch_time":
+            self.touch_time()
+        elif name == "switch_layout":
+            if not isinstance(payload, dict) or not isinstance(payload.get("name"), str):
+                raise TypeError("布局命令必须包含名称与完整配置")
+            self.switch_layout(payload["name"], payload.get("config"))
+        elif name == "update_settings":
+            if not isinstance(payload, Mapping):
+                raise TypeError("设置参数必须是字典")
+            self.update_settings(cast(Mapping[str, object], payload))
+        elif name in ("switch_model", "switch_device", "switch_game"):
+            if not isinstance(payload, str):
+                raise TypeError("切换命令参数必须是字符串")
+            handlers = {
+                "switch_model": self.switch_model,
+                "switch_device": self.switch_device,
+                "switch_game": self.switch_game,
+            }
+            handlers[name](payload)
+        else:
+            raise ValueError(f"未知命令: {name}")
 
     def touch_time(self) -> None:
         """刷新 no_target_time，防止暂停后立即超时重置。"""
@@ -228,81 +281,3 @@ class GameController:
         """
         zone_keys = {z["key"] for z in settings.PLAYED_ZONES}
         return {k: v for k, v in show_cards.items() if k in zone_keys}
-
-
-def run_controller_loop(
-    cmd_queue: mp.Queue,
-    result_queue: mp.Queue,
-    layout_name: str,
-    game_name: str,
-) -> None:
-    """子进程主循环：阻塞等待命令，通过 GameController 调度执行，回传结果。
-
-    此函数在子进程中运行，**不能操作任何 Qt 对象**。
-
-    Args:
-        cmd_queue: 命令队列（``multiprocessing.Queue``），主进程向子进程发送指令。
-        result_queue: 结果队列（``multiprocessing.Queue``），子进程向主进程回传数据。
-        layout_name: 初始布局名称。
-        game_name: 游戏名称。
-    """
-    controller = GameController(game_name, layout_name)
-
-    while True:
-        try:
-            cmd = cmd_queue.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        except (OSError, EOFError):
-            break
-
-        if cmd is None:
-            break
-
-        if cmd == "detect":
-            try:
-                remain_cards, zone_cards, yolo_ms = controller.detect()
-                result_queue.put(("ok", {"remain_cards": remain_cards, "zone_cards": zone_cards}, yolo_ms))
-            except Exception:
-                result_queue.put(("error", traceback.format_exc()))
-
-        elif cmd == "reset":
-            controller.reset()
-
-        elif isinstance(cmd, tuple) and cmd[0] == "switch_layout":
-            new_layout = cmd[1]
-            try:
-                controller.switch_layout(new_layout)
-            except Exception:
-                result_queue.put(("error", f"切换布局失败: {traceback.format_exc()}"))
-
-        elif isinstance(cmd, tuple) and cmd[0] == "switch_model":
-            model_name = cmd[1]
-            try:
-                controller.switch_model(model_name)
-            except Exception:
-                result_queue.put(("error", f"切换模型失败: {traceback.format_exc()}"))
-
-        elif isinstance(cmd, tuple) and cmd[0] == "switch_device":
-            device_name = cmd[1]
-            try:
-                controller.switch_device(device_name)
-            except Exception:
-                result_queue.put(("error", f"切换设备失败: {traceback.format_exc()}"))
-
-        elif isinstance(cmd, tuple) and cmd[0] == "switch_game":
-            game_name = cmd[1]
-            try:
-                controller.switch_game(game_name)
-            except Exception:
-                result_queue.put(("error", f"切换游戏失败: {traceback.format_exc()}"))
-
-        elif isinstance(cmd, tuple) and cmd[0] == "update_settings":
-            updates = cmd[1]
-            try:
-                controller.update_settings(updates)
-            except Exception:
-                result_queue.put(("error", f"同步设置失败: {traceback.format_exc()}"))
-
-        elif isinstance(cmd, tuple) and cmd[0] == "touch_time":
-            controller.touch_time()
