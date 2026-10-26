@@ -19,14 +19,21 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt, QRect, Signal
-from PySide6.QtGui import QColor, QPainter, QPen
+from PySide6.QtCore import Qt, QRect, Signal, QModelIndex, QPersistentModelIndex
+from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
 
 
 class LayoutItemDelegate(QStyledItemDelegate):
     """在布局下拉项右侧绘制“删除”按钮。"""
 
-    def paint(self, painter, option, index):
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> None:
+        """绘制布局名称和删除按钮。
+
+        Args:
+            painter: Qt 绘图器。
+            option: 当前条目的样式及边界。
+            index: 当前条目的模型索引。
+        """
         # 先绘制文本区域，给右侧按钮留出空间
         text_option = QStyleOptionViewItem(option)
         text_option.rect = option.rect.adjusted(0, 0, -56, 0)
@@ -34,12 +41,12 @@ class LayoutItemDelegate(QStyledItemDelegate):
 
         btn_rect = self.get_delete_button_rect(option.rect)
         painter.save()
-        painter.setRenderHint(QPainter.Antialiasing, True)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setPen(QPen(QColor("#9e9e9e"), 1))
         painter.setBrush(QColor("#f3f3f3"))
         painter.drawRoundedRect(btn_rect, 4, 4)
         painter.setPen(QColor("#333333"))
-        painter.drawText(btn_rect, Qt.AlignCenter, "删除")
+        painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "删除")
         painter.restore()
 
     @staticmethod
@@ -61,13 +68,14 @@ class LayoutComboView(QListView):
         self._delegate = LayoutItemDelegate(self)
         self.setItemDelegate(self._delegate)
 
-    def mousePressEvent(self, event):
+    def mousePressEvent(self, event: QMouseEvent) -> None:
+        """点击删除区域时执行删除回调，其余点击交给下拉列表处理。"""
         index = self.indexAt(event.position().toPoint())
         if index.isValid():
             item_rect = self.visualRect(index)
             btn_rect = self._delegate.get_delete_button_rect(item_rect)
             if btn_rect.contains(event.position().toPoint()):
-                layout_name = index.data(Qt.DisplayRole)
+                layout_name = index.data(Qt.ItemDataRole.DisplayRole)
                 self._delete_handler(layout_name)
                 return
         super().mousePressEvent(event)
@@ -83,6 +91,7 @@ class SettingsDialog(QDialog):
     PAGE_MARGIN = 20
     PAGE_SPACING = 20
     auto_layout_requested = Signal()
+    layout_status_changed = Signal(int)
 
     def __init__(
         self,
@@ -232,7 +241,7 @@ class SettingsDialog(QDialog):
         self.combo_layout = QComboBox()
         self.combo_layout.setObjectName("LayoutCombo")
         self.combo_layout.setMinimumWidth(300)
-        self.combo_layout.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_layout.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo_layout.setMinimumContentsLength(18)
         self.combo_layout.setView(LayoutComboView(self.combo_layout, self._on_layout_delete_requested, self))
         from config.settings import WINDOW_LAYOUTS
@@ -294,21 +303,31 @@ class SettingsDialog(QDialog):
             ["否", "是"],
             self._on_show_played_cards_changed,
         )
-        self.combo_debug_mode = self._add_combo_row(
+        self.combo_show_layout_status = self._add_combo_row(
             basic_layout,
-            "调试模式：",
-            "DebugModeCombo",
+            "显示布局状态提示：",
+            "ShowLayoutStatusCombo",
             ["否", "是"],
-            self._on_debug_mode_changed,
+            self.layout_status_changed.emit,
+            tooltip="显示底部的自动定位和等待画面提示；关闭后仍显示故障和恢复入口",
         )
 
         basic_layout.addStretch()
 
-    def _setup_advanced_settings(self):
+    def _setup_advanced_settings(self) -> None:
         """在高级设置标签页中添加控件。"""
         advanced_layout = self._new_page_layout(self.tab2)
 
-        # 模型选择（放在最上面）
+        self.combo_debug_mode = self._add_combo_row(
+            advanced_layout,
+            "输出调试日志：",
+            "DebugModeCombo",
+            ["否", "是"],
+            self._on_debug_mode_changed,
+            tooltip="在终端输出每帧各牌区的识别结果，不负责保存截图",
+        )
+
+        # 模型选择
         from config.settings import _scan_model_dirs, YOLO_MODEL_NAME
         model_dirs = _scan_model_dirs()
         self.combo_model = self._add_combo_row(
@@ -359,7 +378,7 @@ class SettingsDialog(QDialog):
 
         self.combo_save_debug_images = self._add_combo_row(
             advanced_layout,
-            "保存游戏图片：",
+            "保存游戏截图：",
             "SaveDebugImagesCombo",
             ["否", "是"],
             self._on_save_debug_images_changed,
@@ -512,7 +531,7 @@ class SettingsDialog(QDialog):
         if self.on_layout_editor_callback:
             self.on_layout_editor_callback(self)
 
-    def _on_layout_delete_requested(self, layout_name: str):
+    def _on_layout_delete_requested(self, layout_name: str) -> None:
         """点击下拉项删除按钮时，弹确认框并触发布局删除回调。"""
         from config.settings import WINDOW_LAYOUTS
 
@@ -524,10 +543,10 @@ class SettingsDialog(QDialog):
             self,
             "确认删除",
             f"确定删除布局“{layout_name}”吗？",
-            QMessageBox.Yes | QMessageBox.No,
-            QMessageBox.No,
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
         )
-        if confirm != QMessageBox.Yes:
+        if confirm != QMessageBox.StandardButton.Yes:
             return
         if self.on_layout_delete_callback:
             deleted = self.on_layout_delete_callback(self, layout_name)
@@ -675,6 +694,14 @@ class SettingsDialog(QDialog):
         text = "是" if show_current_screenshot else "否"
         index = self.combo_show_current_screenshot.findText(text)
         self._set_combo_current_safely(self.combo_show_current_screenshot, index)
+
+    def set_current_show_layout_status(self, enabled: bool) -> None:
+        """刷新布局提示开关，不触发设置写回。
+
+        Args:
+            enabled: 是否显示正常布局状态。
+        """
+        self._set_combo_current_safely(self.combo_show_layout_status, int(enabled))
 
     def set_current_model(self, model_name: str):
         """设置当前 YOLO 模型选择。"""

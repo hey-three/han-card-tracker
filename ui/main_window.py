@@ -8,6 +8,7 @@
 from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QTimer, Slot
+from PySide6.QtGui import QCloseEvent
 from PySide6.QtWidgets import (
     QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox,
     QInputDialog,
@@ -221,8 +222,10 @@ class CardUI(QMainWindow):
         self.worker.error.connect(self.on_worker_error)
         self.worker.screenshot_ready.connect(self.on_screenshot_ready)
         self._screenshot_preview: ScreenshotPreviewDialog | None = None
-        if settings.SHOW_CURRENT_SCREENSHOT:
-            self._show_screenshot_preview()
+        self._preview_requested = settings.SHOW_CURRENT_SCREENSHOT
+        self._layout_status = ""
+        self._status_error = ""
+        self._closing = False
         self.worker.finished.connect(self.on_worker_finished)
 
         # 初始化定时器
@@ -252,6 +255,8 @@ class CardUI(QMainWindow):
         self.statusBar().addPermanentWidget(self.btn_retry)
         self.btn_retry.hide()
         self.worker.start()
+        self._fit_main_window()
+        self._apply_screenshot_preview_visibility()
 
     def on_settings_clicked(self) -> None:
         """
@@ -289,6 +294,7 @@ class CardUI(QMainWindow):
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
+        dialog.layout_status_changed.connect(self.on_show_layout_status_changed)
         dialog.set_current_always_on_top(settings.ALWAYS_ON_TOP)
         if settings.ALWAYS_ON_TOP:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -343,8 +349,8 @@ class CardUI(QMainWindow):
         from config.settings import SAVE_DEBUG_IMAGES
         dialog.set_current_save_debug_images(SAVE_DEBUG_IMAGES)
 
-        from config.settings import SHOW_CURRENT_SCREENSHOT
-        dialog.set_current_show_current_screenshot(SHOW_CURRENT_SCREENSHOT)
+        dialog.set_current_show_current_screenshot(self._preview_requested)
+        dialog.set_current_show_layout_status(settings.SHOW_LAYOUT_STATUS)
 
         # 设置当前显示耗时
         from config.settings import SHOW_TIMING
@@ -382,7 +388,7 @@ class CardUI(QMainWindow):
         if should_set_current or new_layout_name == self.layout_name:
             self._switch_layout_by_name(new_layout_name)
 
-        QTimer.singleShot(0, lambda: settings_dialog.refresh_layout_list(selected_name=self.layout_name))
+        settings_dialog.refresh_layout_list(selected_name=self.layout_name)
 
     def on_auto_layout_clicked(self, dialog: SettingsDialog) -> None:
         """选择窗口后提交自动布局，后端确认成功才保存窗口配置。
@@ -420,9 +426,34 @@ class CardUI(QMainWindow):
         Args:
             message: 来自推理进程的布局状态；手动模式为空。
         """
+        self._layout_status = message
         if self.worker.state == "ready":
-            self.statusBar().showMessage(message)
-            self.statusBar().setToolTip(message)
+            self._status_error = ""
+            self._refresh_status_bar()
+
+    def on_show_layout_status_changed(self, index: int) -> None:
+        """保存布局提示开关，故障信息不受该开关影响。
+
+        Args:
+            index: 否/是选项索引。
+        """
+        if index in (0, 1):
+            self._apply_setting("show_layout_status", bool(index), after=self._refresh_status_bar)
+
+    def _refresh_status_bar(self) -> None:
+        """集中显示布局进度和服务状态，隐藏时收起整行。"""
+        state = self.worker.state
+        labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
+        message = self._status_error or labels.get(state, "")
+        if not message and settings.SHOW_LAYOUT_STATUS:
+            message = self._layout_status
+        bar = self.statusBar()
+        bar.showMessage(message)
+        bar.setToolTip(self._status_error or message)
+        visible = bool(message) or state == "failed"
+        if visible != (not bar.isHidden()):
+            bar.setVisible(visible)
+            self._fit_main_window()
 
     def _switch_layout_by_name(self, layout_name: str) -> bool:
         """按布局名切换，避免设置窗口刷新后索引和内存列表不同步。"""
@@ -618,78 +649,6 @@ class CardUI(QMainWindow):
             if label is not None:
                 label.setText(f"   {zone['label']}     ")
 
-    def _ensure_widgets_attached(self):
-        """
-        Ensure all main widgets (name_labels, count_labels, played cards labels)
-        are attached to their layouts/parents. This repairs UI if a native
-        window flag change detached them.
-        """
-        # Ensure grid labels are present in the grid layout
-        for col, card in enumerate(self.card_order):
-            name = self.name_labels.get(card)
-            cnt = self.count_labels.get(card)
-            try:
-                if name is not None and name.parent() is None:
-                    self.grid.addWidget(name, 0, col)
-                if cnt is not None and cnt.parent() is None:
-                    self.grid.addWidget(cnt, 1, col)
-            except Exception:
-                pass
-
-        # 如果 grid 中项数量不完整，重建 grid 布局（防止在 setWindowFlags 后 native layout 丢失）
-        try:
-            expected = len(self.card_order) * 2  # name + count per card
-            actual = self.grid.count()
-            if actual < expected:
-                # 清理 grid 中残留项
-                while self.grid.count() > 0:
-                    item = self.grid.takeAt(0)
-                    if item is None:
-                        break
-                # 重新添加所有 card widgets
-                for col, card in enumerate(self.card_order):
-                    name = self.name_labels.get(card)
-                    cnt = self.count_labels.get(card)
-                    try:
-                        if name is not None:
-                            self.grid.addWidget(name, 0, col)
-                        if cnt is not None:
-                            self.grid.addWidget(cnt, 1, col)
-                    except Exception:
-                        pass
-        except Exception:
-            pass
-
-        # Ensure played cards labels are present in second_row_layout when visible
-        if self._show_played_cards:
-            for key, lbl in self.played_cards_labels.items():
-                try:
-                    if lbl.parent() is None:
-                        self.second_row_layout.addWidget(lbl)
-                        lbl.setVisible(True)
-                except Exception:
-                    pass
-        else:
-            for key, lbl in self.played_cards_labels.items():
-                try:
-                    lbl.setVisible(False)
-                except Exception:
-                    pass
-        # Force a geometry and repaint pass
-        try:
-            self.central_widget.updateGeometry()
-            self.central_widget.update()
-            self.central_widget.repaint()
-            self.adjustSize()
-        except Exception:
-            pass
-        # Debug: log how many children and layout items exist
-        try:
-            if settings.DEBUG_MODE:
-                print(f"[DEBUG] central_widget children: {len(self.central_widget.children())}, grid count: {self.grid.count()}, root_layout count: {self.root_layout.count()}")
-        except Exception:
-            pass
-
     def on_reset_clicked(self) -> None:
         """等待重置回执后清空显示；服务故障时改为重启。"""
         if self.worker.state in ("failed", "stopped"):
@@ -797,52 +756,30 @@ class CardUI(QMainWindow):
             )
 
     def _apply_always_on_top_state(self, always_on_top: bool, settings_dialog: QWidget | None = None) -> None:
-        """公共函数：统一应用主窗口与设置窗口的置顶状态。"""
+        """切换置顶时保留窗口位置、尺寸和原有显示状态。
 
-        # 简化：直接切换 flag，然后确保 widgets 已连接并刷新界面
-        try:
-            self.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
-        except Exception:
-            try:
-                # 兜底
-                self.setWindowFlags(self.windowFlags())
-            except Exception:
-                pass
+        Args:
+            always_on_top: 是否置顶。
+            settings_dialog: 可选的设置窗口。
+        """
+        for widget in (self, settings_dialog):
+            if widget is None or bool(widget.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) == always_on_top:
+                continue
+            geometry = widget.saveGeometry()
+            visible = widget.isVisible()
+            widget.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
+            widget.restoreGeometry(geometry)
+            if visible:
+                widget.show()
+        self.central_widget.update()
 
-        # 确保控件仍然附着在布局上（并打印调试信息）
-        self._ensure_widgets_attached()
+    def _reapply_topmost_if_enabled(self, settings_dialog: QWidget) -> None:
+        """按当前设置恢复置顶，不重复改变已有窗口的尺寸。
 
-        # 重新显示并提升
-        try:
-            self.show()
-            self.raise_()
-        except Exception:
-            pass
-
-        if settings_dialog is not None:
-            try:
-                settings_dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
-                settings_dialog.show()
-                settings_dialog.raise_()
-            except Exception:
-                pass
-
-        # 强制重绘
-        try:
-            self.central_widget.update()
-            self.central_widget.repaint()
-            self.update()
-            self.repaint()
-            self.adjustSize()
-        except Exception:
-            pass
-
-    def _reapply_topmost_if_enabled(self, settings_dialog):
-        """自动下沉截图后：若设置为置顶，则复用同一逻辑恢复置顶。"""
-        from config.settings import ALWAYS_ON_TOP
-
-        if ALWAYS_ON_TOP:
-            self._apply_always_on_top_state(True, settings_dialog=settings_dialog)
+        Args:
+            settings_dialog: 当前设置窗口。
+        """
+        self._apply_always_on_top_state(settings.ALWAYS_ON_TOP, settings_dialog)
 
     def on_show_played_cards_changed(self, index: int) -> None:
         """保存成功后切换出牌记录显示。
@@ -891,16 +828,29 @@ class CardUI(QMainWindow):
             self._apply_setting("show_timing", bool(index), after=self._apply_timing_visibility)
 
     def on_show_current_screenshot_changed(self, index: int) -> None:
-        """保存并应用实时截图预览开关。"""
+        """立即保存主界面预览偏好，再同步子进程的截图传输开关。
+
+        Args:
+            index: 否/是选项索引。
+        """
         if index in (0, 1):
             self._apply_setting(
-                "show_current_screenshot", bool(index), "SHOW_CURRENT_SCREENSHOT",
-                self._apply_screenshot_preview_visibility,
+                "show_current_screenshot", bool(index), after=self._apply_screenshot_preference,
+            )
+
+    def _apply_screenshot_preference(self) -> None:
+        """按已保存偏好更新窗口，后端故障或退出不回滚预览显示偏好。"""
+        self._preview_requested = settings.SHOW_CURRENT_SCREENSHOT
+        self._apply_screenshot_preview_visibility()
+        if self.worker.state in ("starting", "ready"):
+            self.settings_controller.apply(
+                save=lambda: None,
+                request=lambda: self.worker.update_settings({"SHOW_CURRENT_SCREENSHOT": self._preview_requested}),
             )
 
     def _apply_screenshot_preview_visibility(self) -> None:
         """根据已保存选项显示或关闭截图预览窗口。"""
-        if settings.SHOW_CURRENT_SCREENSHOT:
+        if self._preview_requested and settings.SHOW_CURRENT_SCREENSHOT:
             self._show_screenshot_preview()
         elif self._screenshot_preview is not None:
             self._screenshot_preview.hide()
@@ -909,8 +859,14 @@ class CardUI(QMainWindow):
         """创建或显示截图预览窗口。"""
         if self._screenshot_preview is None:
             self._screenshot_preview = ScreenshotPreviewDialog(self)
-        self._screenshot_preview.show()
-        self._screenshot_preview.raise_()
+            self._screenshot_preview.rejected.connect(self._on_screenshot_preview_closed)
+        if not self._screenshot_preview.isVisible() and not self._closing:
+            self._screenshot_preview.show()
+
+    def _on_screenshot_preview_closed(self) -> None:
+        """用户按关闭或 Esc 时禁用预览；主程序退出不改用户设置。"""
+        if not self._closing:
+            self.on_show_current_screenshot_changed(0)
 
     @Slot(bytes)
     def on_screenshot_ready(self, image_data: bytes) -> None:
@@ -919,7 +875,7 @@ class CardUI(QMainWindow):
         Args:
             image_data: JPEG 编码的游戏窗口截图。
         """
-        if not settings.SHOW_CURRENT_SCREENSHOT:
+        if self._closing or not self._preview_requested or not settings.SHOW_CURRENT_SCREENSHOT:
             return
         self._show_screenshot_preview()
         if self._screenshot_preview is not None:
@@ -974,6 +930,8 @@ class CardUI(QMainWindow):
         Args:
             message: 错误详情。
         """
+        self._preview_requested = settings.SHOW_CURRENT_SCREENSHOT
+        self._apply_screenshot_preview_visibility()
         self._refresh_open_settings()
         QMessageBox.warning(self._settings_dialog or self, "设置未生效", message)
 
@@ -986,16 +944,16 @@ class CardUI(QMainWindow):
         """
         self._busy = False
         self.btn_retry.setVisible(state == "failed")
+        self._status_error = ""
+        self._layout_status = ""
         if state == "ready":
-            self.statusBar().clearMessage()
-            self.statusBar().setToolTip("")
             self._apply_timing_visibility()
             self._start_timer_if_allowed()
         else:
             self.timer.stop()
             labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
-            self.statusBar().showMessage(labels.get(state, state))
             self.setWindowTitle("Han记牌器  ·  " + labels.get(state, state))
+        self._refresh_status_bar()
 
     @Slot()
     def on_restart_clicked(self) -> None:
@@ -1005,55 +963,27 @@ class CardUI(QMainWindow):
         self.worker.restart()
 
     def _update_played_cards_visibility(self) -> None:
-        """
-        根据设置更新玩家所出的牌的可见性
-        """
-        visible = self._show_played_cards
+        """保留出牌标签的布局归属，仅切换可见性。"""
+        if self.second_row_layout.parent() is None:
+            self.root_layout.addLayout(self.second_row_layout)
+        for label in self.played_cards_labels.values():
+            if self.second_row_layout.indexOf(label) < 0:
+                self.second_row_layout.addWidget(label)
+            label.setVisible(self._show_played_cards)
+        self._fit_main_window()
 
-        if visible:
-            # 检查second_row_layout是否已经在root_layout中
-            if self.second_row_layout.parent() is None:
-                self.root_layout.addLayout(self.second_row_layout)
-
-            for key, lbl in self.played_cards_labels.items():
-                if lbl.parent() is None:
-                    self.second_row_layout.addWidget(lbl)
-                lbl.setVisible(True)
-                lbl.setMaximumHeight(16777215)
-                lbl.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Preferred)
-        else:
-            # 隐藏并从布局移除标签（不要 setParent(None)，否则控件会脱离父窗口并可能无法恢复）
-            for key, lbl in self.played_cards_labels.items():
-                try:
-                    self.second_row_layout.removeWidget(lbl)
-                except Exception:
-                    pass
-                lbl.setVisible(False)
-            # 不要移除 second_row_layout 的父关系，保留布局对象以便再次添加时能稳定工作
-
-        # 强制窗口调整大小
-        self.adjustSize()
-
-        # 强制更新窗口几何形状
+    def _fit_main_window(self) -> None:
+        """按整个主窗口计算所需高度，包括状态栏，保留用户调整的宽度。"""
         self.central_widget.updateGeometry()
-        self.root_layout.update()
-
-        # 使用更强制的方法调整窗口大小
-        size_hint = self.central_widget.sizeHint()
-
-        # 调整为合适大小（不要使用 setFixedSize，会导致后续更改窗口标志或重绘时出现空白）
-        # 使用 resize 让窗口适应内容同时保持可调整
-        # 保证不会变得比最小尺寸还小，避免窗口内容被压扁成空白
-        new_w = max(size_hint.width(), 550)
-        new_h = max(size_hint.height(), 100)
-        self.resize(new_w, new_h)
-        # 保持合适的最小尺寸限制
-        self.setMinimumSize(550, 100)
-        self.setMaximumSize(16777215, 16777215)
-
-
-
-
+        self.root_layout.invalidate()
+        self.root_layout.activate()
+        layout = self.layout()
+        if layout is not None:
+            layout.invalidate()
+            layout.activate()
+        minimum = self.minimumSizeHint()
+        self.setMinimumSize(max(550, minimum.width()), max(100, minimum.height()))
+        self.resize(max(self.width(), self.minimumWidth()), max(100, self.sizeHint().height()))
 
     @Slot(str)
     def on_worker_error(self, err_text: str) -> None:
@@ -1064,7 +994,8 @@ class CardUI(QMainWindow):
         """
         print("Worker error:\n", err_text)
         message = err_text.strip().splitlines()[-1] if err_text.strip() else "识别失败"
-        self.statusBar().showMessage(message)
+        self._status_error = message
+        self._refresh_status_bar()
         self.statusBar().setToolTip(err_text)
 
     @Slot()
@@ -1075,12 +1006,15 @@ class CardUI(QMainWindow):
         """
         self._busy = False
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
         """
         窗口关闭时清理：
         - 停止 timer
         - 停止子进程
         """
+        self._closing = True
+        if self._screenshot_preview is not None:
+            self._screenshot_preview.hide()
         self.timer.stop()
         if hasattr(self, 'worker'):
             self.worker.stop()

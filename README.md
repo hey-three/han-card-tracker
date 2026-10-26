@@ -108,15 +108,16 @@ python main.py
 - 设备选择（CPU / GPU）
 - 窗口置顶
 - 显示出牌记录
-- 调试模式（终端日志）
+- 显示布局状态提示（关闭后收起底部提示，故障仍会显示）
 
 **高级设置：**
+- 输出调试日志（终端输出每帧各牌区的识别结果）
 - YOLO 模型选择
 - 置信度阈值
 - 检测间隔（0.1 秒 ~ 0.5 秒）
 - 重置时间（1.0 秒 ~ 5.0 秒）
 - 帧长度（1~6 帧）
-- 保存游戏图片
+- 保存游戏截图（原始截图和 YOLO 标注图）
 - 实时显示当前截图
 - 显示耗时（标题栏推理/整轮耗时）
 
@@ -135,9 +136,10 @@ python main.py
 | `yolo_iou_threshold` | YOLO IOU 阈值 | 0.45 |
 | `always_on_top` | 窗口置顶 | true |
 | `show_played_cards` | 显示出牌记录 | true |
-| `debug_mode` | 调试模式（终端日志输出） | false |
-| `save_debug_images` | 保存游戏图片 | false |
+| `debug_mode` | 输出调试日志 | false |
+| `save_debug_images` | 保存游戏截图和 YOLO 标注图 | false |
 | `show_current_screenshot` | 独立窗口实时显示当前捕获的游戏截图 | false |
+| `show_layout_status` | 显示底部布局状态提示，不影响故障提示 | true |
 | `show_timing` | 标题栏显示耗时 | true |
 | `little_joker_shown` | 小王显示字符（出牌记录） | 🃟 |
 | `big_joker_shown` | 大王显示字符（出牌记录） | 🃏 |
@@ -155,6 +157,7 @@ python main.py
 - 最多保留最近 `3` 局；新局创建时自动清理更旧目录
 - `debug_mode` 仅控制终端日志输出，与图片保存分开控制
 - `show_current_screenshot` 独立控制当前截图预览；开启后在独立窗口查看实时采集画面，不依赖调试日志或图片保存开关
+- 预览窗口初始宽度与记牌器主窗口一致，图像按比例缩放。点叉或 Esc 会关闭实时预览，并将设置保存为“否”；从高级设置可重新开启。直接退出记牌器则保留当前显示偏好。
 
 ### 自定义窗口布局
 

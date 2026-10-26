@@ -2,7 +2,7 @@
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QResizeEvent, QPixmap
-from PySide6.QtWidgets import QDialog, QLabel, QVBoxLayout
+from PySide6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ScreenshotPreviewLabel(QLabel):
@@ -14,6 +14,7 @@ class ScreenshotPreviewLabel(QLabel):
         self._source_pixmap = QPixmap()
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(320, 180)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setText("等待截图…")
 
     def set_image(self, image_data: bytes) -> None:
@@ -23,7 +24,8 @@ class ScreenshotPreviewLabel(QLabel):
             image_data: 推理进程传来的 JPEG 编码截图。
         """
         pixmap = QPixmap()
-        if not pixmap.loadFromData(image_data, "JPEG"):
+        if not pixmap.loadFromData(image_data):
+            self._source_pixmap = QPixmap()
             self.setText("截图读取失败")
             return
         self._source_pixmap = pixmap
@@ -46,7 +48,7 @@ class ScreenshotPreviewLabel(QLabel):
 class ScreenshotPreviewDialog(QDialog):
     """持续展示记牌器当前采集到的游戏窗口截图。"""
 
-    def __init__(self, parent: QDialog | None = None) -> None:
+    def __init__(self, parent: QWidget | None = None) -> None:
         """创建可调整大小的截图预览窗口。
 
         Args:
@@ -54,7 +56,8 @@ class ScreenshotPreviewDialog(QDialog):
         """
         super().__init__(parent)
         self.setWindowTitle("当前截图预览")
-        self.resize(800, 500)
+        width = parent.width() if parent is not None else 550
+        self.resize(width, round(width * 9 / 16) + 22)
         self.image_label = ScreenshotPreviewLabel(self)
         layout = QVBoxLayout(self)
         layout.addWidget(self.image_label)

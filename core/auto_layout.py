@@ -478,7 +478,7 @@ class AutoLayoutAnalyzer:
         if len(bottom_cards) == 3 and CardGroup(bottom_cards).signature == self._bottom.signature:
             regions["landlord_cards"] = bottom_cards
         remaining = [c for c in cards if c not in hand_cards and c not in bottom_cards]
-        groups = merge_rows(group_rows(remaining), self._compatible_rows)
+        groups = merge_rows(group_rows(remaining), lambda first, second: self._compatible_rows(first, second, required))
         assignments: dict[str, CardGroup] = {}
         ambiguous = False
         for group in groups:
@@ -543,19 +543,75 @@ class AutoLayoutAnalyzer:
             self._evidence_ttl = required + 2
         self._previous_hand = current
 
-    def _compatible_rows(self, first: CardGroup, second: CardGroup) -> bool:
-        """阻止两个已有明确不同归属的行被合并。
+    def _compatible_rows(self, first: CardGroup, second: CardGroup, required: int = 3) -> bool:
+        """用整手换行证据修正位置先验，同时保护独立本家出牌。
 
         Args:
             first: 第一行片段。
             second: 第二行片段。
+            required: 独立出牌历史的稳定帧阈值。
 
         Returns:
-            两行没有明确的玩家归属冲突时为 True。
+            可以作为同一手牌的两行时为 True。
         """
         first_scores = sorted((self._cost(first, role), role) for role in PLAY_REGIONS)
         second_scores = sorted((self._cost(second, role), role) for role in PLAY_REGIONS)
+        # 本家手牌减少或此前单独稳定出现的整手牌，比单行位置评分更可靠。
+        for group, other_scores in ((first, second_scores), (second, first_scores)):
+            if (self._independent_self_play(group, required)
+                    and other_scores[0][1] != "player_played" and other_scores[0][0] <= 2.4
+                    and other_scores[1][0] - other_scores[0][0] >= .45):
+                return False
         different = first_scores[0][1] != second_scores[0][1]
         confident = (first_scores[1][0] - first_scores[0][0] >= .45
                      and second_scores[1][0] - second_scores[0][0] >= .45)
-        return not (different and confident)
+        if not (different and confident):
+            return True
+        # 短末行的右边缘和中心与整手牌不同，不能以其独立评分否定换行。
+        return self._aligned_continuation(first, second)
+
+    def _independent_self_play(self, group: CardGroup, required: int) -> bool:
+        """判断某一行是否有独立本家出牌证据，避免吞并相邻玩家。
+
+        Args:
+            group: 待合并的单行。
+            required: 独立历史所需连续帧数。
+
+        Returns:
+            牌面匹配近期手牌减少，或与此前稳定的本家整手出牌相同时为 True。
+        """
+        if group.signature == self._self_evidence:
+            return True
+        previous = self._last_visible.get("player_played")
+        candidate = self._play_candidates.get("player_played")
+        return (previous is not None and candidate is not None and candidate[1] >= required
+                and previous.signature == group.signature
+                and max(abs(a - b) for a, b in zip(previous.bounds, group.bounds)) <= .025)
+
+    @staticmethod
+    def _aligned_continuation(first: CardGroup, second: CardGroup) -> bool:
+        """检查短末行的对齐、牌框尺度和列间距，不使用玩家位置先验。
+
+        Args:
+            first: 已通过相邻行距离和横向重叠检查的行片段。
+            second: 另一行片段。
+
+        Returns:
+            下行未超出上行、同侧对齐且牌列位置对应时为 True。
+        """
+        upper, lower = sorted((first, second), key=lambda group: group.bounds[1])
+        if len(upper.cards) < 2 or len(lower.cards) > len(upper.cards):
+            return False
+        widths = [median(c.bbox[2] - c.bbox[0] for c in group.cards) for group in (upper, lower)]
+        if min(widths) / max(widths) < .65 or min(upper.height, lower.height) / max(upper.height, lower.height) < .65:
+            return False
+        tolerance = .55 * min(widths)
+        left, _, right, _ = upper.bounds
+        lower_left, _, lower_right, _ = lower.bounds
+        contained = lower_left >= left - tolerance and lower_right <= right + tolerance
+        edge_aligned = min(abs(lower_left - left), abs(lower_right - right)) <= tolerance
+        column_aligned = all(
+            min(abs(card.bbox[0] - other.bbox[0]) for other in upper.cards) <= tolerance
+            for card in lower.cards
+        )
+        return contained and edge_aligned and column_aligned
