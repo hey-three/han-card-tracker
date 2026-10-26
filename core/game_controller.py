@@ -38,6 +38,8 @@ class GameController:
         layout_analyzer: 手动空间分析或自动牌组归属实例。
         tracker: 当前 Tracker 子类实例。
         debug_manager: 调试图片管理器实例（由 GameController 统一管理）。
+        last_screenshot_jpeg: 预览启用时最近一帧的 JPEG 截图。
+        last_screenshot_regions: 自动布局当前确认的牌区整体边界。
     """
 
     def __init__(self, game_name: str, layout_name: str | None = None) -> None:
@@ -73,6 +75,7 @@ class GameController:
         self.screen_capture: ScreenCapture = ScreenCapture(window_title)
         self.tracker: BaseCardTracker = create_tracker(game_name, layout_name, self.debug_manager)
         self.last_screenshot_jpeg: bytes | None = None
+        self.last_screenshot_regions: dict[str, tuple[float, float, float, float]] = {}
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行一次完整检测：截图→识别→解析排版→映射→状态更新→格式化输出。
@@ -90,6 +93,7 @@ class GameController:
         """
         img = self.screen_capture.capture_window()
         self.last_screenshot_jpeg = None
+        self.last_screenshot_regions = {}
         if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
             image_buffer = BytesIO()
             img.convert("RGB").save(image_buffer, format="JPEG", quality=75)
@@ -105,6 +109,17 @@ class GameController:
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
             size = img.size if img else (0, 0)
             observation = self.layout_analyzer.observe(read_yolo_boxes(raw_result, size), size, settings.FRAME_LENGTH)
+            if settings.SHOW_CURRENT_SCREENSHOT:
+                self.last_screenshot_regions = {
+                    key: (
+                        min(card.bbox[0] for card in cards),
+                        min(card.bbox[1] for card in cards),
+                        max(card.bbox[2] for card in cards),
+                        max(card.bbox[3] for card in cards),
+                    )
+                    for key, cards in observation.regions.items()
+                    if cards
+                }
             if observation.reset_required:
                 self.tracker.reset()
             region_boxes = observation.as_boxes()
@@ -115,6 +130,11 @@ class GameController:
                 self.tracker.initialize_from_layout(self.tracker.translate_boxes_to_cards(region_boxes))
         else:
             region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
+            if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
+                self.last_screenshot_regions = {
+                    key: cast(tuple[float, float, float, float], tuple(bounds))
+                    for key, bounds in self.layout_config["layout"].items()
+                }
         
         # 业务逻辑映射（将 YOLO 标签转换为游戏牌点名称）
         # 输入：{区域名: [{"bbox": ..., "name": "three"}, ...]}  （YOLO 原始标签）

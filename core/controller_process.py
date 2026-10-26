@@ -54,6 +54,7 @@ def run_controller_loop(
                     deepcopy(remain), deepcopy(zones), elapsed,
                     layout_status=controller.layout_status,
                     screenshot_jpeg=controller.last_screenshot_jpeg,
+                    screenshot_regions=deepcopy(controller.last_screenshot_regions),
                 )
             else:
                 controller.execute_command(command.name, command.payload)

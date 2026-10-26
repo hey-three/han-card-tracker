@@ -50,7 +50,7 @@
 - `switch_layout` 携带 `{"name": 布局名, "config": 完整布局}`，含窗口标题和全部区域坐标；不能只传名称。
 - `switch_model` / `switch_device` / `switch_game` 携带名称；`update_settings` 携带受白名单限制的属性字典。
 - 回执为 `Response`：`ready` 为启动成功，`fatal` 为启动失败，`ok` / `error` 为指定请求的执行结果。
-- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；实时截图预览启用时还包含 `screenshot_jpeg`；控制命令也必须回执。
+- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；实时截图预览启用时还包含 `screenshot_jpeg` 与自动布局确认的 `screenshot_regions`；控制命令也必须回执。
 - `finished` 仅用于检测结束或进程故障，不用设置命令的回执解锁其他检测请求。
 - 回传的牌数和出牌记录在入队前复制，避免队列延迟序列化时被后续命令修改。
 
@@ -237,7 +237,7 @@ python main.py
 - 单局最多 `1000` 张；达到上限后该局后续帧不保存，并且仅打印一次提示
 - 全局只保留最近 `3` 局；新局创建后会清理更旧目录
 - **保存图片与调试模式分开控制**：`SAVE_DEBUG_IMAGES` 控制是否保存游戏图片，`DEBUG_MODE` 仅控制终端日志输出
-- `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图并随检测回执发送到主进程预览窗口，关闭时不传截图数据
+- `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图，并将自动布局当前确认的各牌组整体边界随检测回执发送，主进程叠加绘制区域框与名称；校准或归属不确定的区域不画框，关闭时不传截图数据
 - “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示截图”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
 - `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
 - 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例

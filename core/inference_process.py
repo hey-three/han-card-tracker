@@ -25,7 +25,7 @@ class InferenceWorker(QObject):
         state_changed: stopped/starting/ready/failed 生命周期状态。
         command_completed: 请求编号、命令名、成功标志和错误说明。
         layout_status_changed: 当前代次的自动布局进度或歧义说明。
-        screenshot_ready: 当前截图 JPEG 数据。
+        screenshot_ready: 当前截图 JPEG 数据及自动布局返回的区域边界。
         state: 当前生命周期状态。
     """
 
@@ -35,7 +35,7 @@ class InferenceWorker(QObject):
     state_changed = Signal(str)
     command_completed = Signal(int, str, bool, str)
     layout_status_changed = Signal(str)
-    screenshot_ready = Signal(bytes)
+    screenshot_ready = Signal(bytes, dict)
 
     def __init__(self, layout_name: str, game_name: str = "doudizhu", parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
@@ -295,7 +295,9 @@ class InferenceWorker(QObject):
                     if response.status == "ok":
                         self.layout_status_changed.emit(response.layout_status)
                         if response.screenshot_jpeg is not None:
-                            self.screenshot_ready.emit(response.screenshot_jpeg)
+                            self.screenshot_ready.emit(
+                                response.screenshot_jpeg, response.screenshot_regions or {},
+                            )
                         self.result_ready.emit(response.remain_cards or {}, response.zone_cards or {}, response.yolo_ms)
                     else:
                         self.error.emit(response.error)
