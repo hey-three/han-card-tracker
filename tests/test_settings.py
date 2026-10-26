@@ -65,6 +65,20 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(value=value), self.assertRaises(error):
                 settings.save_setting("frame_length", value)
 
+    def test_auto_layout_saves_without_any_region_coordinates(self) -> None:
+        """自动模式仅保存窗口标题，进程快照仍能完整校验。"""
+        settings.save_window_layout("Auto", "Game", {}, mode="auto")
+        saved = read_config(str(self.path))["window_layouts"]["Auto"]
+        self.assertEqual(saved, {"window_title": "Game", "layout": {}, "mode": "auto"})
+        settings.apply_runtime_settings(settings.runtime_snapshot())
+        self.assertEqual(settings.WINDOW_LAYOUTS["Auto"], saved)
+
+    def test_layout_mode_is_validated(self) -> None:
+        """自动模式不放松手动模式校验，且拒绝未知模式。"""
+        for mode, error in (("other", ValueError), (True, TypeError), ("manual", ValueError)):
+            with self.subTest(mode=mode), self.assertRaises(error):
+                settings.validate_layout({"window_title": "Game", "layout": {}, "mode": mode})
+
     def test_runtime_update_validates_whole_batch(self) -> None:
         """后续字段无效时不发布前面的有效修改。"""
         previous = settings.FRAME_LENGTH

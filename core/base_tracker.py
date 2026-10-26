@@ -10,6 +10,8 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Mapping, Sequence
+from typing import cast
 from abc import ABC, abstractmethod
 
 import config.settings as settings
@@ -73,7 +75,9 @@ class BaseCardTracker(ABC):
             z["key"]: False for z in settings.PLAYED_ZONES
         }
 
-    def translate_boxes_to_cards(self, region_boxes: dict[str, list[dict]]) -> dict[str, list[str]]:
+    def translate_boxes_to_cards(
+        self, region_boxes: Mapping[str, Sequence[Mapping[str, object]]],
+    ) -> dict[str, list[str]]:
         """将物理坐标框里的 YOLO 标签转换为游戏业务里的牌点名称。
 
         Args:
@@ -85,7 +89,7 @@ class BaseCardTracker(ABC):
         frame_data: dict[str, list[str]] = {}
         for region_key, dets in region_boxes.items():
             frame_data[region_key] = [
-                settings.YOLO_TO_CARD_MAPPING[d["name"]] for d in dets
+                settings.YOLO_TO_CARD_MAPPING[cast(str, d["name"])] for d in dets
             ]
         return frame_data
 
@@ -97,23 +101,37 @@ class BaseCardTracker(ABC):
         self.has_found_empty = {z["key"]: False for z in settings.PLAYED_ZONES}
         self.remain_cards = settings.TOTAL_CARDS.copy()
 
-    def _presses_one_frame(self, frame_data: dict[str, list[str]], yolo_ms: float) -> None:
+    def _presses_one_frame(
+        self, frame_data: dict[str, list[str]], yolo_ms: float,
+        known_regions: set[str] | None = None,
+    ) -> bool:
         """处理一帧检测结果，更新帧缓存。
 
-        以 ``_get_validity_region()`` 返回的区域是否为空作为本帧有效性门禁：
-        空则直接丢弃，不更新状态也不重置 no_target_time；
-        非空则将本帧数据追加到缓存，并重置 no_target_time。
-        缓存长度超过 FRAME_LENGTH 时丢弃最旧帧。
+        手动模式以 ``_get_validity_region()`` 返回的区域是否非空作为门禁。
+        自动模式仅收集 known_regions 中的观测，未知区域清确认缓存；
+        至少有一个已知区域非空时刷新 no_target_time 并推进状态。
+        缓存始终裁剪到最新 FRAME_LENGTH 帧。
 
         Args:
             frame_data: 各区域的牌点列表，key 为区域名。
             yolo_ms: YOLO 推理耗时（毫秒）。
+            known_regions: 自动布局明确确认的区域；None 保留手动模式底牌门禁。
+
+        Returns:
+            本帧是否可用于状态更新。未知区域清缓存，不伪造空帧。
         """
         self._last_yolo_ms = yolo_ms
 
         valid_key = self._get_validity_region()
-        if len(frame_data.get(valid_key, [])) == 0:
-            return
+        if known_regions is None:
+            if len(frame_data.get(valid_key, [])) == 0:
+                return False
+        else:
+            for key in self.frame_caches:
+                if key not in known_regions:
+                    self.frame_caches[key].clear()
+            if not any(frame_data.get(key) for key in known_regions):
+                return False
 
         self.no_target_time = time.time()
 
@@ -123,10 +141,13 @@ class BaseCardTracker(ABC):
                 print(f"{key}: {val}")
 
         for key in self.frame_caches:
+            if known_regions is not None and key not in known_regions:
+                continue
             cache = self.frame_caches[key]
             cache.append(frame_data.get(key, []))
             # 阈值调小时一次移除全部超额旧帧，而非只移除一帧。
             del cache[:-settings.FRAME_LENGTH]
+        return True
 
     @abstractmethod
     def _get_validity_region(self) -> str:
@@ -226,7 +247,10 @@ class BaseCardTracker(ABC):
                     self.has_found_empty[key] = True
                 self.process_played_cards(key, current)
 
-    def run_game(self, frame_data: dict[str, list[str]], yolo_ms: float) -> None:
+    def run_game(
+        self, frame_data: dict[str, list[str]], yolo_ms: float,
+        known_regions: set[str] | None = None,
+    ) -> None:
         """驱动一帧的状态机转换和出牌记录。
 
         依次执行：接收一帧数据 → 按当前状态检查条件 → 状态转换与扣牌。
@@ -235,8 +259,10 @@ class BaseCardTracker(ABC):
         Args:
             frame_data: 各区域的牌点列表，key 为区域名。
             yolo_ms: YOLO 推理耗时（毫秒）。
+            known_regions: 自动布局已知区域，未知区域不更新也不确认出牌。
         """
-        self._presses_one_frame(frame_data, yolo_ms)
+        if not self._presses_one_frame(frame_data, yolo_ms, known_regions):
+            return
 
         if self.state == WAIT_BEGIN:
             if self.should_start_game():
@@ -251,7 +277,10 @@ class BaseCardTracker(ABC):
         if self.state == STARTED_RECORD_CARD:
             self._process_all_played_zones()
 
-    def get_cards_number(self, frame_data: dict[str, list[str]], yolo_ms: float) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
+    def get_cards_number(
+        self, frame_data: dict[str, list[str]], yolo_ms: float,
+        known_regions: set[str] | None = None,
+    ) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """接收一帧检测结果并返回当前牌局数据。
 
         超过 RESET_TIME 未检测到有效目标时自动重置。
@@ -259,6 +288,7 @@ class BaseCardTracker(ABC):
         Args:
             frame_data: 各区域的牌点列表，key 为区域名。
             yolo_ms: YOLO 推理耗时（毫秒）。
+            known_regions: 自动布局已确认的区域；None 使用原手动布局规则。
 
         Returns:
             tuple: 包含三个元素：
@@ -266,7 +296,7 @@ class BaseCardTracker(ABC):
                 - show_cards (dict[str, list[list[str]]]): 各出牌区域的出牌记录。
                 - _last_yolo_ms (float): 最近一次 YOLO 推理耗时（毫秒）。
         """
-        self.run_game(frame_data, yolo_ms)
+        self.run_game(frame_data, yolo_ms, known_regions)
         tme = time.time()
         if tme - self.no_target_time > settings.RESET_TIME:
             self.reset()

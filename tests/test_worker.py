@@ -98,6 +98,19 @@ class WorkerTests(unittest.TestCase):
         self.assertEqual(self.worker.state, "failed")
         self.finished.assert_called_once()
 
+    def test_auto_layout_status_is_delivered_with_current_result(self) -> None:
+        """自动定位进度沿结果协议回传，旧代次提示不得覆盖当前状态。"""
+        status = Mock()
+        self.worker.layout_status_changed.connect(status)
+        self.worker.request_detect()
+        command = self.worker._cmd_queue.get_nowait()
+        self.worker._result_queue.put(Response(
+            "ok", command.request_id, command.generation, {}, {}, layout_status="自动布局：正在确认开局",
+        ))
+        self.worker._poll_result()
+        status.assert_called_once_with("自动布局：正在确认开局")
+        self.finished.assert_called_once()
+
     def test_settings_are_saved_only_after_success(self) -> None:
         """保存、UI 刷新都等待对应控制命令成功。"""
         coordinator = SettingsController(self.worker)

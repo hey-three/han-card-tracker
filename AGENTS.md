@@ -50,7 +50,7 @@
 - `switch_layout` 携带 `{"name": 布局名, "config": 完整布局}`，含窗口标题和全部区域坐标；不能只传名称。
 - `switch_model` / `switch_device` / `switch_game` 携带名称；`update_settings` 携带受白名单限制的属性字典。
 - 回执为 `Response`：`ready` 为启动成功，`fatal` 为启动失败，`ok` / `error` 为指定请求的执行结果。
-- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；控制命令也必须回执。
+- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；实时截图预览启用时还包含 `screenshot_jpeg`；控制命令也必须回执。
 - `finished` 仅用于检测结束或进程故障，不用设置命令的回执解锁其他检测请求。
 - 回传的牌数和出牌记录在入队前复制，避免队列延迟序列化时被后续命令修改。
 
@@ -69,6 +69,11 @@
 - 分区依据检测框中心点是否落在 `window_layouts[*].layout` 区域内；区域坐标为归一化（0~1）
 - 区域键名从游戏配置的 `layout_regions` 动态获取
 - 排序不是置信度顺序：`LayoutAnalyzer.sort_cards_by_topright_rowwise()` 先按行（top-y 聚类）再按列（right-x 排序），避免出牌串顺序错乱
+- 自动布局 `mode: auto` 时，第 3 步改为 `core/auto_layout.py` 的 `read_yolo_boxes()` + `AutoLayoutAnalyzer.observe()`；只需窗口标题和空 `layout: {}`，不使用手工矩形。旧配置缺省 `mode: manual`，完全保留手动方式。
+- 自动模式按行组成牌组、合并相邻行，再对完整牌组确定归属；左右家使用对应边缘、本家使用中心和第一行顶边锚点，支持单张、长牌组和两行出牌。多重集排序避免同牌换行重复扣减。
+- 校准需要无出牌的完整 17/20 张手牌和三张底牌，连续 `max(3, FRAME_LENGTH)` 帧稳定；`DoudizhuTracker.initialize_from_layout()` 只发布一次初始扣牌。当前支持本家在下、两家在左右的常见界面，不宣称覆盖所有软件。
+- `LayoutObservation.regions` 缺失键代表未知，有键空列表才表示空区。自动模式传入 `known_regions`，未知区域清确认缓存但保留出牌/空帧历史；不得把未知补成空列表。校准后底牌隐藏可继续跟踪。
+- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。重置、模型切换、长宽比显著变化或超时会清除自动布局参照。详见 `docs/自动布局设计说明.md`。
 
 ### 游戏边界与现有分层
 
@@ -95,6 +100,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 - `BaseCardTracker._presses_one_frame()` 以 `_get_validity_region()` 返回的区域是否为空作为"本帧是否有效"的门禁
 - 空则直接丢弃，不更新状态也不重置 `no_target_time`
 - 子类实现 `_get_validity_region()` 指定判断区域（斗地主用 `"landlord_cards"`）
+- 上述门禁适用于手动模式。自动模式显式提供 `known_regions`，只更新已确认区域；全帧无可靠目标不推进状态机。
 
 ### 连续帧确认
 
@@ -194,6 +200,8 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### 可视化布局编辑（推荐）
 
+“设置 → 基本设置 → 自动布局…”可选择目标窗口，无需框选；选择后等待后端成功回执再保存一个 `mode: auto` 布局。关闭设置后开始校准，请在开局前启用。自动生成的参照不写入 YAML，重新启动/重置时重新学习。切到“可视化编辑”时为自动模式创建新的手动布局，不覆盖自动配置。
+
 在主界面"设置"→"基本设置"页中点击"可视化编辑"，打开 `LayoutEditorDialog`：
 
 1. 选择目标窗口标题
@@ -225,6 +233,7 @@ python main.py
 - 单局最多 `1000` 张；达到上限后该局后续帧不保存，并且仅打印一次提示
 - 全局只保留最近 `3` 局；新局创建后会清理更旧目录
 - **保存图片与调试模式分开控制**：`SAVE_DEBUG_IMAGES` 控制是否保存游戏图片，`DEBUG_MODE` 仅控制终端日志输出
+- `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图并随检测回执发送到主进程预览窗口，关闭时不传截图数据
 - `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
 - 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例
 - 启动时执行 `ImageSaver.bootstrap_static(BASE_DIR, SAVE_DEBUG_IMAGES)` 初始化目录
