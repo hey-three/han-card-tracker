@@ -71,6 +71,7 @@
 - 排序不是置信度顺序：`LayoutAnalyzer.sort_cards_by_topright_rowwise()` 先按行（top-y 聚类）再按列（right-x 排序），避免出牌串顺序错乱
 - 自动布局 `mode: auto` 时，第 3 步改为 `core/auto_layout.py` 的 `read_yolo_boxes()` + `AutoLayoutAnalyzer.observe()`；只需窗口标题和空 `layout: {}`，不使用手工矩形。旧配置缺省 `mode: manual`，完全保留手动方式。
 - 自动模式按行组成牌组、合并相邻行，再对完整牌组确定归属；左右家使用对应边缘、本家使用中心和第一行顶边锚点，支持单张、长牌组和两行出牌。多重集排序避免同牌换行重复扣减。
+- 短末行不能因初始位置评分落在本家就被拆走：相邻行同侧、同列对齐且牌框尺度一致时，先合并再按完整牌组归属；近期手牌减少或此前单独稳定的本家出牌可阻止误合并。实测框回归位于 `tests/fixtures/right_wrapped_play.json` 与 `tests/test_wrapped_ownership.py`。
 - 校准需要无出牌的完整 17/20 张手牌和三张底牌，连续 `max(3, FRAME_LENGTH)` 帧稳定；`DoudizhuTracker.initialize_from_layout()` 只发布一次初始扣牌。当前支持本家在下、两家在左右的常见界面，不宣称覆盖所有软件。
 - `LayoutObservation.regions` 缺失键代表未知，有键空列表才表示空区。自动模式传入 `known_regions`，未知区域清确认缓存但保留出牌/空帧历史；不得把未知补成空列表。校准后底牌隐藏可继续跟踪。
 - 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。重置、模型切换、长宽比显著变化或超时会清除自动布局参照。详见 `docs/自动布局设计说明.md`。
@@ -151,6 +152,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 - `config/store.py` 统一使用同目录唯一临时文件 + `os.replace` 原子保存；保存成功后才更新主进程内存。
 - 已有 YAML 损坏或读取失败时必须报错，不得以空字典覆盖；保存失败向调用者传播，编辑器不能误报成功。
 - `SettingsController` 等待后端成功回执后保存设置并刷新 UI；后端切换失败保留旧配置和组件。后端已成功但保存失败时停止检测，提示用户检查后重启。
+- 实时预览属于主界面偏好：先保存 `show_current_screenshot` 并更新窗口，再同步子进程的截图传输开关；因此关闭预览后，即使进程故障或立即退出，也不会丢失关闭选择。
 - 服务故障时允许在设置界面修正持久化配置，点击“重启识别”后由新进程使用最新快照。
 - 可视化编辑先保存布局内容（不切换 current_layout）；主窗口在布局切换确认后保存当前布局名。
 - 删除当前布局时先等待替代布局切换成功，再删除持久化记录；切换失败保留原布局。
@@ -187,12 +189,14 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### 窗口置顶
 
-- 调整窗口置顶使用 `setWindowFlag` 后，会调用 `_ensure_widgets_attached()` 修复可能丢失的控件挂载
+- 调整窗口置顶仅在标志变化时调用 `setWindowFlag`，保留窗口几何和可见性，不重复 `adjustSize()`；截图不改变置顶标志。
+- 主窗口按整个 `QMainWindow` 的布局计算最小高度，包含状态栏；出牌标签始终保留布局归属，仅切换可见性，避免反复开关后丢失标签。
+- `show_layout_status`（默认 true）在“基本设置 → 显示布局状态提示”控制底部正常布局提示；隐藏时收起状态栏，故障信息及恢复按钮始终可见。
 - 设置对话框打开期间暂停定时器，关闭后调用 `_touch_no_target_time()` 防止立即超时重置
 
 ### 出牌记录显示
 
-- 由 `_show_played_cards` 控制，通过 `_update_played_cards_visibility()` 动态挂载/隐藏布局
+- 由 `_show_played_cards` 控制，通过 `_update_played_cards_visibility()` 切换标签可见性，不从布局移除标签
 - 出牌区域标签从游戏配置的 `played_zones` 动态生成
 - `played_cards_labels` 为 `dict[str, QLabel]`，key 为区域键名
 
@@ -210,7 +214,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 4. 点击"预览校验"确认区域标注正确
 5. "保存"写入 `config.yaml`
 
-截图时窗口下沉/恢复通过 `_send_app_windows_to_bottom()` / `_restore_app_windows_after_capture()` 保证资源安全释放。
+截图时窗口下沉/恢复通过 `_send_app_windows_to_bottom()` / `_restore_app_windows_after_capture()` 完成；位置和客户区尺寸统一使用 Qt 逻辑坐标，不混用 Windows 原生像素或边框尺寸。截图期间防止重复进入，失败也恢复窗口。画布及预览的延迟刷新使用随窗口销毁的子定时器。
 
 设置页面提供 ↻ 刷新按钮手动刷新布局列表，支持在布局下拉项中直接删除布局。
 
@@ -234,6 +238,7 @@ python main.py
 - 全局只保留最近 `3` 局；新局创建后会清理更旧目录
 - **保存图片与调试模式分开控制**：`SAVE_DEBUG_IMAGES` 控制是否保存游戏图片，`DEBUG_MODE` 仅控制终端日志输出
 - `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图并随检测回执发送到主进程预览窗口，关闭时不传截图数据
+- “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示截图”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
 - `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
 - 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例
 - 启动时执行 `ImageSaver.bootstrap_static(BASE_DIR, SAVE_DEBUG_IMAGES)` 初始化目录
@@ -245,6 +250,8 @@ python main.py
 - 标题栏显示格式：`Han记牌器  ·  推理 XXms  ·  整轮 XXms`，由 `SHOW_TIMING` 配置项控制是否显示
 
 ## 9) 环境与集成边界
+
+- `.vscode/` 与 `games_images/` 是本地目录，由 `.gitignore` 排除，不加入 Git 提交；取消跟踪时仅移除索引，保留本地文件。
 
 - 当前实现依赖 Windows 截图链路（`win32gui/win32ui/win32con` + DPI Aware），默认是 Windows 场景
 - YOLO 推理在独立子进程中运行（`multiprocessing`），主进程（UI）与子进程不共享 GIL；`main.py` 必须调用 `multiprocessing.freeze_support()` 以支持 PyInstaller 打包

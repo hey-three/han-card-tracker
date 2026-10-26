@@ -4,8 +4,8 @@ from PIL import Image
 from typing import Dict, Optional, Tuple
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QTimer, Qt, Signal
-from PySide6.QtGui import QMouseEvent, QPainter, QPen, QPixmap
+from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtGui import QCloseEvent, QMouseEvent, QPainter, QPen, QPixmap, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
     QApplication,
     QWidget,
@@ -226,6 +226,9 @@ class PreviewDialog(QDialog):
         """
         super().__init__(parent)
         self._source_pixmap = pixmap
+        self._preview_timer = QTimer(self)
+        self._preview_timer.setSingleShot(True)
+        self._preview_timer.timeout.connect(self._update_scaled_preview)
         self.setWindowTitle("截图预览校验")
         self.resize(1000, 700)
 
@@ -251,13 +254,15 @@ class PreviewDialog(QDialog):
 
         self._update_scaled_preview()
 
-    def resizeEvent(self, event):
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """窗口大小变化后刷新预览缩放。"""
         super().resizeEvent(event)
         self._update_scaled_preview()
 
-    def showEvent(self, event):
+    def showEvent(self, event: QShowEvent) -> None:
+        """显示后延迟适配视口，关闭销毁窗口时自动取消任务。"""
         super().showEvent(event)
-        QTimer.singleShot(0, self._update_scaled_preview)
+        self._preview_timer.start(0)
 
     def _update_scaled_preview(self) -> None:
         """按可用视口缩放预览图。"""
@@ -313,8 +318,12 @@ class LayoutEditorDialog(QDialog):
         self.saved_set_current = False
         self._captured_image: Image.Image | None = None
         self._lowered_windows: list[QWidget] = []
-        self._window_restore_states: list[tuple[QWidget, QRect]] = []
+        self._window_restore_states: list[tuple[QWidget, QPoint, QSize]] = []
         self._windows_pushed_back = False
+        self._capturing = False
+        self._fit_timer = QTimer(self)
+        self._fit_timer.setSingleShot(True)
+        self._fit_timer.timeout.connect(self._fit_canvas_to_viewport)
         self._on_restore_topmost = on_restore_topmost
         self._stay_on_top = stay_on_top
 
@@ -418,6 +427,8 @@ class LayoutEditorDialog(QDialog):
 
     def _send_app_windows_to_bottom(self) -> None:
         """截图前把本应用窗口临时移出屏幕，避免遮挡目标窗口。"""
+        if self._windows_pushed_back:
+            return
         app = QApplication.instance()
         if not isinstance(app, QApplication):
             return
@@ -433,34 +444,36 @@ class LayoutEditorDialog(QDialog):
 
         windows = [w for w in app.topLevelWidgets() if w is not None and w.isVisible()]
         self._lowered_windows = windows
-        self._window_restore_states = []
+        self._window_restore_states = [(w, w.pos(), w.size()) for w in windows]
 
+        self._windows_pushed_back = True
         for index, w in enumerate(windows):
             try:
-                self._window_restore_states.append((w, w.frameGeometry()))
                 self._move_window_no_activate(w, offscreen_x + index * 20, offscreen_y + index * 20)
             except Exception:
                 pass
 
         app.processEvents()
         self._wait_for_desktop_to_settle()
-        self._windows_pushed_back = True
 
-    def _restore_app_windows_after_capture(self):
+    def _restore_app_windows_after_capture(self) -> None:
         """截图后恢复本应用窗口位置。"""
         if not self._windows_pushed_back:
             return
 
         app = QApplication.instance()
-        for w, geometry in self._window_restore_states:
+        restore_states = self._window_restore_states
+        self._windows_pushed_back = False
+        self._window_restore_states = []
+        for w, position, size in restore_states:
             try:
                 if w is not None:
                     self._move_window_no_activate(
                         w,
-                        geometry.x(),
-                        geometry.y(),
-                        geometry.width(),
-                        geometry.height(),
+                        position.x(),
+                        position.y(),
+                        size.width(),
+                        size.height(),
                         resize=True,
                     )
             except Exception:
@@ -479,31 +492,23 @@ class LayoutEditorDialog(QDialog):
         self._lowered_windows = []
         self._window_restore_states = []
 
-    def _move_window_no_activate(self, widget, x: int, y: int, width: int = 0, height: int = 0, resize: bool = False):
-        if sys.platform == "win32":
-            try:
-                import ctypes
+    def _move_window_no_activate(
+        self, widget: QWidget, x: int, y: int, width: int = 0, height: int = 0,
+        resize: bool = False,
+    ) -> None:
+        """统一使用 Qt 逻辑坐标移动窗口，避免高 DPI 下混入原生像素。
 
-                flags = 0x0010 | 0x0200 | 0x0004  # SWP_NOACTIVATE | SWP_NOOWNERZORDER | SWP_NOZORDER
-                if not resize:
-                    flags |= 0x0001  # SWP_NOSIZE
-                ctypes.windll.user32.SetWindowPos(
-                    int(widget.winId()),
-                    0,
-                    int(x),
-                    int(y),
-                    int(width),
-                    int(height),
-                    flags,
-                )
-                return
-            except Exception:
-                pass
-
+        Args:
+            widget: 需要移动的窗口。
+            x: Qt 窗口位置横坐标。
+            y: Qt 窗口位置纵坐标。
+            width: 恢复时的客户区宽度，不含窗口边框。
+            height: 恢复时的客户区高度，不含窗口边框。
+            resize: 是否同时恢复客户区尺寸。
+        """
+        widget.move(x, y)
         if resize:
-            widget.setGeometry(int(x), int(y), int(width), int(height))
-        else:
-            widget.move(int(x), int(y))
+            widget.resize(width, height)
 
     def _wait_for_desktop_to_settle(self):
         app = QApplication.instance()
@@ -553,7 +558,8 @@ class LayoutEditorDialog(QDialog):
         frame.moveCenter(available.center())
         self.move(frame.topLeft())
 
-    def _fit_canvas_to_viewport(self):
+    def _fit_canvas_to_viewport(self) -> None:
+        """按当前视口缩放画布；使用随编辑器销毁的定时器调度。"""
         if self._captured_image is None:
             return
         viewport = self.canvas_scroll.viewport().size()
@@ -570,24 +576,36 @@ class LayoutEditorDialog(QDialog):
             父类事件过滤结果。
         """
         if watched is self.canvas_scroll.viewport() and event.type() == QEvent.Type.Resize:
-            QTimer.singleShot(0, self._fit_canvas_to_viewport)
+            self._fit_timer.start(0)
         return super().eventFilter(watched, event)
 
-    def closeEvent(self, event):
+    def closeEvent(self, event: QCloseEvent) -> None:
+        """关闭编辑器前恢复正在临时移动的窗口。"""
         self._restore_app_windows_after_capture()
         super().closeEvent(event)
 
-    def _capture_window(self):
+    def _capture_window(self) -> None:
+        """截图并在失败时恢复所有窗口，防止事件处理期间重复进入。"""
+        if self._capturing:
+            return
         window_title = self.combo_window_title.currentText().strip()
         if not window_title:
             QMessageBox.warning(self, "提示", "请先选择窗口标题")
             return
 
-        self._send_app_windows_to_bottom()
+        self._capturing = True
+        self.btn_capture.setEnabled(False)
         try:
+            self._send_app_windows_to_bottom()
             image = capture_window_by_title(window_title)
+        except Exception as exc:
+            self._restore_app_windows_after_capture()
+            QMessageBox.warning(self, "截图失败", str(exc))
+            return
         finally:
             self._restore_app_windows_after_capture()
+            self._capturing = False
+            self.btn_capture.setEnabled(True)
 
         if image is None:
             QMessageBox.warning(self, "提示", "截图失败，请确认窗口可见且标题正确")
@@ -596,7 +614,7 @@ class LayoutEditorDialog(QDialog):
         self._captured_image = image
         self.canvas.set_pixmap_from_pil(image)
         self._adjust_dialog_size_for_image()
-        QTimer.singleShot(0, self._fit_canvas_to_viewport)
+        self._fit_timer.start(0)
 
         # 如果布局名称已经存在，截图后自动加载该布局矩形，便于微调
         layout_name = self.edit_layout_name.text().strip()
