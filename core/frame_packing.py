@@ -8,6 +8,7 @@ from math import ceil, floor, isfinite
 from core.auto_layout import Box
 
 Rect = tuple[int, int, int, int]
+PACKED_CANVAS_SIZE = (640, 640)
 
 
 class Detection:
@@ -48,25 +49,27 @@ class Detection:
 
 
 class Tile:
-    """记录不拉伸的原图裁片。
+    """记录原图裁片及其在统一缩放画布上的位置。
 
     Attributes:
         source: Rect，原图整数矩形。
         x: int，图块在画布的横向偏移。
         y: int，图块在画布的纵向偏移。
+        render_size: tuple[int, int]，整数绘制尺寸，用于严格恢复坐标。
     """
 
-    def __init__(self, source: Rect, x: int, y: int) -> None:
+    def __init__(self, source: Rect, x: int, y: int, render_size: tuple[int, int] | None = None) -> None:
         """保存规划器生成的坐标。
 
         Args:
             source: 非空、非负整数矩形。
             x: 画布非负横向偏移。
             y: 画布非负纵向偏移。
+            render_size: 实际绘制宽高；None 保留原尺寸，固定画布使用统一比例缩放后的整数尺寸。
 
         Raises:
-            TypeError: 坐标不是整数。
-            ValueError: 矩形为空或偏移为负。
+            TypeError: 坐标或绘制尺寸不是整数。
+            ValueError: 矩形为空、偏移为负或绘制尺寸非正。
         """
         if not isinstance(source, tuple) or len(source) != 4:
             raise TypeError("图块矩形必须是四元组")
@@ -74,17 +77,52 @@ class Tile:
             raise TypeError("图块坐标必须是整数")
         if min(*source, x, y) < 0 or source[0] >= source[2] or source[1] >= source[3]:
             raise ValueError("图块坐标无效")
+        if render_size is None:
+            render_size = source[2]-source[0], source[3]-source[1]
+        if (not isinstance(render_size, tuple) or len(render_size) != 2
+                or any(type(v) is not int for v in render_size)):
+            raise TypeError("绘制尺寸必须是整数二元组")
+        if min(render_size) <= 0:
+            raise ValueError("绘制尺寸必须为正")
         self.source, self.x, self.y = source, x, y
+        self.render_size = render_size
 
     @property
     def bounds(self) -> Rect:
         """返回画布边界。
 
         Returns:
-            与原裁片等大的画布整数矩形。
+            缩放和偏移后的画布整数矩形。
+        """
+        return self.x, self.y, self.x + self.render_size[0], self.y + self.render_size[1]
+
+    def project(self, box: Box) -> Box:
+        """把原图检测框映射到当前裁片在画布上的位置，供训练标注和验证复用。
+
+        Args:
+            box: 已校验且位于 source 内的原图像素框。
+
+        Returns:
+            画布像素框；使用实际取整后的绘制尺寸，与恢复公式严格互逆。
         """
         a, b, c, d = self.source
-        return self.x, self.y, self.x + c - a, self.y + d - b
+        sx, sy = self.render_size[0]/(c-a), self.render_size[1]/(d-b)
+        return ((box[0]-a)*sx+self.x, (box[1]-b)*sy+self.y,
+                (box[2]-a)*sx+self.x, (box[3]-b)*sy+self.y)
+
+    def unproject(self, box: Box) -> Box:
+        """把当前裁片的画布框恢复为原图像素坐标。
+
+        Args:
+            box: 已确认落在该裁片内部的画布像素框。
+
+        Returns:
+            原图坐标；不会把缩放后的坐标直接当作原图坐标。
+        """
+        a, b, c, d = self.source
+        sx, sy = (c-a)/self.render_size[0], (d-b)/self.render_size[1]
+        return ((box[0]-self.x)*sx+a, (box[1]-self.y)*sy+b,
+                (box[2]-self.x)*sx+a, (box[3]-self.y)*sy+b)
 
 
 def overlap(a: Box, b: Box, *, smaller: bool = False) -> float:
@@ -116,16 +154,17 @@ class PackingPlan:
         canvas_size: tuple[int, int]，画布宽高。
     """
 
-    def __init__(self, size: tuple[int, int], tiles: Sequence[Tile]) -> None:
+    def __init__(self, size: tuple[int, int], tiles: Sequence[Tile], canvas_size: tuple[int, int] | None = None) -> None:
         """持有规划结果。
 
         Args:
             size: 原图正整数宽高。
             tiles: 非空图块序列，源矩形必须位于原图内部。
+            canvas_size: 明确的固定画布宽高；None 使用图块边界包围框。
 
         Raises:
-            TypeError: 原图尺寸或图块类型错误。
-            ValueError: 尺寸非正、图块为空或裁片越过原图边界。
+            TypeError: 原图/画布尺寸或图块类型错误。
+            ValueError: 尺寸非正、图块为空、源裁片越界或目标图块超出固定画布。
         """
         if not isinstance(size, tuple) or len(size) != 2 or any(type(v) is not int for v in size):
             raise TypeError("原图尺寸必须是整数二元组")
@@ -136,7 +175,44 @@ class PackingPlan:
         if any(t.source[2] > size[0] or t.source[3] > size[1] for t in tiles):
             raise ValueError("裁片超出原图")
         self.size, self.tiles = size, tuple(tiles)
-        self.canvas_size = (max(t.bounds[2] for t in tiles), max(t.bounds[3] for t in tiles))
+        enclosing = (max(t.bounds[2] for t in tiles), max(t.bounds[3] for t in tiles))
+        if canvas_size is not None:
+            if (not isinstance(canvas_size, tuple) or len(canvas_size) != 2
+                    or any(type(v) is not int for v in canvas_size)):
+                raise TypeError("画布尺寸必须是整数二元组")
+            if min(canvas_size) <= 0 or any(a > b for a, b in zip(enclosing, canvas_size)):
+                raise ValueError("图块超出固定画布")
+        self.canvas_size = enclosing if canvas_size is None else canvas_size
+
+    def fit(self, canvas_size: tuple[int, int] = PACKED_CANVAS_SIZE) -> PackingPlan:
+        """把整套排列等比例放入固定画布，留灰边，不按每块分别放大。
+
+        Args:
+            canvas_size: 目标正整数宽高，默认固定 640×640。
+
+        Returns:
+            原图 source 不变、目标矩形已缩放且居中的新规划。像素取整误差小于一像素。
+
+        Raises:
+            TypeError: 目标尺寸类型错误。
+            ValueError: 尺寸非正，或小到无法容纳图块及其间隔。
+        """
+        if (not isinstance(canvas_size, tuple) or len(canvas_size) != 2
+                or any(type(v) is not int for v in canvas_size)):
+            raise TypeError("目标画布尺寸必须是整数二元组")
+        if min(canvas_size) <= 0:
+            raise ValueError("目标画布尺寸必须为正")
+        width, height = self.canvas_size
+        scale = min(canvas_size[0]/width, canvas_size[1]/height)
+        dx, dy = (canvas_size[0]-round(width*scale))//2, (canvas_size[1]-round(height*scale))//2
+        tiles = [Tile(t.source, dx+round(t.x*scale), dy+round(t.y*scale),
+                      (round(t.render_size[0]*scale), round(t.render_size[1]*scale))) for t in self.tiles]
+        # 取整后相邻图块仍需有至少一个空白像素，不能引入重叠所有权。
+        if any(not (a.bounds[2] < b.bounds[0] or b.bounds[2] < a.bounds[0]
+                    or a.bounds[3] < b.bounds[1] or b.bounds[3] < a.bounds[1])
+               for i, a in enumerate(tiles) for b in tiles[i+1:]):
+            raise ValueError("固定画布太小，图块重叠或没有空白间隔")
+        return PackingPlan(self.size, tiles, canvas_size)
 
     def restore(self, detections: Sequence[Detection]) -> tuple[list[Detection], str]:
         """还原检测并消除跨块重复，出现未解决的切边或类别冲突时要求回退。
@@ -159,7 +235,7 @@ class PackingPlan:
             if a < x1 or b < y1 or c > x2 or d > y2:
                 return [], "检测跨越图块边界"
             sx, sy, ex, ey = tile.source
-            restored = Detection(detection.name, (a-x1+sx, b-y1+sy, c-x1+sx, d-y1+sy), detection.confidence)
+            restored = Detection(detection.name, tile.unproject(detection.bbox), detection.confidence)
             cut = ((sx > 0 and a <= x1+2) or (sy > 0 and b <= y1+2)
                    or (ex < self.size[0] and c >= x2-2) or (ey < self.size[1] and d >= y2-2))
             if cut:

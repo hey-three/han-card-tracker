@@ -40,7 +40,7 @@ class AutoLayoutTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """校准默认牌桌，禁用所有磁盘写入。"""
-        changes = patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False, DEBUG_MODE=False)
+        changes = patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False, DEBUG_MODE=False, PACKED_INFERENCE=False)
         changes.start()
         self.addCleanup(changes.stop)
         self.analyzer = AutoLayoutAnalyzer()
@@ -267,7 +267,7 @@ class AutoLayoutTests(unittest.TestCase):
         ), patch("core.game_controller.ImageSaver"), patch("core.game_controller.ScreenCapture") as capture:
             capture.return_value.capture_window.return_value = Image.new("RGB", (1000, 800))
             controller = GameController("doudizhu", "Auto")
-        controller.yolo_inferencer.detect.return_value = (None, 1.)
+        controller.yolo_inferencer.detect.return_value = (Mock(), 1.)
         with patch("core.game_controller.read_yolo_boxes", return_value=self.cards):
             for _ in range(8):
                 remain, _, _ = controller.detect()

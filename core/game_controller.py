@@ -123,8 +123,13 @@ class GameController:
         # 输出：{区域名: [{"bbox": (x1,y1,x2,y2), "name": yolo_label}, ...]}
         known_regions: set[str] | None = None
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            size = img.size if img else (0, 0)
-            observation = self.layout_analyzer.observe(read_yolo_boxes(raw_result, size), size, settings.FRAME_LENGTH)
+            if not isinstance(self.tracker, DoudizhuTracker):
+                raise ValueError("自动布局仅支持斗地主")
+            valid_frame = img is not None and raw_result is not None
+            size = img.size if img is not None and valid_frame else (0, 0)
+            cards = read_yolo_boxes(raw_result, size)
+            observation = self.layout_analyzer.observe(cards, size, settings.FRAME_LENGTH)
+            self.tracker.observe_frame_presence(bool(cards) if valid_frame else None)
             if settings.SHOW_CURRENT_SCREENSHOT:
                 self.last_screenshot_regions = {
                     key: (
@@ -136,14 +141,19 @@ class GameController:
                     for key, cards in observation.regions.items()
                     if cards
                 }
-            if observation.reset_required:
-                self.tracker.reset()
             region_boxes = observation.as_boxes()
             known_regions = set(region_boxes)
             if observation.initial is not None:
-                if not isinstance(self.tracker, DoudizhuTracker):
-                    raise ValueError("自动布局仅支持斗地主")
-                self.tracker.initialize_from_layout(self.tracker.translate_boxes_to_cards(region_boxes))
+                initial_data = self.tracker.translate_boxes_to_cards(region_boxes)
+                if self.tracker.state != settings.STARTED_RECORD_CARD:
+                    self.tracker.initialize_from_layout(initial_data)
+                else:
+                    # 比例变化只重新学习几何，不能凭窗口变形把同一局历史清空。
+                    self.tracker.update_initial_hand(initial_data["player_hand"])
+            if observation.initial_hand_update is not None:
+                self.tracker.update_initial_hand(
+                    self.tracker.translate_boxes_to_cards({"player_hand": region_boxes["player_hand"]})["player_hand"]
+                )
         else:
             region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
             if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
@@ -160,9 +170,12 @@ class GameController:
         remain_cards: dict[str, int]
         show_cards: dict[str, list[list[str]]]
         remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms, known_regions)
-        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and self.tracker.state == settings.WAIT_BEGIN:
-            if self.layout_analyzer.ready:
-                self.layout_analyzer.reset()
+        if (isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and isinstance(self.tracker, DoudizhuTracker)
+                and self.tracker.awaiting_next_round and self.layout_analyzer.ready):
+            self.layout_analyzer.wait_for_next_round(
+                self.tracker.round_end_reason, allow_same_hand=valid_frame and not cards,
+            )
+            self.packed_pipeline.reset()
         zone_cards: dict[str, list[list[str]]] = self._format_zone_cards(show_cards)
         finished = time.perf_counter()
         self.last_performance = dict(self.packed_pipeline.timings)

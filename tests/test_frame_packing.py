@@ -90,6 +90,62 @@ class PackingTests(unittest.TestCase):
             with self.subTest(size=size, regions=regions), self.assertRaises(ValueError):
                 make_plan(size, regions, guard)
 
+    def test_fixed_canvas_preserves_source_and_roundtrip_across_window_sizes(self) -> None:
+        """窗口大小和比例不同，实际拼图始终固定方形，检测恢复仍与原图一致。"""
+        for size in ((1000, 200), (2488, 1351), (720, 1600), (127, 65)):
+            with self.subTest(size=size):
+                native = make_plan(size, [(0., .2, 1., .7), (0., .75, 1., 1.)])
+                plan = native.fit()
+                self.assertEqual(plan.canvas_size, (640, 640))
+                self.assertEqual([t.source for t in plan.tiles], [t.source for t in native.tiles])
+                for tile in plan.tiles:
+                    a, b, c, d = tile.source
+                    source = (a+(c-a)*.2, b+(d-b)*.2, a+(c-a)*.4, b+(d-b)*.4)
+                    restored, reason = plan.restore([Detection('A', tile.project(source))])
+                    self.assertEqual(reason, '')
+                    for actual, expected in zip(restored[0].bbox, source):
+                        self.assertAlmostEqual(actual, expected)
+
+    def test_scaled_overlap_still_deduplicates_and_rejects_conflict(self) -> None:
+        """固定画布缩放后仍按原始位置去重，不能按缩放图中的位置比较。"""
+        plan = make_plan((1000, 200), [(0., 0., 1., 1.)]).fit()
+        boxes = [Detection('A', tile.project((480., 30., 500., 80.))) for tile in plan.tiles]
+        cards, reason = plan.restore(boxes)
+        self.assertEqual((len(cards), reason), (1, ''))
+        boxes[1].name = 'K'
+        self.assertIn('类别冲突', plan.restore(boxes)[1])
+
+    def test_fixed_canvas_padding_is_not_a_card_region(self) -> None:
+        """灰色留白中的伪检测必须触发原图回退。"""
+        plan = make_plan((1000, 200), [(0., 0., 1., 1.)]).fit()
+        cards, reason = plan.restore([Detection('A', (1., 1., 4., 4.))])
+        self.assertEqual(cards, [])
+        self.assertTrue(reason)
+
+    def test_scaled_cut_fragment_uses_whole_copy(self) -> None:
+        """统一缩放后切口残片仍由另一图块完整副本替代。"""
+        plan = make_plan((1000, 200), [(0., 0., 1., 1.)]).fit()
+        cards, reason = plan.restore([
+            Detection('A', plan.tiles[0].project((530., 30., 540., 80.))),
+            Detection('ten', plan.tiles[1].project((530., 30., 560., 80.))),
+        ])
+        self.assertEqual((len(cards), reason), (1, ''))
+        self.assertEqual(cards[0].name, 'ten')
+
+    def test_fixed_canvas_rejects_invalid_geometry(self) -> None:
+        """非法画布、裁片绘制尺寸及越界目标在规划阶段报错。"""
+        plan = make_plan((1000, 200), [(0., 0., 1., 1.)])
+        with self.assertRaises(TypeError):
+            plan.fit((True, 640))
+        with self.assertRaises(ValueError):
+            plan.fit((0, 640))
+        with self.assertRaises(ValueError):
+            plan.fit((1, 1))
+        with self.assertRaises(ValueError):
+            plan.fit((30, 30))
+        with self.assertRaises(ValueError):
+            PackingPlan((100, 100), [Tile((0, 0, 100, 100), 0, 0)], (50, 50))
+
 
 if __name__ == '__main__':
     unittest.main()
