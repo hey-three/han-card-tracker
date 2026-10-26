@@ -47,14 +47,17 @@ class ProcessTests(unittest.TestCase):
         remain = {"A": 1}
         zones = {"left": [["A"]]}
         controller = Mock()
+        metrics = {"pipeline_ms": 15.}
+        controller.last_performance = metrics
         controller.detect.return_value = (remain, zones, 2.0)
-        controller.execute_command.side_effect = lambda *args: (remain.clear(), zones.clear())
+        controller.execute_command.side_effect = lambda *args: (remain.clear(), zones.clear(), metrics.clear())
         with patch("core.game_controller.GameController", return_value=controller):
             run_controller_loop(commands, results, settings.CURRENT_LAYOUT, "doudizhu", {})
         self.assertEqual(results.get_nowait().status, "ready")
         response = results.get_nowait()
         self.assertEqual(response.remain_cards, {"A": 1})
         self.assertEqual(response.zone_cards, {"left": [["A"]]})
+        self.assertEqual(response.performance, {"pipeline_ms": 15.})
         self.assertEqual(results.get_nowait().request_id, 2)
 
 

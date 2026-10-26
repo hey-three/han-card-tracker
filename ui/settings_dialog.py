@@ -21,6 +21,7 @@ from PySide6.QtWidgets import (
 )
 from PySide6.QtCore import Qt, QRect, Signal, QModelIndex, QPersistentModelIndex
 from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
+import config.settings as settings
 
 
 class LayoutItemDelegate(QStyledItemDelegate):
@@ -92,6 +93,7 @@ class SettingsDialog(QDialog):
     PAGE_SPACING = 20
     auto_layout_requested = Signal()
     layout_status_changed = Signal(int)
+    packed_inference_changed = Signal(int)
 
     def __init__(
         self,
@@ -403,7 +405,32 @@ class SettingsDialog(QDialog):
             tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
+        self.combo_packed_inference = self._add_combo_row(
+            advanced_layout,
+            "识别路线：",
+            "PackedInferenceCombo",
+            ["整图（默认）", "保护拼图（试验）"],
+            self._on_packed_inference_changed,
+            tooltip="自动布局校准后尝试重叠拼图；手牌继续检测。切边、冲突、区外变化或定期复查时回到整图。静态模型不保证降低推理输入尺寸。",
+        )
+        self.set_current_packed_inference(settings.PACKED_INFERENCE)
         advanced_layout.addStretch()
+
+    def _on_packed_inference_changed(self, index: int) -> None:
+        """通知主窗口应用识别路线。
+
+        Args:
+            index: 整图/试验拼图索引。
+        """
+        self.packed_inference_changed.emit(index)
+
+    def set_current_packed_inference(self, enabled: bool) -> None:
+        """无副作用地同步已保存路线。
+
+        Args:
+            enabled: 是否开启保护拼图。
+        """
+        self._set_combo_current_safely(self.combo_packed_inference, int(enabled))
 
     def _on_reset_clicked(self):
         """

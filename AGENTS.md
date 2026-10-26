@@ -59,7 +59,7 @@
 `GameController.detect()` 执行以下五步：
 
 1. **截图**：`ScreenCapture.capture_window()` → `PIL.Image | None`
-2. **YOLO 纯视觉推理**：`YoloInferencer.detect(img)` → `(raw_result, yolo_ms)`
+2. **YOLO 纯视觉推理**：默认 `YoloInferencer.detect(img)`；可选 `PackedPipeline` 规划/执行保护拼图并还原原图坐标 → `(raw_result, yolo_ms)`
 3. **几何分区 + 二维排序**：`LayoutAnalyzer.parse_and_sort(raw_result, img.size)` → `dict[str, list[dict]]`
 4. **业务映射**：`Tracker.translate_boxes_to_cards(region_boxes)` → `dict[str, list[str]]`
 5. **状态机更新**：`Tracker.get_cards_number(frame_data, yolo_ms)` → `(remain_cards, show_cards, yolo_ms)`
@@ -240,6 +240,7 @@ python main.py
 - `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图，并将自动布局当前确认的各牌组整体边界随检测回执发送，主进程叠加绘制区域框与名称；校准或归属不确定的区域不画框，关闭时不传截图数据
 - “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示截图”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
 - `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
+- V4.3 的模型 detect 不自行保存中间拼图；`GameController` 在最终结果还原后调用 `YoloInferencer.save_frame()`，仍由 `ImageSaver` 保存同尺寸原图/标注图。
 - 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例
 - 启动时执行 `ImageSaver.bootstrap_static(BASE_DIR, SAVE_DEBUG_IMAGES)` 初始化目录
 
@@ -248,6 +249,7 @@ python main.py
 - **YOLO 推理耗时**：仅包含 `self.model(...)` 调用，不含截图和保存图片时间；在 `YoloInferencer.detect()` 中用 `time.perf_counter()` 计时
 - **整轮耗时**：从 `request_one_update()` 发出检测请求到 `on_result_ready()` 收到结果，包含截图+推理+队列通信+轮询延迟
 - 标题栏显示格式：`Han记牌器  ·  推理 XXms  ·  整轮 XXms`，由 `SHOW_TIMING` 配置项控制是否显示
+- V4.3 的 `yolo_ms` 包含本轮全部 Ultralytics 调用及回退，不是纯网络前向；调用内部预处理/后处理包含其中。CUDA 前后同步。`Response.performance` 深拷贝传回分阶段毫秒与调用次数，Worker 只发布当前代次；设置按钮提示显示上次指标，子进程整轮不等于主进程往返或物理显示延迟。
 
 ## 9) 环境与集成边界
 
@@ -264,3 +266,12 @@ python main.py
 - 回归测试位于 `tests/`，运行 `python -B -m unittest discover -s tests -v`。配置测试仅使用 `tests/.tmp/` 下的独立临时文件；Qt 测试使用 offscreen 平台。
 - 自动测试覆盖斗地主扣牌、帧阈值、配置原子保存、布局同步、切换回退、请求隔离、故障恢复及真实 spawn 启动错误回传，不加载真实 YOLO 模型。
 - 实际游戏截图、CUDA/ONNX/TensorRT 推理及打包版本仍需在具备模型依赖的环境中回归。
+
+## 10) 性能优化讨论与实施顺序
+
+- 2026-10-27 用户决定先在本 Windows 工程验证裁剪、拼图及记牌算法，再考虑向 Android 移植；讨论与后续验证顺序见 [`docs/Windows性能优化讨论记录.md`](docs/Windows性能优化讨论记录.md)。
+- V4.3 已接入可关闭的保护拼图试验链路，详见 [`docs/V4.3更新说明.md`](docs/V4.3更新说明.md)。`packed_inference` / `PACKED_INFERENCE` 为布尔值，缺省 false，高级设置选择路线，经原有回执和原子保存流程应用。
+- `core/frame_packing.py` 提供不拉伸的长条重叠切分和布局；按原图坐标、类别及重叠消除跨块重复，不按牌点简单去重。切边缺完整副本、类别冲突、区外变化和定期复查均由 `core/packed_pipeline.py` 回到同一原图。
+- 未校准和手动布局用整图；自动跟踪保留完整宽度桌面带、每帧手牌证据与底牌区，给第二行向下展开留空间。未实现细分三家小框、手牌降频或通用颜色定位，不能把跳过/未覆盖区当空区。
+- 拼图仅对 PyTorch/动态后端尝试 640；静态 ONNX/TensorRT 保留导出尺寸。回退明确恢复原输入配置；不自动重新训练、导出或替换模型。保护范围及阈值需真实序列验证，正式开局仍要求完整稳定的 17/20 张手牌。
+- 用户已授权将本次完成内容提交、推送到 GitHub 分支 `V4.3` 并合并 `main`，附详细说明；个人 `config/config.yaml` 现有改动不进入本次提交。Android 端性能不作为 Windows 基线，电脑测试不作为手机验收。

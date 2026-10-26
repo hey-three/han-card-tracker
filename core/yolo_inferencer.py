@@ -5,7 +5,8 @@
 
 import os
 import time
-from typing import Tuple
+from collections.abc import Sequence
+from typing import TYPE_CHECKING, Tuple, cast
 
 import torch
 from PIL import Image
@@ -13,6 +14,10 @@ from ultralytics import YOLO
 
 import config.settings as settings
 from core.image_saver import ImageSaver
+from core.frame_packing import Detection
+
+if TYPE_CHECKING:
+    from ultralytics.engine.results import Results
 
 
 class YoloInferencer:
@@ -27,6 +32,7 @@ class YoloInferencer:
         model: 加载的 YOLO 模型。
         device: 推理设备（cuda/cpu）。
         debug_manager: 调试图片保存器（由 GameController 传入，可选）。
+        _full_input_size: 首次完整推理的输入配置，避免拼图参数污染整图回退。
     """
 
     def __init__(self, debug_manager: ImageSaver | None = None) -> None:
@@ -41,8 +47,17 @@ class YoloInferencer:
 
         self.model, self.device = self.__load_model()
         self.debug_manager: ImageSaver | None = debug_manager
+        self._full_input_size: int | list[int] | None = None
 
     def __load_model(self) -> Tuple[YOLO, str]:
+        """按现有设备设置加载本地模型。
+
+        Returns:
+            模型与实际设备名称。
+        Raises:
+            FileNotFoundError: 本地权重不存在。
+            Exception: 最终回退的 PyTorch 模型也无法加载。
+        """
         if not os.path.exists(self.weight_path):
             raise FileNotFoundError(f"未找到本地模型文件: {self.weight_path}。请确认打包时包含 yolo/weights/best.pt。")
 
@@ -75,6 +90,13 @@ class YoloInferencer:
             return model, "cpu"
 
     def __load_tensorrt(self, engine_path: str) -> YOLO | None:
+        """尝试现有 TensorRT 路线。
+
+        Args:
+            engine_path: 本地引擎路径。
+        Returns:
+            已加载的模型；依赖、导出或加载失败时为 None，由上层回退。
+        """
         try:
             import tensorrt  # noqa: F401
         except ImportError:
@@ -99,6 +121,13 @@ class YoloInferencer:
             return None
 
     def __load_onnx(self, onnx_path: str) -> YOLO | None:
+        """尝试现有 ONNX 路线。
+
+        Args:
+            onnx_path: 本地导出模型路径。
+        Returns:
+            已加载的模型；依赖、导出或加载失败时为 None，由上层回退。
+        """
         try:
             import onnxruntime  # noqa: F401
         except ImportError:
@@ -131,6 +160,41 @@ class YoloInferencer:
         if img is None:
             return None, 0.0
 
+        return self._run(img)
+
+    def detect_packed(self, img: Image.Image) -> tuple[object | None, float]:
+        """对拼图尝试 640 输入，静态引擎沿用自己的固定尺寸。
+
+        Args:
+            img: 当前线程同步消费的 RGB 拼图画布。
+        Returns:
+            原始画布结果与模型调用耗时；不为静态模型自动重新导出。
+        """
+        backend = getattr(getattr(self.model, "predictor", None), "model", None)
+        flexible = backend is not None and (getattr(backend, "pt", False) or getattr(backend, "dynamic", False))
+        return self._run(img, 640 if flexible else None, packed=True)
+
+    def _run(self, img: Image.Image, input_size: int | None = None, *, packed: bool = False) -> tuple[object | None, float]:
+        """运行单模型并同步 GPU 计时。
+
+        Args:
+            img: 当前输入图。
+            input_size: 可变模型的候选尺寸；None 恢复整图原始尺寸。
+            packed: 是否拼图调用；拼图使用固定方形填充，整图恢复原矩形策略。
+
+        Returns:
+            单帧结果及整个 Ultralytics 调用毫秒，包含其内部预处理和后处理。
+        Raises:
+            Exception: 推理或设备同步失败时向控制器传播。
+        """
+        selected_size = input_size if input_size is not None else self._full_input_size
+        if selected_size is None:
+            configured = self.model.overrides.get("imgsz", 640)
+            if not isinstance(configured, (int, list)):
+                raise ValueError("模型输入尺寸元数据无效")
+            selected_size = configured
+        if self.device == "cuda":
+            torch.cuda.synchronize()
         t0 = time.perf_counter()
         results = self.model(
             img,
@@ -139,17 +203,56 @@ class YoloInferencer:
             device=self.device,
             verbose=False,
             half=(self.device == "cuda"),
+            rect=not packed,
+            imgsz=selected_size,
         )
+        if self.device == "cuda":
+            torch.cuda.synchronize()
         yolo_ms = (time.perf_counter() - t0) * 1000
+        if not packed and self._full_input_size is None:
+            predictor = self.model.predictor
+            if predictor is None:
+                raise RuntimeError("模型未建立推理器")
+            size = predictor.args.imgsz
+            self._full_input_size = size.copy() if isinstance(size, list) else size
 
-        if settings.SAVE_DEBUG_IMAGES and results and self.debug_manager is not None:
+        return (results[0] if results else None), yolo_ms
+
+    @staticmethod
+    def restore_result(raw: object, img: Image.Image, cards: Sequence[Detection]) -> object:
+        """构造原图结果供布局解析和标注。
+
+        Args:
+            raw: 当前模型画布结果，保留类别元数据。
+            img: 当前原图。
+            cards: 已恢复并去重的原图像素检测框。
+
+        Returns:
+            原始截图尺寸的 Ultralytics Results；不同位置的同点数牌均保留。
+        """
+        import numpy as np
+        from ultralytics.engine.results import Results
+
+        metadata = cast("Results", raw)
+        names = metadata.names
+        indices = {name: index for index, name in names.items()}
+        boxes = torch.tensor([(*c.bbox, c.confidence, indices[c.name]) for c in cards], dtype=torch.float32).reshape(-1, 6)
+        return Results(np.asarray(img.convert("RGB"))[:, :, ::-1].copy(), path=metadata.path, names=names, boxes=boxes)
+
+    def save_frame(self, img: Image.Image | None, raw: object | None) -> None:
+        """仅保存最终原图和原图坐标标注，不把拼图误当作原始截图。
+
+        Args:
+            img: 当前原图，失败时为 None。
+            raw: 整图或已还原到原图的最终结果。
+        """
+
+        if settings.SAVE_DEBUG_IMAGES and img is not None and raw is not None and self.debug_manager is not None:
             try:
-                yolo_bgr = results[0].plot()
+                yolo_bgr = cast("Results", raw).plot()
                 yolo_rgb = yolo_bgr[:, :, ::-1]
                 yolo_image = Image.fromarray(yolo_rgb)
                 self.debug_manager.save_frame(img, yolo_image)
-            except Exception:
-                pass
-
-        raw_result = results[0] if results else None
-        return raw_result, yolo_ms
+            except Exception as exc:
+                if settings.DEBUG_MODE:
+                    print(f"[YoloInferencer] 保存标注帧失败: {exc}")

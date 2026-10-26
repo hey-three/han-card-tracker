@@ -61,6 +61,22 @@ class UITests(unittest.TestCase):
         self.window._reset_ui_to_total()
         self.assertNotIn("old cards", self.window.played_cards_labels["left"].text())
 
+    def test_packed_selector_refresh_does_not_send_commands(self) -> None:
+        """打开或回执刷新设置时不把路线值当作用户修改发送。"""
+        dialog = SettingsDialog(self.window)
+        received = []
+        dialog.packed_inference_changed.connect(received.append)
+        dialog.set_current_packed_inference(not settings.PACKED_INFERENCE)
+        self.assertEqual(received, [])
+        dialog.close()
+
+    def test_performance_tooltip_distinguishes_model_and_pipeline(self) -> None:
+        """设置按钮提供分阶段指标，不把子进程耗时误称物理显示延迟。"""
+        self.window.on_performance_ready({'model_ms': 20., 'pipeline_ms': 35., 'model_calls': 2.})
+        text = self.window.btn_settings.toolTip()
+        self.assertIn('子进程整轮：35.0 ms', text)
+        self.assertIn('模型调用次数：2', text)
+
     def test_pending_topmost_selection_survives_other_setting_ack(self) -> None:
         """其他设置回执不覆盖尚未在关闭窗口时应用的置顶选择。"""
         dialog = SettingsDialog(self.window)

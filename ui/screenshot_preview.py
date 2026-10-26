@@ -34,8 +34,8 @@ class ScreenshotPreviewLabel(QLabel):
     def set_image(
         self,
         image_data: bytes,
-        regions: Mapping[str, tuple[float, float, float, float]],
-        region_labels: Mapping[str, str],
+        regions: Mapping[str, tuple[float, float, float, float]] | None = None,
+        region_labels: Mapping[str, str] | None = None,
     ) -> None:
         """读取 JPEG，在截图上绘制每个已确认牌区的整体边框和名称。
 
@@ -55,7 +55,7 @@ class ScreenshotPreviewLabel(QLabel):
         font.setBold(True)
         painter.setFont(font)
         line_width = max(2, image.width() // 700)
-        for region_key, bounds in regions.items():
+        for region_key, bounds in (regions or {}).items():
             left, top, right, bottom = bounds
             x1 = round(max(0.0, min(1.0, left)) * image.width())
             y1 = round(max(0.0, min(1.0, top)) * image.height())
@@ -67,7 +67,7 @@ class ScreenshotPreviewLabel(QLabel):
             painter.setPen(QPen(color, line_width))
             painter.setBrush(Qt.BrushStyle.NoBrush)
             painter.drawRect(QRect(x1, y1, x2 - x1, y2 - y1))
-            label = region_labels.get(region_key, region_key)
+            label = (region_labels or {}).get(region_key, region_key)
             text_width = painter.fontMetrics().horizontalAdvance(label) + 12
             text_height = painter.fontMetrics().height() + 6
             label_x = min(x1, max(0, image.width() - text_width))
@@ -119,8 +119,8 @@ class ScreenshotPreviewDialog(QDialog):
     def update_image(
         self,
         image_data: bytes,
-        regions: Mapping[str, tuple[float, float, float, float]],
-        region_labels: Mapping[str, str],
+        regions: Mapping[str, tuple[float, float, float, float]] | None = None,
+        region_labels: Mapping[str, str] | None = None,
     ) -> None:
         """将最新截图和已确认牌区边界交给预览标签显示。
 
@@ -129,4 +129,4 @@ class ScreenshotPreviewDialog(QDialog):
             regions: 自动布局当前确认的牌区归一化边界。
             region_labels: 区域键到可读名称的映射。
         """
-        self.image_label.set_image(image_data, regions, region_labels)
+        self.image_label.set_image(image_data, regions or {}, region_labels or {})

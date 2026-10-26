@@ -64,21 +64,27 @@ class WorkerTests(unittest.TestCase):
 
     def test_reset_discards_old_result_and_waits_for_ack(self) -> None:
         """重置前的检测结果被丢弃，收到回执后才能检测新牌局。"""
+        metrics = Mock()
+        self.worker.performance_ready.connect(metrics)
         self.assertTrue(self.worker.request_detect())
         detect = self.worker._cmd_queue.get_nowait()
         self.worker.request_reset()
         reset = self.worker._cmd_queue.get_nowait()
-        self.worker._result_queue.put(Response("ok", detect.request_id, detect.generation, {"A": 1}, {}))
+        self.worker._result_queue.put(Response("ok", detect.request_id, detect.generation, {"A": 1}, {},
+                                               performance={"pipeline_ms": 999.}))
         self.worker._poll_result()
         self.results.assert_not_called()
+        metrics.assert_not_called()
         self.assertFalse(self.worker.can_detect())
         self.worker._result_queue.put(Response("ok", reset.request_id, reset.generation))
         self.worker._poll_result()
         self.assertTrue(self.worker.request_detect())
         current = self.worker._cmd_queue.get_nowait()
-        self.worker._result_queue.put(Response("ok", current.request_id, current.generation, {"A": 4}, {}))
+        self.worker._result_queue.put(Response("ok", current.request_id, current.generation, {"A": 4}, {},
+                                               performance={"pipeline_ms": 10.}))
         self.worker._poll_result()
         self.results.assert_called_once_with({"A": 4}, {}, 0.0)
+        metrics.assert_called_once_with({"pipeline_ms": 10.})
 
     def test_control_failure_does_not_complete_inflight_detection(self) -> None:
         """设置失败回执不能冒充另一个检测请求的完成信号。"""

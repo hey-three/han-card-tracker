@@ -26,6 +26,7 @@ class InferenceWorker(QObject):
         command_completed: 请求编号、命令名、成功标志和错误说明。
         layout_status_changed: 当前代次的自动布局进度或歧义说明。
         screenshot_ready: 当前截图 JPEG 数据及自动布局返回的区域边界。
+        performance_ready: 当前代次的分阶段耗时，不含图像。
         state: 当前生命周期状态。
     """
 
@@ -36,6 +37,7 @@ class InferenceWorker(QObject):
     command_completed = Signal(int, str, bool, str)
     layout_status_changed = Signal(str)
     screenshot_ready = Signal(bytes, dict)
+    performance_ready = Signal(dict)
 
     def __init__(self, layout_name: str, game_name: str = "doudizhu", parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
@@ -298,6 +300,8 @@ class InferenceWorker(QObject):
                             self.screenshot_ready.emit(
                                 response.screenshot_jpeg, response.screenshot_regions or {},
                             )
+                        if response.performance is not None:
+                            self.performance_ready.emit(response.performance)
                         self.result_ready.emit(response.remain_cards or {}, response.zone_cards or {}, response.yolo_ms)
                     else:
                         self.error.emit(response.error)

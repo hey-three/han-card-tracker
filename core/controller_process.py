@@ -48,6 +48,7 @@ def run_controller_loop(
         try:
             if command.name == "detect":
                 remain, zones, elapsed = controller.detect()
+                performance = getattr(controller, "last_performance", None)
                 # multiprocessing.Queue 延迟序列化；复制以免下一命令修改同一对象。
                 response = Response(
                     "ok", command.request_id, command.generation,
@@ -55,6 +56,7 @@ def run_controller_loop(
                     layout_status=controller.layout_status,
                     screenshot_jpeg=controller.last_screenshot_jpeg,
                     screenshot_regions=deepcopy(controller.last_screenshot_regions),
+                    performance=deepcopy(performance) if isinstance(performance, dict) else None,
                 )
             else:
                 controller.execute_command(command.name, command.payload)
