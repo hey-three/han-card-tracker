@@ -300,6 +300,33 @@ class AutoLayoutAnalyzer:
         self._self_evidence: tuple[str, ...] = ()
         self._evidence_ttl = 0
 
+    def inference_regions(self) -> tuple[list[Box] | None, float]:
+        """提供保守的跟踪裁片，保留手牌证据，不缩成上一手出牌的小矩形。
+
+        Returns:
+            (候选区, 切口单侧保护比例)。未校准时返回 None，必须先整图校准。
+            出牌桌面带横跨全宽、下沿贴近手牌，并额外保留手牌和底牌。
+            区域外变化及定期整图复查由执行器负责；不是跨软件完整覆盖保证。
+        Examples:
+            >>> AutoLayoutAnalyzer().inference_regions()
+            (None, 0.04)
+        """
+        if not self.ready or self._hand is None or self._bottom is None:
+            return None, .04
+        h, b = self._hand, self._bottom
+        hand_top = max(0., h.bounds[1] - .8*h.height)
+        table_top = max(0., b.bounds[3] + .5*b.height)
+        if table_top >= hand_top:
+            return None, .04
+        regions: list[Box] = [
+            (0., hand_top, 1., 1.),
+            (0., table_top, 1., hand_top),
+            (max(0., b.bounds[0]-.08), max(0., b.bounds[1]-.5*b.height),
+             min(1., b.bounds[2]+.08), table_top),
+        ]
+        widths = [card.bbox[2]-card.bbox[0] for card in h.cards]
+        return regions, min(.20, max(.04, median(widths)*1.5))
+
     def observe(self, cards: Sequence[CardBox], size: tuple[int, int], confirm_frames: int) -> LayoutObservation:
         """从一帧检测框更新布局，布局变更和不确定结果均显式返回。
 

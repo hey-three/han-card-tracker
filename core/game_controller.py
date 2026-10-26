@@ -12,6 +12,7 @@ import config.settings as settings
 from core.base_tracker import BaseCardTracker
 from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
 from core.games.doudizhu import DoudizhuTracker
+from core.packed_pipeline import PackedPipeline
 
 if TYPE_CHECKING:
     from core.yolo_inferencer import YoloInferencer
@@ -40,6 +41,8 @@ class GameController:
         debug_manager: 调试图片管理器实例（由 GameController 统一管理）。
         last_screenshot_jpeg: 预览启用时最近一帧的 JPEG 截图。
         last_screenshot_regions: 自动布局当前确认的牌区整体边界。
+        packed_pipeline: 同步单帧拼图执行器，处理切口保护和整图回退。
+        last_performance: 当前子进程阶段耗时快照，经过回执传回 UI。
     """
 
     def __init__(self, game_name: str, layout_name: str | None = None) -> None:
@@ -76,6 +79,8 @@ class GameController:
         self.tracker: BaseCardTracker = create_tracker(game_name, layout_name, self.debug_manager)
         self.last_screenshot_jpeg: bytes | None = None
         self.last_screenshot_regions: dict[str, tuple[float, float, float, float]] = {}
+        self.packed_pipeline = PackedPipeline()
+        self.last_performance: dict[str, float] = {}
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行一次完整检测：截图→识别→解析排版→映射→状态更新→格式化输出。
@@ -91,16 +96,27 @@ class GameController:
             ValueError: 自动布局使用了非斗地主 Tracker 或开局数据不合法。
             RuntimeError: 截图或推理失败。
         """
+        started = time.perf_counter()
         img = self.screen_capture.capture_window()
+        captured = time.perf_counter()
         self.last_screenshot_jpeg = None
         self.last_screenshot_regions = {}
         if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
             image_buffer = BytesIO()
             img.convert("RGB").save(image_buffer, format="JPEG", quality=75)
             self.last_screenshot_jpeg = image_buffer.getvalue()
+        previewed = time.perf_counter()
         raw_result: object | None
         yolo_ms: float
-        raw_result, yolo_ms = self.yolo_inferencer.detect(img)
+        regions, guard = (self.layout_analyzer.inference_regions()
+                          if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else (None, .04))
+        # 首版仅在自动布局校准后尝试拼图，手动布局及未校准阶段保持原整图链路。
+        raw_result, yolo_ms = self.packed_pipeline.detect(
+            img, self.yolo_inferencer, regions, settings.PACKED_INFERENCE,
+            settings.FRAME_LENGTH, guard,
+        )
+        detected = time.perf_counter()
+        self.yolo_inferencer.save_frame(img, raw_result)
         
         # 几何布局分析（把 raw box 切分到不同区域并做二维排序）
         # 输入：YOLO 原始检测结果 + 图片尺寸
@@ -148,11 +164,19 @@ class GameController:
             if self.layout_analyzer.ready:
                 self.layout_analyzer.reset()
         zone_cards: dict[str, list[list[str]]] = self._format_zone_cards(show_cards)
+        finished = time.perf_counter()
+        self.last_performance = dict(self.packed_pipeline.timings)
+        self.last_performance.update(capture_ms=(captured-started)*1000, model_ms=yolo_ms,
+                                     preview_ms=(previewed-captured)*1000,
+                                     layout_save_ms=(finished-detected)*1000, pipeline_ms=(finished-started)*1000)
+        if settings.DEBUG_MODE:
+            print(f"[V4.3] {self.packed_pipeline.route} {self.last_performance}")
         return remain_cards, zone_cards, yolo_ms
 
     def reset(self) -> None:
         """重置记牌器和自动布局参照到初始状态。"""
         self.tracker.reset()
+        self.packed_pipeline = PackedPipeline()
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
             self.layout_analyzer.reset()
 
@@ -160,7 +184,8 @@ class GameController:
     def layout_status(self) -> str:
         """返回自动布局的用户状态；手动布局不显示校准提示。"""
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            return self.layout_analyzer.last_observation.message
+            route = self.packed_pipeline.route if settings.PACKED_INFERENCE else ""
+            return self.layout_analyzer.last_observation.message + (f" · {route}" if route else "")
         return ""
 
     @staticmethod
@@ -215,6 +240,7 @@ class GameController:
         tracker = create_tracker(self.game_name, layout_name, self.debug_manager)
         self.layout_name, self.layout_config = layout_name, config
         self.layout_analyzer, self.screen_capture, self.tracker = analyzer, capture, tracker
+        self.packed_pipeline = PackedPipeline()
         settings.WINDOW_LAYOUTS[layout_name] = deepcopy(config)
         settings.CURRENT_LAYOUT = layout_name
 
@@ -238,6 +264,7 @@ class GameController:
             settings.apply_runtime_settings(previous)
             raise
         self.yolo_inferencer, self.tracker = inferencer, tracker
+        self.packed_pipeline = PackedPipeline()
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
             self.layout_analyzer.reset()
 
@@ -260,6 +287,7 @@ class GameController:
             settings.DEVICE_CHOICE = previous
             raise
         self.yolo_inferencer = inferencer
+        self.packed_pipeline = PackedPipeline()
 
     def switch_game(self, game_name: str) -> None:
         """在子进程内存中切换已注册游戏。
@@ -280,6 +308,7 @@ class GameController:
             settings.apply_game_choice(previous)
             raise
         self.game_name, self.tracker = game_name, tracker
+        self.packed_pipeline = PackedPipeline()
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
             self.layout_analyzer.reset()
 
@@ -294,12 +323,14 @@ class GameController:
             ValueError: 属性不可热更新或值无效。
         """
         allowed = {
-            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH",
+            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH", "PACKED_INFERENCE",
             "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD",
         }
         if not set(updates).issubset(allowed):
             raise ValueError("存在不能直接热更新的属性")
         settings.apply_runtime_settings(updates)
+        if "PACKED_INFERENCE" in updates:
+            self.packed_pipeline = PackedPipeline()
         self.yolo_inferencer.yolo_conf = settings.YOLO_CONFIDENCE_THRESHOLD
         self.yolo_inferencer.yolo_iou = settings.YOLO_IOU_THRESHOLD
         if "SAVE_DEBUG_IMAGES" in updates:

@@ -219,6 +219,7 @@ class CardUI(QMainWindow):
         # -------------------------
         self.worker = InferenceWorker(self.layout_name, game_name=settings.GAME_NAME)
         self.worker.result_ready.connect(self.on_result_ready)
+        self.worker.performance_ready.connect(self.on_performance_ready)
         self.worker.error.connect(self.on_worker_error)
         self.worker.screenshot_ready.connect(self.on_screenshot_ready)
         self._screenshot_preview: ScreenshotPreviewDialog | None = None
@@ -295,6 +296,7 @@ class CardUI(QMainWindow):
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
         dialog.layout_status_changed.connect(self.on_show_layout_status_changed)
+        dialog.packed_inference_changed.connect(self.on_packed_inference_changed)
         dialog.set_current_always_on_top(settings.ALWAYS_ON_TOP)
         if settings.ALWAYS_ON_TOP:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -355,6 +357,7 @@ class CardUI(QMainWindow):
         # 设置当前显示耗时
         from config.settings import SHOW_TIMING
         dialog.set_current_show_timing(SHOW_TIMING)
+        dialog.set_current_packed_inference(settings.PACKED_INFERENCE)
 
         # 设置当前模型选择
         from config.settings import YOLO_MODEL_NAME
@@ -870,20 +873,45 @@ class CardUI(QMainWindow):
 
     @Slot(bytes, dict)
     def on_screenshot_ready(
-        self, image_data: bytes, regions: dict[str, tuple[float, float, float, float]],
+        self, image_data: bytes, regions: dict[str, tuple[float, float, float, float]] | None = None,
     ) -> None:
         """显示推理进程返回的最新截图。
 
         Args:
             image_data: JPEG 编码的游戏窗口截图。
-            regions: 自动布局当前确认的各牌区归一化边界。
+            regions: 自动布局当前确认的各牌区归一化边界；旧调用省略时不画区域。
         """
         if self._closing or not self._preview_requested or not settings.SHOW_CURRENT_SCREENSHOT:
             return
         self._show_screenshot_preview()
         if self._screenshot_preview is not None:
             region_labels = {item["key"]: item["label"] for item in settings.LAYOUT_REGIONS}
-            self._screenshot_preview.update_image(image_data, regions, region_labels)
+            self._screenshot_preview.update_image(image_data, regions or {}, region_labels)
+
+    def on_packed_inference_changed(self, index: int) -> None:
+        """通过现有回执和原子保存流程切换路线。
+
+        Args:
+            index: 0 为整图，1 为试验拼图。
+        """
+        if index in (0, 1):
+            self._apply_setting("packed_inference", bool(index), "PACKED_INFERENCE")
+
+    @Slot(dict)
+    def on_performance_ready(self, performance: dict[str, float]) -> None:
+        """把分阶段耗时显示在设置按钮提示中。
+
+        Args:
+            performance: 当前代次的子进程指标；缺失项不伪装成已测。
+        """
+        labels = {"capture_ms": "截图", "prepare_ms": "拼图准备/检查", "model_ms": "模型调用（含模型内预处理/后处理）",
+                  "restore_ms": "坐标恢复/去重", "preview_ms": "预览编码", "layout_save_ms": "布局记牌/截图保存",
+                  "pipeline_ms": "子进程整轮"}
+        lines = ["上次检测；主进程整轮耗时另见标题栏"]
+        lines.extend(f"{label}：{performance[key]:.1f} ms" for key, label in labels.items() if key in performance)
+        if "model_calls" in performance:
+            lines.append(f"模型调用次数：{int(performance['model_calls'])}")
+        self.btn_settings.setToolTip("\n".join(lines))
 
     def _apply_setting(
         self, key: str, value: object, runtime_key: str | None = None,

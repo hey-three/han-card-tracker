@@ -80,6 +80,14 @@ class ControllerTests(unittest.TestCase):
             self.controller.switch_game("doudizhu")
         save.assert_not_called()
 
+    def test_packed_toggle_clears_old_frame_reference_without_resetting_round(self) -> None:
+        """热切换只清理拼图参照，不重复初始化当前牌局。"""
+        previous = self.controller.tracker
+        self.controller.update_settings({"PACKED_INFERENCE": True})
+        self.assertIsNone(self.controller.packed_pipeline._reference)
+        self.assertIs(self.controller.tracker, previous)
+        previous.reset.assert_not_called()
+
 
 if __name__ == "__main__":
     unittest.main()

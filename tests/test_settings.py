@@ -40,6 +40,22 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(read_config(str(self.path)), {"frame_length": 1, "custom_key": "retained"})
         self.assertEqual(settings.FRAME_LENGTH, 1)
 
+    def test_packed_route_persists_and_rejects_fake_booleans(self) -> None:
+        """试验路线通过原子保存和快照传递，拒绝字符串或数字冒充开关。"""
+        settings.save_setting("packed_inference", True)
+        self.assertIs(read_config(str(self.path))["packed_inference"], True)
+        self.assertIs(settings.runtime_snapshot()["PACKED_INFERENCE"], True)
+        for value in ('true', 1, None):
+            with self.subTest(value=value), self.assertRaises(TypeError):
+                settings.save_setting("packed_inference", value)
+
+    def test_packed_route_save_failure_retains_previous_value(self) -> None:
+        """磁盘保存失败不发布新的拼图偏好。"""
+        previous = settings.PACKED_INFERENCE
+        with patch("config.store.os.replace", side_effect=PermissionError("locked")), self.assertRaises(PermissionError):
+            settings.save_setting("packed_inference", not previous)
+        self.assertEqual(settings.PACKED_INFERENCE, previous)
+
     def test_corrupt_config_is_not_overwritten(self) -> None:
         """损坏配置必须报错，不能降级为空字典再覆盖。"""
         original = "broken: [\n"

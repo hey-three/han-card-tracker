@@ -77,6 +77,22 @@ class AutoLayoutTests(unittest.TestCase):
         self.assertEqual(self.tracker.remain_cards["K"], 4)
         self.assertEqual(self.tracker.remain_cards["A"], 3)
 
+    def test_tracking_regions_keep_hand_and_full_width_play_band(self) -> None:
+        """跟踪候选不缩到上一手牌，手牌及三家两行出牌样本仍在覆盖内。"""
+        regions, guard = self.analyzer.inference_regions()
+        self.assertIsNotNone(regions)
+        self.assertGreaterEqual(guard, .04)
+        from core.frame_packing import make_plan
+        plan = make_plan((1000, 800), regions, guard)
+        hand_tiles = [t for t in plan.tiles if t.source[1] > 500]
+        self.assertEqual(len(hand_tiles), 2)
+        self.assertLess(hand_tiles[0].source[2]-hand_tiles[0].source[0], 1000)
+        for card in self.cards + row(['A'], .22, .37) + row(['K'], .22, .425) + row(['Q'], .76, .37):
+            a, b, c, d = card.bbox
+            self.assertTrue(any(x1 <= a and y1 <= b and c <= x2 and d <= y2 for x1, y1, x2, y2 in regions))
+        self.analyzer.reset()
+        self.assertEqual(self.analyzer.inference_regions(), (None, .04))
+
     def test_long_left_play_crosses_center_without_splitting(self) -> None:
         """左家长牌组跨过中线后仍整组归左家。"""
         names = ["A", "A", "K", "K", "Q", "Q", "J", "J", "ten", "ten", "nine", "nine"]

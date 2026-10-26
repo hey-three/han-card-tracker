@@ -36,6 +36,7 @@ class Response:
         layout_status: 自动布局的校准、跟踪或歧义说明；手动模式为空。
         screenshot_jpeg: 可选的实时预览截图 JPEG 数据。
         screenshot_regions: 自动布局当前确认的牌区边界，使用归一化坐标。
+        performance: 当前子进程分阶段耗时和调用次数，不包含图片或物理显示时刻。
     """
 
     status: Literal["ready", "ok", "error", "fatal"]
@@ -48,3 +49,4 @@ class Response:
     layout_status: str = ""
     screenshot_jpeg: bytes | None = None
     screenshot_regions: dict[str, tuple[float, float, float, float]] | None = None
+    performance: dict[str, float] | None = None

@@ -310,6 +310,9 @@ SHOW_LAYOUT_STATUS = config.get('show_layout_status', True)
 # 是否在标题栏显示推理耗时和整轮耗时
 SHOW_TIMING = config.get('show_timing', True)
 
+# 保护拼图仍需真实牌局验证，旧配置默认沿用整图识别。
+PACKED_INFERENCE = config.get('packed_inference', False)
+
 # ==================== 设备选择配置 ====================
 # 设备选择选项: "cpu" (使用CPU), "cuda" (使用GPU)
 DEVICE_CHOICE = config.get('device_choice', 'cuda')
@@ -359,6 +362,7 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "show_current_screenshot": ("SHOW_CURRENT_SCREENSHOT", bool),
     "show_layout_status": ("SHOW_LAYOUT_STATUS", bool),
     "show_timing": ("SHOW_TIMING", bool),
+    "packed_inference": ("PACKED_INFERENCE", bool),
 }
 
 
