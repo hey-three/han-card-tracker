@@ -1,12 +1,26 @@
 """实时截图预览窗口。"""
 
-from PySide6.QtCore import Qt
-from PySide6.QtGui import QResizeEvent, QPixmap
+from collections.abc import Mapping
+
+from PySide6.QtCore import QRect, Qt
+from PySide6.QtGui import QColor, QFont, QImage, QPainter, QPen, QResizeEvent, QPixmap
 from PySide6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ScreenshotPreviewLabel(QLabel):
-    """按窗口大小等比例显示当前截图。"""
+    """在当前截图上绘制自动布局区域框，并按窗口大小等比例显示。
+
+    Attributes:
+        REGION_COLORS: 区域键到稳定标注颜色的映射。
+    """
+
+    REGION_COLORS: dict[str, QColor] = {
+        "player_hand": QColor("#31d17c"),
+        "landlord_cards": QColor("#ffd43b"),
+        "player_played": QColor("#35c9ff"),
+        "opponent_left": QColor("#ff9638"),
+        "opponent_right": QColor("#ec68ff"),
+    }
 
     def __init__(self, parent: QDialog) -> None:
         """创建用于呈现截图的标签。"""
@@ -17,18 +31,58 @@ class ScreenshotPreviewLabel(QLabel):
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
         self.setText("等待截图…")
 
-    def set_image(self, image_data: bytes) -> None:
-        """读取 JPEG 数据并刷新预览。
+    def set_image(
+        self,
+        image_data: bytes,
+        regions: Mapping[str, tuple[float, float, float, float]],
+        region_labels: Mapping[str, str],
+    ) -> None:
+        """读取 JPEG，在截图上绘制每个已确认牌区的整体边框和名称。
 
         Args:
             image_data: 推理进程传来的 JPEG 编码截图。
+            regions: 自动布局当前确认的牌区归一化边界。
+            region_labels: 区域键到可读名称的映射。
         """
-        pixmap = QPixmap()
-        if not pixmap.loadFromData(image_data):
+        image = QImage()
+        if not image.loadFromData(image_data, "JPEG"):
             self._source_pixmap = QPixmap()
             self.setText("截图读取失败")
             return
-        self._source_pixmap = pixmap
+        painter = QPainter(image)
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+        font = QFont("Microsoft YaHei", max(9, image.width() // 100))
+        font.setBold(True)
+        painter.setFont(font)
+        line_width = max(2, image.width() // 700)
+        for region_key, bounds in regions.items():
+            left, top, right, bottom = bounds
+            x1 = round(max(0.0, min(1.0, left)) * image.width())
+            y1 = round(max(0.0, min(1.0, top)) * image.height())
+            x2 = round(max(0.0, min(1.0, right)) * image.width())
+            y2 = round(max(0.0, min(1.0, bottom)) * image.height())
+            if x1 >= x2 or y1 >= y2:
+                continue
+            color = self.REGION_COLORS.get(region_key, QColor("#45d7d0"))
+            painter.setPen(QPen(color, line_width))
+            painter.setBrush(Qt.BrushStyle.NoBrush)
+            painter.drawRect(QRect(x1, y1, x2 - x1, y2 - y1))
+            label = region_labels.get(region_key, region_key)
+            text_width = painter.fontMetrics().horizontalAdvance(label) + 12
+            text_height = painter.fontMetrics().height() + 6
+            label_x = min(x1, max(0, image.width() - text_width))
+            label_y = max(0, y1 - text_height)
+            background = QColor(color)
+            background.setAlpha(220)
+            painter.fillRect(QRect(label_x, label_y, text_width, text_height), background)
+            painter.setPen(QPen(QColor("#151515")))
+            painter.drawText(
+                QRect(label_x + 6, label_y + 2, text_width - 12, text_height - 4),
+                Qt.AlignmentFlag.AlignCenter,
+                label,
+            )
+        painter.end()
+        self._source_pixmap = QPixmap.fromImage(image)
         self._refresh_pixmap()
 
     def resizeEvent(self, event: QResizeEvent) -> None:
@@ -62,10 +116,17 @@ class ScreenshotPreviewDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.addWidget(self.image_label)
 
-    def update_image(self, image_data: bytes) -> None:
-        """将最新截图交给预览标签显示。
+    def update_image(
+        self,
+        image_data: bytes,
+        regions: Mapping[str, tuple[float, float, float, float]],
+        region_labels: Mapping[str, str],
+    ) -> None:
+        """将最新截图和已确认牌区边界交给预览标签显示。
 
         Args:
             image_data: JPEG 编码的当前截图。
+            regions: 自动布局当前确认的牌区归一化边界。
+            region_labels: 区域键到可读名称的映射。
         """
-        self.image_label.set_image(image_data)
+        self.image_label.set_image(image_data, regions, region_labels)

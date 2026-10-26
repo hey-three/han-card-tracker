@@ -868,18 +868,22 @@ class CardUI(QMainWindow):
         if not self._closing:
             self.on_show_current_screenshot_changed(0)
 
-    @Slot(bytes)
-    def on_screenshot_ready(self, image_data: bytes) -> None:
+    @Slot(bytes, dict)
+    def on_screenshot_ready(
+        self, image_data: bytes, regions: dict[str, tuple[float, float, float, float]],
+    ) -> None:
         """显示推理进程返回的最新截图。
 
         Args:
             image_data: JPEG 编码的游戏窗口截图。
+            regions: 自动布局当前确认的各牌区归一化边界。
         """
         if self._closing or not self._preview_requested or not settings.SHOW_CURRENT_SCREENSHOT:
             return
         self._show_screenshot_preview()
         if self._screenshot_preview is not None:
-            self._screenshot_preview.update_image(image_data)
+            region_labels = {item["key"]: item["label"] for item in settings.LAYOUT_REGIONS}
+            self._screenshot_preview.update_image(image_data, regions, region_labels)
 
     def _apply_setting(
         self, key: str, value: object, runtime_key: str | None = None,
