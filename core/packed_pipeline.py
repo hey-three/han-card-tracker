@@ -126,7 +126,7 @@ class PackedPipeline:
         return difference.getbbox() is not None
 
     def _render(self, image: Image.Image, plan: PackingPlan) -> Image.Image:
-        """复用画布，调用 Pillow 底层裁剪及粘贴。
+        """复用固定画布，以统一比例缩放并粘贴原图裁片，空白填充 114 灰色。
 
         Args:
             image: 当前原图。
@@ -140,7 +140,10 @@ class PackedPipeline:
         else:
             self._canvas.paste((114, 114, 114), (0, 0, *plan.canvas_size))
         for tile in plan.tiles:
-            self._canvas.paste(image.crop(tile.source), (tile.x, tile.y))
+            crop = image.crop(tile.source)
+            if crop.size != tile.render_size:
+                crop = crop.resize(tile.render_size, Image.Resampling.BILINEAR)
+            self._canvas.paste(crop, (tile.x, tile.y))
         return self._canvas
 
     def detect(self, image: Image.Image | None, detector: Detector, regions: Sequence[Box] | None,
@@ -174,7 +177,7 @@ class PackedPipeline:
                 call_pending = False
                 call_started = 0.
                 try:
-                    plan = make_plan(image.size, regions, guard)
+                    plan = make_plan(image.size, regions, guard).fit()
                     if self._changed_outside(image, plan):
                         reason = "候选区外画面变化"
                     else:

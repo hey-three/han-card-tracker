@@ -14,7 +14,7 @@ from ultralytics import YOLO
 
 import config.settings as settings
 from core.image_saver import ImageSaver
-from core.frame_packing import Detection
+from core.frame_packing import Detection, PACKED_CANVAS_SIZE
 
 if TYPE_CHECKING:
     from ultralytics.engine.results import Results
@@ -172,7 +172,7 @@ class YoloInferencer:
         """
         backend = getattr(getattr(self.model, "predictor", None), "model", None)
         flexible = backend is not None and (getattr(backend, "pt", False) or getattr(backend, "dynamic", False))
-        return self._run(img, 640 if flexible else None, packed=True)
+        return self._run(img, PACKED_CANVAS_SIZE[0] if flexible else None, packed=True)
 
     def _run(self, img: Image.Image, input_size: int | None = None, *, packed: bool = False) -> tuple[object | None, float]:
         """运行单模型并同步 GPU 计时。

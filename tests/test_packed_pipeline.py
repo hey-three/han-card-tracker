@@ -5,7 +5,7 @@ from unittest.mock import Mock, patch
 
 from PIL import Image, ImageDraw
 
-from core.frame_packing import Detection
+from core.frame_packing import Detection, make_plan
 from core.packed_pipeline import PackedPipeline
 
 
@@ -34,11 +34,11 @@ class PipelineTests(unittest.TestCase):
         self.pipeline = PackedPipeline()
         self.image = Image.new('RGB', (1000, 200), (80, 80, 80))
         self.regions = [(0., 0., 1., 1.)]
+        self.plan = make_plan(self.image.size, self.regions).fit()
         self.detector = Mock()
         self.detector.detect.return_value = ('full', 10.)
         self.detector.detect_packed.return_value = (raw_result([
-            Detection('A', (480., 30., 500., 80.)),
-            Detection('A', (20., 234., 40., 284.)),
+            Detection('A', t.project((480., 30., 500., 80.))) for t in self.plan.tiles
         ]), 5.)
         self.detector.restore_result.return_value = 'restored'
 
@@ -58,9 +58,12 @@ class PipelineTests(unittest.TestCase):
         self.prime()
         result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
         canvas = self.detector.detect_packed.call_args.args[0]
+        self.assertEqual(canvas.size, (640, 640))
         self.assertEqual((result, elapsed), ('restored', 5.))
         cards = self.detector.restore_result.call_args.args[2]
-        self.assertEqual([c.bbox for c in cards], [(480., 30., 500., 80.)])
+        self.assertEqual(len(cards), 1)
+        for actual, expected in zip(cards[0].bbox, (480., 30., 500., 80.)):
+            self.assertAlmostEqual(actual, expected)
         self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
         self.assertIs(canvas, self.detector.detect_packed.call_args.args[0])
         self.detector.detect.assert_not_called()
@@ -69,7 +72,8 @@ class PipelineTests(unittest.TestCase):
         """冲突后完整推理当前原图，计入两次调用成本。"""
         self.prime()
         self.detector.detect_packed.return_value = (raw_result([
-            Detection('A', (480., 30., 500., 80.)), Detection('K', (20., 234., 40., 284.)),
+            Detection(name, tile.project((480., 30., 500., 80.)))
+            for name, tile in zip(('A', 'K'), self.plan.tiles)
         ]), 5.)
         result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
         self.assertEqual((result, elapsed), ('full', 15.))

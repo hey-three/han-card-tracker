@@ -72,9 +72,9 @@
 - 自动布局 `mode: auto` 时，第 3 步改为 `core/auto_layout.py` 的 `read_yolo_boxes()` + `AutoLayoutAnalyzer.observe()`；只需窗口标题和空 `layout: {}`，不使用手工矩形。旧配置缺省 `mode: manual`，完全保留手动方式。
 - 自动模式按行组成牌组、合并相邻行，再对完整牌组确定归属；左右家使用对应边缘、本家使用中心和第一行顶边锚点，支持单张、长牌组和两行出牌。多重集排序避免同牌换行重复扣减。
 - 短末行不能因初始位置评分落在本家就被拆走：相邻行同侧、同列对齐且牌框尺度一致时，先合并再按完整牌组归属；近期手牌减少或此前单独稳定的本家出牌可阻止误合并。实测框回归位于 `tests/fixtures/right_wrapped_play.json` 与 `tests/test_wrapped_ownership.py`。
-- 校准需要无出牌的完整 17/20 张手牌和三张底牌，连续 `max(3, FRAME_LENGTH)` 帧稳定；`DoudizhuTracker.initialize_from_layout()` 只发布一次初始扣牌。当前支持本家在下、两家在左右的常见界面，不宣称覆盖所有软件。
+- 校准需要尚无出牌、合法完整的 17/20 张手牌连续 `max(3, FRAME_LENGTH)` 帧稳定；底牌可缺失、只检出一两张或闪烁。上方中央一至三张小牌组仅作为可选底牌候选排除，不参与手牌连续稳定签名；其他牌组阻止初始化。`DoudizhuTracker.initialize_from_layout()` 只发布一次初始扣牌。当前支持本家在下、两家在左右的常见界面，不宣称覆盖所有软件；没有按游戏名查表的区域模板。
 - `LayoutObservation.regions` 缺失键代表未知，有键空列表才表示空区。自动模式传入 `known_regions`，未知区域清确认缓存但保留出牌/空帧历史；不得把未知补成空列表。校准后底牌隐藏可继续跟踪。
-- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。重置、模型切换、长宽比显著变化或超时会清除自动布局参照。详见 `docs/自动布局设计说明.md`。
+- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。显式重置、模型/布局切换清除参照；长宽比变化超过 5% 只重新校准几何，保留当前牌局历史，不据此判定换局。底牌牌面变化不触发换局。自动模式不再用普通无目标超时清空显示。详见 `docs/自动布局设计说明.md`。
 
 ### 游戏边界与现有分层
 
@@ -101,7 +101,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 - `BaseCardTracker._presses_one_frame()` 以 `_get_validity_region()` 返回的区域是否为空作为"本帧是否有效"的门禁
 - 空则直接丢弃，不更新状态也不重置 `no_target_time`
 - 子类实现 `_get_validity_region()` 指定判断区域（斗地主用 `"landlord_cards"`）
-- 上述门禁适用于手动模式。自动模式显式提供 `known_regions`，只更新已确认区域；全帧无可靠目标不推进状态机。
+- 上述门禁适用于手动模式。自动模式显式提供 `known_regions`，只更新已确认区域；全帧无可靠目标不推进出牌状态机。`GameController` 另将有效模型结果是否含牌交给 `DoudizhuTracker.observe_frame_presence()`，成功检测且无牌才累计结束阈值，截图失败或缺结果中断累计；不能把两次同帧模型调用算作两帧。
 
 ### 连续帧确认
 
@@ -115,7 +115,7 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### 超时重置
 
-- `get_cards_number()` 中若超过 `RESET_TIME` 未见有效目标则 `reset()`
+- 手动模式 `get_cards_number()` 中若超过 `RESET_TIME` 未见有效目标则 `reset()`；自动模式保留历史，通过连续有效无牌或已确认某家出完进入等待。
 
 ### 子类必须实现的抽象方法
 
@@ -130,10 +130,12 @@ WAIT_BEGIN (0) → HAS_STARTED (1) → STARTED_RECORD_CARD (2)
 
 ### 斗地主特有逻辑（`DoudizhuTracker`）
 
-- 开始游戏条件：地主底牌连续帧稳定
-- 开始记牌条件：玩家手牌连续帧稳定；开始记牌时扣减手牌
+- 手动模式保留原底牌开始门禁；自动模式由布局确认完整 17/20 张手牌后直接初始化，底牌不是必要条件。
+- 开始记牌时扣减手牌；未见任何出牌前，稳定的 17→20 张且包含原十七张时，通过 `update_initial_hand()` 只补扣新增三张。已有出牌后不能改写初始手牌。
 - 出牌处理：上家/下家出牌扣减剩余牌数；本家出牌仅记录不扣减（已在 `on_start_recording` 中扣减）
 - 统计口径：`remain_cards` 排除本家初始手牌及已确认的对手出牌；本家手牌持续可见不应重复扣减，本家出牌也不应再次扣减。
+- 自动结束条件为连续 `max(3, FRAME_LENGTH)` 个有效检测结果全图无牌，或 `remaining_by_player` 有确切某家剩余零张。该计数独立于按牌点的 `remain_cards`：本家二十张则两家均十七张，本家十七张则保留两种对手地主分配，未排除歧义时返回 None；记录矛盾不判零。
+- `begin_waiting()` 清确认缓存但保留 `remain_cards/show_cards`；`AutoLayoutAnalyzer.wait_for_next_round()` 清几何并阻止重复初始化旧结束画面。新完整手牌稳定后才一次性替换显示。确认全图清空后允许下一局恰好同手牌；用户显式重置仍立即清空。
 - 设计依据与识别时序的验证边界见 [`docs/斗地主记牌设计说明.md`](docs/斗地主记牌设计说明.md)；审查时应区分扣牌设计与初始手牌识别条件。
 
 ## 4) 配置与持久化模式
@@ -271,7 +273,8 @@ python main.py
 
 - 2026-10-27 用户决定先在本 Windows 工程验证裁剪、拼图及记牌算法，再考虑向 Android 移植；讨论与后续验证顺序见 [`docs/Windows性能优化讨论记录.md`](docs/Windows性能优化讨论记录.md)。
 - V4.3 已接入可关闭的保护拼图试验链路，详见 [`docs/V4.3更新说明.md`](docs/V4.3更新说明.md)。`packed_inference` / `PACKED_INFERENCE` 为布尔值，缺省 false，高级设置选择路线，经原有回执和原子保存流程应用。
-- `core/frame_packing.py` 提供不拉伸的长条重叠切分和布局；按原图坐标、类别及重叠消除跨块重复，不按牌点简单去重。切边缺完整副本、类别冲突、区外变化和定期复查均由 `core/packed_pipeline.py` 回到同一原图。
-- 未校准和手动布局用整图；自动跟踪保留完整宽度桌面带、每帧手牌证据与底牌区，给第二行向下展开留空间。未实现细分三家小框、手牌降频或通用颜色定位，不能把跳过/未覆盖区当空区。
+- `core/frame_packing.py` 提供长条重叠切分和布局；`make_plan(...).fit()` 将整套排列按统一比例放入固定 `PACKED_CANVAS_SIZE=(640,640)`，不足处填 114 灰色。图块相对尺度不变，整数取整误差小于一像素。`Tile.project/unproject` 处理缩放与偏移；按原图坐标、类别及重叠消除跨块重复，不按牌点简单去重。切边缺完整副本、类别冲突、区外变化和定期复查均由 `core/packed_pipeline.py` 回到同一原图。
+- 未校准和手动布局用整图；自动跟踪从手牌和窗口边界推导桌面带，保留完整宽度桌面带、每帧手牌证据及存在时的底牌候选区，给第二行向下展开留空间。未实现细分三家小框、手牌降频或通用颜色定位，不能把跳过/未覆盖区当空区。
 - 拼图仅对 PyTorch/动态后端尝试 640；静态 ONNX/TensorRT 保留导出尺寸。回退明确恢复原输入配置；不自动重新训练、导出或替换模型。保护范围及阈值需真实序列验证，正式开局仍要求完整稳定的 17/20 张手牌。
 - 用户已授权将本次完成内容提交、推送到 GitHub 分支 `V4.3` 并合并 `main`，附详细说明；个人 `config/config.yaml` 现有改动不进入本次提交。Android 端性能不作为 Windows 基线，电脑测试不作为手机验收。
+- 当前训练建议与实现边界集中在 [`docs/模型训练与拼图约定.md`](docs/模型训练与拼图约定.md)：建议先试 YOLO11n、640×640、现有牌类映射；没有启动训练或替换权重。`python -B -m utils.preview_packing` 使用实际规划/渲染器生成 `docs/assets/packing-*.png` 合成示意。新的讨论结论应同步这份文档及使用说明，区分已实现、候选与未验证。
