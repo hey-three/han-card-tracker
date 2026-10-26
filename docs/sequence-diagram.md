@@ -27,12 +27,13 @@ sequenceDiagram
     Note over W: 仅 ready 且没有未完成命令时允许检测
     W->>P: Command(id, generation, detect)
     P->>G: detect()
-    Note over G: 截图 → YOLO → 几何分区 → 标签映射 → 状态机
+    Note over G: 截图 → YOLO → 手动分区/自动牌组归属 → 标签映射 → 状态机
     G-->>P: remain_cards, zone_cards, yolo_ms
     P->>P: 复制可变结果，避免延迟序列化串帧
     P-->>W: Response(ok/error, id, generation, ...)
     W->>W: 按 id 匹配请求，检查 generation
     W-->>UI: 有效结果才发送 result_ready
+    W-->>UI: layout_status_changed（自动校准/跟踪/歧义提示）
     W-->>UI: finished 释放本次检测 busy
 ```
 

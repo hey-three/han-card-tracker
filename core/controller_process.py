@@ -52,6 +52,8 @@ def run_controller_loop(
                 response = Response(
                     "ok", command.request_id, command.generation,
                     deepcopy(remain), deepcopy(zones), elapsed,
+                    layout_status=controller.layout_status,
+                    screenshot_jpeg=controller.last_screenshot_jpeg,
                 )
             else:
                 controller.execute_command(command.name, command.payload)

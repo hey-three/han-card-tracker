@@ -238,7 +238,7 @@ classDiagram
         -layout_config: dict
         -screen_capture: ScreenCapture
         -yolo_inferencer: YoloInferencer
-        -layout_analyzer: LayoutAnalyzer
+        -layout_analyzer: LayoutAnalyzer / AutoLayoutAnalyzer
         -tracker: BaseCardTracker
         -debug_manager: ImageSaver
         +detect() tuple
@@ -466,7 +466,9 @@ classDiagram
     InferenceWorker ..> GameController : 创建子进程实例
     GameController *-- ScreenCapture : 组合（创建并持有）
     GameController *-- YoloInferencer : 组合（创建并持有）
-    GameController *-- LayoutAnalyzer : 组合（创建并持有）
+    GameController *-- LayoutAnalyzer : 手动分区
+    GameController *-- AutoLayoutAnalyzer : 自动分组与跟踪
+    AutoLayoutAnalyzer --> LayoutObservation : 已知区域与开局快照
     GameController *-- BaseCardTracker : 组合（通过 create_tracker() 创建）
     GameController *-- ImageSaver : 组合（创建并持有，统一管理）
 

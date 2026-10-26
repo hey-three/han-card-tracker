@@ -301,6 +301,9 @@ DEBUG_MODE = config.get('debug_mode', True)
 # 是否保存游戏图片（与调试模式分开控制）
 SAVE_DEBUG_IMAGES = config.get('save_debug_images', False)
 
+# 是否将当前窗口截图实时传回主界面预览
+SHOW_CURRENT_SCREENSHOT = config.get('show_current_screenshot', False)
+
 # 是否在标题栏显示推理耗时和整轮耗时
 SHOW_TIMING = config.get('show_timing', True)
 
@@ -315,12 +318,23 @@ ALWAYS_ON_TOP = config.get('always_on_top', False)
 # 是否显示玩家所出的牌
 SHOW_PLAYED_CARDS = config.get('show_played_cards', True)
 
-class LayoutConfig(TypedDict):
+class _LayoutOptions(TypedDict, total=False):
+    """兼容旧配置的可选布局字段。
+
+    Attributes:
+        mode: manual 使用矩形；auto 只使用窗口标题。
+    """
+
+    mode: str
+
+
+class LayoutConfig(_LayoutOptions):
     """可跨进程传递的布局。
 
     Attributes:
         window_title: 截图窗口标题。
         layout: 区域名到归一化矩形的映射。
+        mode: 可选的 manual/auto 模式，缺省为 manual。
     """
 
     window_title: str
@@ -339,6 +353,7 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "show_played_cards": ("SHOW_PLAYED_CARDS", bool),
     "debug_mode": ("DEBUG_MODE", bool),
     "save_debug_images": ("SAVE_DEBUG_IMAGES", bool),
+    "show_current_screenshot": ("SHOW_CURRENT_SCREENSHOT", bool),
     "show_timing": ("SHOW_TIMING", bool),
 }
 
@@ -374,10 +389,10 @@ def _validate_setting(key: str, value: object) -> None:
 
 
 def validate_layout(value: object) -> LayoutConfig:
-    """校验并复制完整的斗地主布局。
+    """校验并复制手动或自动斗地主布局。
 
     Args:
-        value: 包含窗口标题和全部牌区的字典。
+        value: 包含窗口标题、区域字典和可选 mode 的字典；auto 允许空区域字典。
 
     Returns:
         独立的、坐标已转换为浮点数的布局。
@@ -394,6 +409,13 @@ def validate_layout(value: object) -> LayoutConfig:
         raise TypeError("布局必须包含字符串窗口标题和区域字典")
     if not title.strip():
         raise ValueError("窗口标题不能为空")
+    mode = value.get("mode", "manual")
+    if not isinstance(mode, str):
+        raise TypeError("布局模式必须是字符串")
+    if mode not in ("manual", "auto"):
+        raise ValueError("布局模式必须是 manual 或 auto")
+    if mode == "auto":
+        return {"window_title": title, "layout": {}, "mode": "auto"}
     normalized: dict[str, list[float]] = {}
     for region in LAYOUT_REGIONS:
         key = region["key"]
@@ -718,7 +740,7 @@ def save_current_layout(layout_name: str) -> None:
 
 def save_window_layout(
     layout_name: str, window_title: str,
-    layout_dict: Mapping[str, Sequence[float]], set_current: bool = True,
+    layout_dict: Mapping[str, Sequence[float]], set_current: bool = True, mode: str = "manual",
 ) -> None:
     """校验并保存布局，失败时保留原文件和内存。
 
@@ -727,6 +749,7 @@ def save_window_layout(
         window_title: 目标窗口标题。
         layout_dict: 所有牌区的归一化矩形。
         set_current: 是否设为当前布局。
+        mode: manual 保存矩形，auto 仅保存窗口标题。
 
     Raises:
         TypeError: 名称、开关或布局内容类型错误。
@@ -737,7 +760,7 @@ def save_window_layout(
         raise TypeError("布局名称必须为字符串，set_current 必须为布尔值")
     if not layout_name.strip():
         raise ValueError("布局名称不能为空")
-    layout = validate_layout({"window_title": window_title, "layout": layout_dict})
+    layout = validate_layout({"window_title": window_title, "layout": layout_dict, "mode": mode})
     cfg = read_config(CONFIG_PATH)
     layouts = deepcopy(cfg.get("window_layouts", WINDOW_LAYOUTS))
     if not isinstance(layouts, dict):

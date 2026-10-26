@@ -19,7 +19,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt, QRect
+from PySide6.QtCore import Qt, QRect, Signal
 from PySide6.QtGui import QColor, QPainter, QPen
 
 
@@ -82,6 +82,7 @@ class SettingsDialog(QDialog):
     LABEL_MIN_WIDTH = 80
     PAGE_MARGIN = 20
     PAGE_SPACING = 20
+    auto_layout_requested = Signal()
 
     def __init__(
         self,
@@ -96,6 +97,7 @@ class SettingsDialog(QDialog):
         on_show_played_cards_change_callback=None,
         on_debug_mode_change_callback=None,
         on_save_debug_images_change_callback=None,
+        on_show_current_screenshot_change_callback=None,
         on_show_timing_change_callback=None,
         on_layout_editor_callback=None,
         on_layout_delete_callback=None,
@@ -117,6 +119,7 @@ class SettingsDialog(QDialog):
         self.on_show_played_cards_change_callback = on_show_played_cards_change_callback
         self.on_debug_mode_change_callback = on_debug_mode_change_callback
         self.on_save_debug_images_change_callback = on_save_debug_images_change_callback
+        self.on_show_current_screenshot_change_callback = on_show_current_screenshot_change_callback
         self.on_show_timing_change_callback = on_show_timing_change_callback
         self.on_layout_editor_callback = on_layout_editor_callback
         self.on_layout_delete_callback = on_layout_delete_callback
@@ -202,7 +205,7 @@ class SettingsDialog(QDialog):
         parent_layout.addLayout(row)
         return combo
 
-    def _setup_basic_settings(self):
+    def _setup_basic_settings(self) -> None:
         """在基本设置标签页中添加控件。"""
         basic_layout = self._new_page_layout(self.tab1)
 
@@ -260,6 +263,15 @@ class SettingsDialog(QDialog):
         self.btn_layout_editor.clicked.connect(self._on_layout_editor_clicked)
         layout_row.addWidget(self.btn_layout_editor)
         basic_layout.addLayout(layout_row)
+
+        auto_row = QHBoxLayout()
+        self.btn_auto_layout = QPushButton("自动布局…")
+        self.btn_auto_layout.setToolTip("选择游戏窗口即可；请在开局前启用，自动识别手牌、底牌和出牌区")
+        self.btn_auto_layout.clicked.connect(self.auto_layout_requested.emit)
+        auto_row.addWidget(self.btn_auto_layout)
+        auto_row.addWidget(QLabel("选择窗口，自动定位牌区；支持单张、长牌组和多行出牌"))
+        auto_row.addStretch()
+        basic_layout.addLayout(auto_row)
 
         self.combo_device = self._add_combo_row(
             basic_layout,
@@ -352,6 +364,15 @@ class SettingsDialog(QDialog):
             ["否", "是"],
             self._on_save_debug_images_changed,
             tooltip="开启后会保存每帧的截图和 YOLO 标注图到 games_images 目录，用于排查识别问题。只保留最近 3 局游戏图片",
+        )
+
+        self.combo_show_current_screenshot = self._add_combo_row(
+            advanced_layout,
+            "实时显示截图：",
+            "ShowCurrentScreenshotCombo",
+            ["否", "是"],
+            self._on_show_current_screenshot_changed,
+            tooltip="开启后在独立窗口实时显示当前捕获的游戏画面",
         )
 
         self.combo_show_timing = self._add_combo_row(
@@ -470,6 +491,11 @@ class SettingsDialog(QDialog):
         """
         if self.on_show_timing_change_callback:
             self.on_show_timing_change_callback(index)
+
+    def _on_show_current_screenshot_changed(self, index: int) -> None:
+        """转发实时截图预览开关变化。"""
+        if self.on_show_current_screenshot_change_callback:
+            self.on_show_current_screenshot_change_callback(index)
 
     def _on_model_changed(self, index):
         """模型选择改变事件。"""
@@ -639,6 +665,16 @@ class SettingsDialog(QDialog):
         text = "是" if show_timing else "否"
         index = self.combo_show_timing.findText(text)
         self._set_combo_current_safely(self.combo_show_timing, index)
+
+    def set_current_show_current_screenshot(self, show_current_screenshot: bool) -> None:
+        """设置当前实时截图预览选项。
+
+        Args:
+            show_current_screenshot: 是否打开实时截图预览。
+        """
+        text = "是" if show_current_screenshot else "否"
+        index = self.combo_show_current_screenshot.findText(text)
+        self._set_combo_current_safely(self.combo_show_current_screenshot, index)
 
     def set_current_model(self, model_name: str):
         """设置当前 YOLO 模型选择。"""

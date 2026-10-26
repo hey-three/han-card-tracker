@@ -84,6 +84,7 @@ classDiagram
 
     class GameController {
         +detect()
+        +layout_status: str
         +reset()
         +switch_layout()
         +switch_model()
@@ -204,7 +205,9 @@ classDiagram
     SettingsDialog *-- LayoutItemDelegate
     GameController *-- ScreenCapture
     GameController *-- YoloInferencer
-    GameController *-- LayoutAnalyzer
+    GameController *-- LayoutAnalyzer : 手动分区
+    GameController *-- AutoLayoutAnalyzer : 自动分组与跟踪
+    AutoLayoutAnalyzer --> LayoutObservation : 已知区域与开局快照
     GameController *-- BaseCardTracker
     GameController *-- ImageSaver
 

@@ -9,7 +9,8 @@ from collections.abc import Callable
 
 from PySide6.QtCore import Qt, QTimer, Slot
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox
+    QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox,
+    QInputDialog,
 )
 from core.inference_process import InferenceWorker
 from config.settings import TOTAL_CARDS
@@ -17,6 +18,8 @@ from utils.trans_yolo_names_to_string import trans_yolo_names_to_string
 from ui.layout_editor_dialog import LayoutEditorDialog
 from ui.settings_dialog import SettingsDialog
 from ui.settings_controller import SettingsController
+from ui.screenshot_preview import ScreenshotPreviewDialog
+from utils.layout_editor.service import list_visible_window_titles
 import config.settings as settings
 import time
 
@@ -216,6 +219,10 @@ class CardUI(QMainWindow):
         self.worker = InferenceWorker(self.layout_name, game_name=settings.GAME_NAME)
         self.worker.result_ready.connect(self.on_result_ready)
         self.worker.error.connect(self.on_worker_error)
+        self.worker.screenshot_ready.connect(self.on_screenshot_ready)
+        self._screenshot_preview: ScreenshotPreviewDialog | None = None
+        if settings.SHOW_CURRENT_SCREENSHOT:
+            self._show_screenshot_preview()
         self.worker.finished.connect(self.on_worker_finished)
 
         # 初始化定时器
@@ -238,6 +245,7 @@ class CardUI(QMainWindow):
         self.settings_controller.failed.connect(self._on_settings_error)
         self.settings_controller.applied.connect(self._refresh_open_settings)
         self.worker.state_changed.connect(self.on_worker_state_changed)
+        self.worker.layout_status_changed.connect(self.on_layout_status_changed)
         self.btn_retry = QPushButton("重启识别", self)
         self.btn_retry.setToolTip("重新加载推理服务，并从头初始化记牌状态")
         self.btn_retry.clicked.connect(self.on_restart_clicked)
@@ -270,6 +278,7 @@ class CardUI(QMainWindow):
             on_show_played_cards_change_callback=self.on_show_played_cards_changed,
             on_debug_mode_change_callback=self.on_debug_mode_changed,
             on_save_debug_images_change_callback=self.on_save_debug_images_changed,
+            on_show_current_screenshot_change_callback=self.on_show_current_screenshot_changed,
             on_show_timing_change_callback=self.on_show_timing_changed,
             on_layout_editor_callback=self.on_layout_editor_clicked,
             on_layout_delete_callback=self.on_layout_delete_clicked,
@@ -279,6 +288,7 @@ class CardUI(QMainWindow):
         )
 
         self._settings_dialog = dialog
+        dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
         dialog.set_current_always_on_top(settings.ALWAYS_ON_TOP)
         if settings.ALWAYS_ON_TOP:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -333,6 +343,9 @@ class CardUI(QMainWindow):
         from config.settings import SAVE_DEBUG_IMAGES
         dialog.set_current_save_debug_images(SAVE_DEBUG_IMAGES)
 
+        from config.settings import SHOW_CURRENT_SCREENSHOT
+        dialog.set_current_show_current_screenshot(SHOW_CURRENT_SCREENSHOT)
+
         # 设置当前显示耗时
         from config.settings import SHOW_TIMING
         dialog.set_current_show_timing(SHOW_TIMING)
@@ -353,7 +366,8 @@ class CardUI(QMainWindow):
         """打开可视化布局编辑器并刷新设置对话框中的布局列表。"""
         editor = LayoutEditorDialog(
             settings_dialog,
-            initial_layout_name=self.layout_name,
+            initial_layout_name=(None if settings.WINDOW_LAYOUTS[self.layout_name].get("mode") == "auto"
+                                 else self.layout_name),
             on_restore_topmost=lambda: self._reapply_topmost_if_enabled(settings_dialog),
             stay_on_top=settings.ALWAYS_ON_TOP,
         )
@@ -369,6 +383,46 @@ class CardUI(QMainWindow):
             self._switch_layout_by_name(new_layout_name)
 
         QTimer.singleShot(0, lambda: settings_dialog.refresh_layout_list(selected_name=self.layout_name))
+
+    def on_auto_layout_clicked(self, dialog: SettingsDialog) -> None:
+        """选择窗口后提交自动布局，后端确认成功才保存窗口配置。
+
+        Args:
+            dialog: 当前设置窗口。
+        """
+        try:
+            titles = [title for title in list_visible_window_titles()
+                      if not title.startswith("Han记牌器") and title != dialog.windowTitle()]
+            if not titles:
+                QMessageBox.information(dialog, "自动布局", "请先打开游戏窗口，再选择自动布局。")
+                return
+            title, accepted = QInputDialog.getItem(
+                dialog, "自动布局", "选择游戏窗口（请在开局前启动）：", titles, 0, False,
+            )
+            if not accepted or not title:
+                return
+            name = f"自动布局 · {title}"
+            while name in settings.WINDOW_LAYOUTS and settings.WINDOW_LAYOUTS[name].get("mode") != "auto":
+                name += "（自动）"
+            config = settings.validate_layout({"window_title": title, "mode": "auto", "layout": {}})
+            self.settings_controller.apply(
+                save=lambda: settings.save_window_layout(name, title, {}, mode="auto"),
+                request=lambda: self.worker.switch_layout(name, config),
+                after=lambda: self._apply_layout_selection(name),
+            )
+        except Exception as exc:
+            self._on_settings_error(f"无法创建自动布局: {exc}")
+
+    @Slot(str)
+    def on_layout_status_changed(self, message: str) -> None:
+        """显示自动定位进度及归属不确定状态。
+
+        Args:
+            message: 来自推理进程的布局状态；手动模式为空。
+        """
+        if self.worker.state == "ready":
+            self.statusBar().showMessage(message)
+            self.statusBar().setToolTip(message)
 
     def _switch_layout_by_name(self, layout_name: str) -> bool:
         """按布局名切换，避免设置窗口刷新后索引和内存列表不同步。"""
@@ -835,6 +889,41 @@ class CardUI(QMainWindow):
         """
         if index in (0, 1):
             self._apply_setting("show_timing", bool(index), after=self._apply_timing_visibility)
+
+    def on_show_current_screenshot_changed(self, index: int) -> None:
+        """保存并应用实时截图预览开关。"""
+        if index in (0, 1):
+            self._apply_setting(
+                "show_current_screenshot", bool(index), "SHOW_CURRENT_SCREENSHOT",
+                self._apply_screenshot_preview_visibility,
+            )
+
+    def _apply_screenshot_preview_visibility(self) -> None:
+        """根据已保存选项显示或关闭截图预览窗口。"""
+        if settings.SHOW_CURRENT_SCREENSHOT:
+            self._show_screenshot_preview()
+        elif self._screenshot_preview is not None:
+            self._screenshot_preview.hide()
+
+    def _show_screenshot_preview(self) -> None:
+        """创建或显示截图预览窗口。"""
+        if self._screenshot_preview is None:
+            self._screenshot_preview = ScreenshotPreviewDialog(self)
+        self._screenshot_preview.show()
+        self._screenshot_preview.raise_()
+
+    @Slot(bytes)
+    def on_screenshot_ready(self, image_data: bytes) -> None:
+        """显示推理进程返回的最新截图。
+
+        Args:
+            image_data: JPEG 编码的游戏窗口截图。
+        """
+        if not settings.SHOW_CURRENT_SCREENSHOT:
+            return
+        self._show_screenshot_preview()
+        if self._screenshot_preview is not None:
+            self._screenshot_preview.update_image(image_data)
 
     def _apply_setting(
         self, key: str, value: object, runtime_key: str | None = None,

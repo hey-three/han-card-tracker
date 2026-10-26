@@ -112,6 +112,42 @@ class UITests(unittest.TestCase):
         self.assertIsNone(dialog.saved_layout_name)
         dialog.close()
 
+    def test_auto_layout_saves_only_after_backend_ack(self) -> None:
+        """自动布局选择窗口后无需框选，且等待子进程成功才写配置。"""
+        dialog = SettingsDialog(self.window)
+        self.window.worker.state = "ready"
+        with patch("ui.main_window.list_visible_window_titles", return_value=["Game"]), patch(
+            "ui.main_window.QInputDialog.getItem", return_value=("Game", True),
+        ), patch.object(self.window.worker, "switch_layout", return_value=51) as switch, patch.object(
+            settings, "save_window_layout",
+        ) as save:
+            self.window.on_auto_layout_clicked(dialog)
+            save.assert_not_called()
+            switch.assert_called_once_with("自动布局 · Game", {"window_title": "Game", "layout": {}, "mode": "auto"})
+            self.window.worker.command_completed.emit(51, "switch_layout", True, "")
+            save.assert_called_once_with("自动布局 · Game", "Game", {}, mode="auto")
+        dialog.close()
+
+    def test_auto_layout_cancel_does_not_change_configuration(self) -> None:
+        """取消窗口选择不发命令也不写配置。"""
+        dialog = SettingsDialog(self.window)
+        with patch("ui.main_window.list_visible_window_titles", return_value=["Game"]), patch(
+            "ui.main_window.QInputDialog.getItem", return_value=("", False),
+        ), patch.object(self.window.worker, "switch_layout") as switch, patch.object(
+            settings, "save_window_layout",
+        ) as save:
+            self.window.on_auto_layout_clicked(dialog)
+            switch.assert_not_called()
+            save.assert_not_called()
+        dialog.close()
+
+    def test_layout_status_does_not_overwrite_worker_failure(self) -> None:
+        """自动定位提示不能覆盖进程异常原因。"""
+        self.window.worker.fail("missing model")
+        before = self.window.statusBar().currentMessage()
+        self.window.on_layout_status_changed("自动布局：已定位")
+        self.assertEqual(self.window.statusBar().currentMessage(), before)
+
 
 if __name__ == "__main__":
     unittest.main()

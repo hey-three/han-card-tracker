@@ -24,6 +24,8 @@ class InferenceWorker(QObject):
         finished: 一次检测结束，通知 UI 释放 busy。
         state_changed: stopped/starting/ready/failed 生命周期状态。
         command_completed: 请求编号、命令名、成功标志和错误说明。
+        layout_status_changed: 当前代次的自动布局进度或歧义说明。
+        screenshot_ready: 当前截图 JPEG 数据。
         state: 当前生命周期状态。
     """
 
@@ -32,6 +34,8 @@ class InferenceWorker(QObject):
     finished = Signal()
     state_changed = Signal(str)
     command_completed = Signal(int, str, bool, str)
+    layout_status_changed = Signal(str)
+    screenshot_ready = Signal(bytes)
 
     def __init__(self, layout_name: str, game_name: str = "doudizhu", parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
@@ -184,11 +188,12 @@ class InferenceWorker(QObject):
         """
         return self._submit("reset", invalidate=True)
 
-    def switch_layout(self, layout_name: str) -> int | None:
+    def switch_layout(self, layout_name: str, layout_config: settings.LayoutConfig | None = None) -> int | None:
         """发送完整布局，支持运行中新增或编辑布局。
 
         Args:
             layout_name: 主进程中的布局名。
+            layout_config: 尚未保存的新布局，省略时读取已保存布局。
 
         Returns:
             请求编号，服务不可用时为 None。
@@ -198,7 +203,7 @@ class InferenceWorker(QObject):
             TypeError: 布局内容类型错误。
             ValueError: 布局内容无效。
         """
-        config = settings.validate_layout(settings.WINDOW_LAYOUTS[layout_name])
+        config = settings.validate_layout(settings.WINDOW_LAYOUTS[layout_name] if layout_config is None else layout_config)
         return self._submit("switch_layout", {"name": layout_name, "config": config}, invalidate=True)
 
     def switch_model(self, model_name: str) -> int | None:
@@ -288,6 +293,9 @@ class InferenceWorker(QObject):
             if command.name == "detect":
                 if response.generation == self._generation:
                     if response.status == "ok":
+                        self.layout_status_changed.emit(response.layout_status)
+                        if response.screenshot_jpeg is not None:
+                            self.screenshot_ready.emit(response.screenshot_jpeg)
                         self.result_ready.emit(response.remain_cards or {}, response.zone_cards or {}, response.yolo_ms)
                     else:
                         self.error.emit(response.error)

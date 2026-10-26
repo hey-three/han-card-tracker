@@ -4,11 +4,14 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from copy import deepcopy
+from io import BytesIO
 from typing import TYPE_CHECKING, cast
 import time
 
 import config.settings as settings
 from core.base_tracker import BaseCardTracker
+from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
+from core.games.doudizhu import DoudizhuTracker
 
 if TYPE_CHECKING:
     from core.yolo_inferencer import YoloInferencer
@@ -32,7 +35,7 @@ class GameController:
         layout_name: 当前布局名称。
         screen_capture: 窗口截图器实例。
         yolo_inferencer: YOLO 推理器实例。
-        layout_analyzer: 布局空间分析实例。
+        layout_analyzer: 手动空间分析或自动牌组归属实例。
         tracker: 当前 Tracker 子类实例。
         debug_manager: 调试图片管理器实例（由 GameController 统一管理）。
     """
@@ -65,10 +68,11 @@ class GameController:
             pass
         
         self.yolo_inferencer: YoloInferencer = self._create_inferencer()
-        self.layout_analyzer: LayoutAnalyzer = LayoutAnalyzer(dict(self.layout_config))
+        self.layout_analyzer: LayoutAnalyzer | AutoLayoutAnalyzer = self._create_analyzer(self.layout_config)
         window_title: str = self.layout_config["window_title"]
         self.screen_capture: ScreenCapture = ScreenCapture(window_title)
         self.tracker: BaseCardTracker = create_tracker(game_name, layout_name, self.debug_manager)
+        self.last_screenshot_jpeg: bytes | None = None
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行一次完整检测：截图→识别→解析排版→映射→状态更新→格式化输出。
@@ -79,8 +83,17 @@ class GameController:
                 - zone_cards (dict[str, list[list[str]]]): 各出牌区域的出牌记录，
                   key 为 played_zones 中的 key，value 为出牌记录。
                 - yolo_ms (float): YOLO 推理耗时（毫秒）。
+
+        Raises:
+            ValueError: 自动布局使用了非斗地主 Tracker 或开局数据不合法。
+            RuntimeError: 截图或推理失败。
         """
         img = self.screen_capture.capture_window()
+        self.last_screenshot_jpeg = None
+        if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
+            image_buffer = BytesIO()
+            img.convert("RGB").save(image_buffer, format="JPEG", quality=75)
+            self.last_screenshot_jpeg = image_buffer.getvalue()
         raw_result: object | None
         yolo_ms: float
         raw_result, yolo_ms = self.yolo_inferencer.detect(img)
@@ -88,7 +101,20 @@ class GameController:
         # 几何布局分析（把 raw box 切分到不同区域并做二维排序）
         # 输入：YOLO 原始检测结果 + 图片尺寸
         # 输出：{区域名: [{"bbox": (x1,y1,x2,y2), "name": yolo_label}, ...]}
-        region_boxes: dict[str, list[dict]] = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
+        known_regions: set[str] | None = None
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            size = img.size if img else (0, 0)
+            observation = self.layout_analyzer.observe(read_yolo_boxes(raw_result, size), size, settings.FRAME_LENGTH)
+            if observation.reset_required:
+                self.tracker.reset()
+            region_boxes = observation.as_boxes()
+            known_regions = set(region_boxes)
+            if observation.initial is not None:
+                if not isinstance(self.tracker, DoudizhuTracker):
+                    raise ValueError("自动布局仅支持斗地主")
+                self.tracker.initialize_from_layout(self.tracker.translate_boxes_to_cards(region_boxes))
+        else:
+            region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
         
         # 业务逻辑映射（将 YOLO 标签转换为游戏牌点名称）
         # 输入：{区域名: [{"bbox": ..., "name": "three"}, ...]}  （YOLO 原始标签）
@@ -97,13 +123,40 @@ class GameController:
 
         remain_cards: dict[str, int]
         show_cards: dict[str, list[list[str]]]
-        remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms)
+        remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms, known_regions)
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and self.tracker.state == settings.WAIT_BEGIN:
+            if self.layout_analyzer.ready:
+                self.layout_analyzer.reset()
         zone_cards: dict[str, list[list[str]]] = self._format_zone_cards(show_cards)
         return remain_cards, zone_cards, yolo_ms
 
     def reset(self) -> None:
-        """重置记牌器到初始状态。"""
+        """重置记牌器和自动布局参照到初始状态。"""
         self.tracker.reset()
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            self.layout_analyzer.reset()
+
+    @property
+    def layout_status(self) -> str:
+        """返回自动布局的用户状态；手动布局不显示校准提示。"""
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            return self.layout_analyzer.last_observation.message
+        return ""
+
+    @staticmethod
+    def _create_analyzer(config: settings.LayoutConfig) -> LayoutAnalyzer | AutoLayoutAnalyzer:
+        """根据布局模式构建分析器，自动模式不使用矩形配置。
+
+        Args:
+            config: 已验证的布局配置。
+
+        Returns:
+            自动或手动分析器。
+        """
+        if config.get("mode") == "auto":
+            limits = {label: settings.TOTAL_CARDS[card] for label, card in settings.YOLO_TO_CARD_MAPPING.items()}
+            return AutoLayoutAnalyzer(limits)
+        return LayoutAnalyzer(dict(config))
 
     def _create_inferencer(self) -> YoloInferencer:
         """延迟加载重型依赖并创建推理器。
@@ -137,7 +190,7 @@ class GameController:
         if not layout_name.strip():
             raise ValueError("布局名称不能为空")
         config = settings.validate_layout(layout_config)
-        analyzer = LayoutAnalyzer(dict(config))
+        analyzer = self._create_analyzer(config)
         capture = ScreenCapture(config["window_title"])
         tracker = create_tracker(self.game_name, layout_name, self.debug_manager)
         self.layout_name, self.layout_config = layout_name, config
@@ -165,6 +218,8 @@ class GameController:
             settings.apply_runtime_settings(previous)
             raise
         self.yolo_inferencer, self.tracker = inferencer, tracker
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            self.layout_analyzer.reset()
 
     def switch_device(self, device_name: str) -> None:
         """设备切换失败时保留原推理器及配置。
@@ -205,6 +260,8 @@ class GameController:
             settings.apply_game_choice(previous)
             raise
         self.game_name, self.tracker = game_name, tracker
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            self.layout_analyzer.reset()
 
     def update_settings(self, updates: Mapping[str, object]) -> None:
         """应用允许热更新的参数，禁止绕过组件切换流程。
@@ -217,7 +274,7 @@ class GameController:
             ValueError: 属性不可热更新或值无效。
         """
         allowed = {
-            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "RESET_TIME", "FRAME_LENGTH",
+            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH",
             "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD",
         }
         if not set(updates).issubset(allowed):

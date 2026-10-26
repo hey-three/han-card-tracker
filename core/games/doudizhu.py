@@ -9,8 +9,11 @@
 
 from __future__ import annotations
 
+from collections import Counter
+import time
+
 import config.settings as settings
-from config.settings import HAS_STARTED, WAIT_BEGIN
+from config.settings import STARTED_RECORD_CARD
 from core.base_tracker import BaseCardTracker
 
 
@@ -38,6 +41,29 @@ class DoudizhuTracker(BaseCardTracker):
     def _get_validity_region(self) -> str:
         """斗地主以地主底牌作为帧有效性判断依据。"""
         return "landlord_cards"
+
+    def initialize_from_layout(self, frame_data: dict[str, list[str]]) -> None:
+        """使用自动布局已连续确认的开局快照初始化，只扣一次本家手牌。
+
+        Args:
+            frame_data: 无出牌、含 17/20 张手牌及三张底牌的真实稳定快照。
+
+        Raises:
+            ValueError: 牌局已初始化、手牌/底牌张数错误或牌面数量不合法。
+        """
+        hand = frame_data.get("player_hand", [])
+        bottom = frame_data.get("landlord_cards", [])
+        if self.state == STARTED_RECORD_CARD or len(hand) not in (17, 20) or len(bottom) != 3:
+            raise ValueError("自动布局需要完整且尚未记牌的开局快照")
+        if any(count > settings.TOTAL_CARDS.get(card, 0) for card, count in Counter(hand).items()):
+            raise ValueError("初始手牌包含非法牌面或超出牌组数量")
+        self.reset()
+        for key in self.frame_caches:
+            self.frame_caches[key] = [list(frame_data.get(key, []))]
+        self.on_game_started()
+        self.on_start_recording()
+        self.state = STARTED_RECORD_CARD
+        self.no_target_time = time.time()
 
     def should_start_game(self) -> bool:
         """地主底牌连续帧稳定时开始游戏。"""
