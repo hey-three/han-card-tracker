@@ -1,6 +1,6 @@
 # Han Card Tracker — Dou Dizhu Card Counter for Windows
 
-[简体中文](README.md) · [Documentation](docs/README.md) · [Issues](https://github.com/hey-three/han-card-tracker/issues) · [YOLO training repository](https://github.com/hey-three/yolo-for-han-card-tracker)
+[简体中文](README.md) · [Documentation](docs/README.md) · [Issues](https://github.com/hey-three/han-card-tracker/issues) · [YOLO training repository](https://github.com/hey-three/yolo-for-han-card-tracker) · [❤ Support](SUPPORT.md)
 
 **Han Card Tracker is a Windows desktop application for Dou Dizhu (斗地主) card counting.** It uses YOLO playing-card detection to recognize cards in a visible game window, track remaining cards outside the user's initial hand, and display play history. The application is built with Python, PySide6 and PyTorch.
 
@@ -51,6 +51,10 @@ Missing bottom cards pause updates. A consecutive-frame and elapsed-time thresho
 As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-tracker/releases) contains a historical `v2.3` archive. It is not a packaged build of the current V4.3.2 source. See [CHANGELOG](CHANGELOG.md).
 
 The diagnostic update passed 203 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) groups evidence into per-round folders under a recording session. Its total disk budget defaults to 1 GiB and is adjustable in advanced settings (0.1–1024 GiB); retention removes sealed old rounds while protecting the current round. It records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Queue/memory backpressure recovers automatically with explicit gap records. Disk/write failures still pause diagnostics. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
+
+## Support this project
+
+If this project has helped you, optional donations via the [WeChat Pay or Alipay QR codes](SUPPORT.md) support its maintenance. Stars, issue reports and code contributions are welcome too.
 
 ## Contributing and license
 
