@@ -56,9 +56,11 @@ class Tile:
         x: int，图块在画布的横向偏移。
         y: int，图块在画布的纵向偏移。
         render_size: tuple[int, int]，整数绘制尺寸，用于严格恢复坐标。
+        source_region: 原始用户框的像素边界；None沿用旧整图切口判定。
     """
 
-    def __init__(self, source: Rect, x: int, y: int, render_size: tuple[int, int] | None = None) -> None:
+    def __init__(self, source: Rect, x: int, y: int, render_size: tuple[int, int] | None = None,
+                 source_region: Rect | None = None) -> None:
         """保存规划器生成的坐标。
 
         Args:
@@ -66,10 +68,11 @@ class Tile:
             x: 画布非负横向偏移。
             y: 画布非负纵向偏移。
             render_size: 实际绘制宽高；None 保留原尺寸，固定画布使用统一比例缩放后的整数尺寸。
+            source_region: 完整用户框；必须包含本裁片，用于区分人工边界和内部切口。
 
         Raises:
-            TypeError: 坐标或绘制尺寸不是整数。
-            ValueError: 矩形为空、偏移为负或绘制尺寸非正。
+            TypeError: 坐标、绘制尺寸或用户框边界不是整数元组。
+            ValueError: 矩形为空、偏移为负、绘制尺寸非正或用户框未包含裁片。
         """
         if not isinstance(source, tuple) or len(source) != 4:
             raise TypeError("图块矩形必须是四元组")
@@ -77,6 +80,14 @@ class Tile:
             raise TypeError("图块坐标必须是整数")
         if min(*source, x, y) < 0 or source[0] >= source[2] or source[1] >= source[3]:
             raise ValueError("图块坐标无效")
+        if source_region is not None:
+            if (not isinstance(source_region, tuple) or len(source_region) != 4
+                    or any(type(v) is not int for v in source_region)):
+                raise TypeError('用户框边界必须是整数四元组')
+            a, b, c, d = source_region
+            if not (0 <= a <= source[0] < source[2] <= c and 0 <= b <= source[1] < source[3] <= d):
+                raise ValueError('用户框必须完整包含本裁片')
+        self.source_region = source_region
         if render_size is None:
             render_size = source[2]-source[0], source[3]-source[1]
         if (not isinstance(render_size, tuple) or len(render_size) != 2
@@ -145,6 +156,20 @@ def overlap(a: Box, b: Box, *, smaller: bool = False) -> float:
     return intersection / (min(aa, bb) if smaller else aa + bb - intersection)
 
 
+def _covers_fragment(whole: Detection, fragment: Detection) -> bool:
+    """判断完整框是否覆盖残片自身至少85%的面积。
+
+    Args:
+        whole: 原坐标完整检测。
+        fragment: 原坐标切边检测。
+    Returns:
+        是否可由完整框替代残片，不能用较小框面积替代残片作分母。
+    """
+    a, b, c, d = fragment.bbox
+    x, y, z, w = whole.bbox
+    return max(0., min(c, z)-max(a, x))*max(0., min(d, w)-max(b, y)) >= .85*(c-a)*(d-b)
+
+
 class PackingPlan:
     """保存单帧的切片和恢复关系。
 
@@ -206,7 +231,7 @@ class PackingPlan:
         scale = min(canvas_size[0]/width, canvas_size[1]/height)
         dx, dy = (canvas_size[0]-round(width*scale))//2, (canvas_size[1]-round(height*scale))//2
         tiles = [Tile(t.source, dx+round(t.x*scale), dy+round(t.y*scale),
-                      (round(t.render_size[0]*scale), round(t.render_size[1]*scale))) for t in self.tiles]
+                      (round(t.render_size[0]*scale), round(t.render_size[1]*scale)), t.source_region) for t in self.tiles]
         # 取整后相邻图块仍需有至少一个空白像素，不能引入重叠所有权。
         if any(not (a.bounds[2] < b.bounds[0] or b.bounds[2] < a.bounds[0]
                     or a.bounds[3] < b.bounds[1] or b.bounds[3] < a.bounds[1])
@@ -220,9 +245,10 @@ class PackingPlan:
         Args:
             detections: 当前画布的像素检测；同一原始帧，不跨帧合并。
         Returns:
-            (原图检测, 回退原因)；原因非空时调用者必须丢弃本结果并复查整图。
+            (原图检测, 不可靠原因)；原因非空必须丢弃，按阶段复查或等待下一帧。
         """
         safe: list[tuple[Detection, int]] = []
+        user_border: list[tuple[Detection, int]] = []
         clipped: list[Detection] = []
         for detection in detections:
             a, b, c, d = detection.bbox
@@ -238,10 +264,15 @@ class PackingPlan:
             a, b, c, d = max(a, x1), max(b, y1), min(c, x2), min(d, y2)
             sx, sy, ex, ey = tile.source
             restored = Detection(detection.name, tile.unproject((a, b, c, d)), detection.confidence)
-            cut = (crossing or (sx > 0 and a <= x1+2) or (sy > 0 and b <= y1+2)
-                   or (ex < self.size[0] and c >= x2-2) or (ey < self.size[1] and d >= y2-2))
+            # 用户框外由用户负责，不把贴人工框边的牌当作算法切坏而整帧拒收。
+            outer = tile.source_region or (0, 0, *self.size)
+            cut = ((crossing and tile.source_region is None)
+                   or (sx > outer[0] and a <= x1+2) or (sy > outer[1] and b <= y1+2)
+                   or (ex < outer[2] and c >= x2-2) or (ey < outer[3] and d >= y2-2))
             if cut:
                 clipped.append(restored)
+            elif tile.source_region is not None and (a <= x1+2 or b <= y1+2 or c >= x2-2 or d >= y2-2):
+                user_border.append((restored, index))
             else:
                 safe.append((restored, index))
         kept: list[tuple[Detection, int]] = []
@@ -258,13 +289,14 @@ class PackingPlan:
                     break
             if not duplicate:
                 kept.append((detection, index))
+        # 人工边缘框可以保留，但另一重叠选区已有完整副本时仍须去重。
+        for detection, index in sorted(user_border, key=lambda item: -item[0].confidence):
+            if not any(old_index != index and _covers_fragment(old, detection) for old, old_index in kept):
+                kept.append((detection, index))
         for fragment in clipped:
             # 切口碎片可能错分类，以完整副本为准；但必须覆盖碎片本身的大部分。
             # 不能用较小框作分母，否则一个大残片包含一张完整牌就可能被整体丢弃。
-            a, b, c, d = fragment.bbox
-            if not any(max(0., min(c, whole.bbox[2])-max(a, whole.bbox[0]))
-                       * max(0., min(d, whole.bbox[3])-max(b, whole.bbox[1])) >= .85*(c-a)*(d-b)
-                       for whole, _ in kept):
+            if not any(_covers_fragment(whole, fragment) for whole, _ in kept):
                 return [], "切边目标缺少完整副本"
         return [d for d, _ in kept], ""
 

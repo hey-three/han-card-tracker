@@ -58,7 +58,7 @@ def main() -> None:
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     private = args.source is not None
-    output = args.output or (root/"tests/.tmp/v431-preview" if private else root/"docs/assets/v431")
+    output = args.output or (root/"tests/.tmp/v431-preview" if private else root/"docs/assets/v431-current")
     if not output.resolve().is_relative_to(root):
         raise ValueError("产物必须保存在项目内")
     if private and not output.resolve().is_relative_to(root/"tests/.tmp"):
@@ -71,7 +71,7 @@ def main() -> None:
     reports: dict[str, dict[str, object]] = {}
     overview = Image.new("RGB", (1568, 670), "#18232d")
     draw = ImageDraw.Draw(overview)
-    draw.text((18, 18), "V4.3.1 · 实测单牌尺度归一 · 两阶段固定 768 × 480", font=font(28), fill="white")
+    draw.text((18, 18), "V4.3.1 · 严格选区与固定初值 · 两阶段 768 × 480", font=font(28), fill="white")
     for index, recording in enumerate((False, True)):
         names, regions, scales = stage_regions(layout, recording)
         stage = "recording" if recording else "opening"

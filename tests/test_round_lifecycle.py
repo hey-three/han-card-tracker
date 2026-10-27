@@ -27,7 +27,7 @@ class RoundLifecycleTests(unittest.TestCase):
         """建立一张底牌与十七张手牌开局，使用可控时钟而非真实等待。"""
         self.enterContext(patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False,
                                         SHOW_CURRENT_SCREENSHOT=False, DEBUG_MODE=False,
-                                        PACKED_INFERENCE=False, RESET_TIME=3.))
+                                        PACKED_INFERENCE=True, RESET_TIME=3.))
         config = settings.validate_layout({"window_title": "Game", "mode": "auto", "layout": {}})
         self.enterContext(patch.object(settings, "WINDOW_LAYOUTS", {"Auto": config}))
         with patch.object(GameController, "_create_inferencer", return_value=Mock()), patch(
@@ -70,7 +70,13 @@ class RoundLifecycleTests(unittest.TestCase):
         for _ in range(count):
             if self.manual_plan is not None:
                 recording = self.tracker.state == settings.STARTED_RECORD_CARD
-                plan = self.manual_plans[recording]
+                names, regions, _ = stage_regions(self.controller.layout_config['layout'], recording)
+                scales = self.controller.packed_pipeline.scale_weights(self.image.size, self.controller.layout_config['layout'], names)
+                key = (recording, tuple(scales))
+                if key not in self.manual_plans:
+                    self.manual_plans[key] = make_rect_plan(self.image.size, regions, scales, PACKED_INPUT_SIZE)
+                plan = self.manual_plans[key]
+                self.manual_plans[recording] = plan
                 projected = []
                 for tile in plan.tiles:
                     a, b, c, d = tile.source
@@ -275,6 +281,41 @@ class RoundLifecycleTests(unittest.TestCase):
         settings.PACKED_INFERENCE = True
         self.feed(self.hand, 4)
         self.controller.yolo_inferencer.detect_packed.assert_not_called()
+
+    def test_before_bottom_appears_only_opening_tiles_are_inferred(self) -> None:
+        """有手牌但无底牌时连续多帧仍只推理两区，不能偷偷复查原图。"""
+        self.use_manual_layout()
+        self.controller.reset()
+        self.controller.yolo_inferencer.reset_mock()
+        settings.SHOW_CURRENT_SCREENSHOT = True
+        self.feed(self.hand + row(['K'], .22, .37), 6, bottom=[])
+        self.assertEqual(self.tracker.state, settings.WAIT_BEGIN)
+        self.controller.yolo_inferencer.detect.assert_not_called()
+        self.assertEqual(self.controller.yolo_inferencer.detect_packed.call_count, 6)
+        self.assertEqual(self.controller.last_performance['region_count'], 2.)
+        self.assertEqual(Image.open(BytesIO(self.controller.last_screenshot_jpeg)).size, PACKED_INPUT_SIZE)
+
+    def test_empty_and_unknown_opening_results_never_infer_full_frame(self) -> None:
+        """两区全空可继续等待，结果未知也不能以整图推理代替开局输入。"""
+        self.use_manual_layout()
+        self.controller.reset()
+        self.controller.yolo_inferencer.reset_mock()
+        self.feed([], 4, bottom=[])
+        self.feed([], 1, bottom=[], result=False)
+        self.controller.yolo_inferencer.detect.assert_not_called()
+        self.assertEqual(self.tracker.state, settings.WAIT_BEGIN)
+
+    def test_manual_original_mode_and_hot_switch_preserve_accounting(self) -> None:
+        """改为原图后只调用原图模型，不重置牌局或再次扣手牌。"""
+        self.use_manual_layout()
+        before = deepcopy(self.tracker.remain_cards)
+        self.controller.update_settings({'PACKED_INFERENCE': False})
+        self.controller.yolo_inferencer.reset_mock()
+        self.feed(self.hand, 2)
+        self.controller.yolo_inferencer.detect_packed.assert_not_called()
+        self.assertEqual(self.controller.yolo_inferencer.detect.call_count, 2)
+        self.assertEqual(self.tracker.remain_cards, before)
+        self.assertEqual(self.controller.packed_pipeline.route, '手动布局原图')
 
     def test_manual_switches_two_to_four_regions_only_after_initial_deduction(self) -> None:
         """已开局但手牌未稳定仍用二区；扣牌后用四区且裁片不再包含手牌。"""

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from time import perf_counter
 from typing import Protocol, cast
 
@@ -11,6 +11,7 @@ from PIL import Image
 from core.auto_layout import Box, YoloResult
 from core.frame_packing import Detection, PackingPlan
 from core.square_packing import make_square_plan, make_rect_plan, plan_metrics
+from core.packing_scales import AdaptivePackingScales
 
 
 class Detector(Protocol):
@@ -82,6 +83,8 @@ class PackedPipeline:
         route: str，当前路线及回退原因。
         timings: dict[str, float]，当前分阶段毫秒、画布尺寸和模型调用次数。
         last_input: 当前帧最后一次模型调用的原图或拼图，供同步预览编码。
+        scale_profile: 当前布局的单牌尺度学习器。
+        _scale_context: 当前完整布局和截图尺寸，用于隔离不同用户选区。
     """
 
     def __init__(self) -> None:
@@ -93,6 +96,8 @@ class PackedPipeline:
         self._metrics: dict[str, float] = {}
         self.route = "整图"
         self.timings: dict[str, float] = {}
+        self.scale_profile = AdaptivePackingScales()
+        self._scale_context: tuple[object, ...] | None = None
 
     def reset(self) -> None:
         """清除几何和画布；不复用上个模型、布局或会话的规划。"""
@@ -101,6 +106,25 @@ class PackedPipeline:
         self._plan_key = None
         self._plan = None
         self._metrics = {}
+        self.scale_profile = AdaptivePackingScales()
+        self._scale_context = None
+
+    def scale_weights(self, size: tuple[int, int], layout: Mapping[str, Sequence[float]],
+                      names: Sequence[str]) -> list[float]:
+        """按当前完整布局隔离尺度测量，布局或窗口尺寸改变立即重新学习。
+
+        Args:
+            size: 当前截图宽高。
+            layout: 全部手动区域，阶段切换不改变此上下文。
+            names: 当前阶段的区域名。
+        Returns:
+            从当前会话单牌框学习的缩放权重。
+        """
+        context = (size, tuple((k, tuple(v)) for k, v in sorted(layout.items())))
+        if context != self._scale_context:
+            self.scale_profile = AdaptivePackingScales()
+            self._scale_context = context
+        return self.scale_profile.weights(names)
 
     def _render(self, image: Image.Image, plan: PackingPlan) -> Image.Image:
         """复用固定画布，按每片的实际等比渲染尺寸粘贴，空白填 114 灰色。
@@ -125,17 +149,22 @@ class PackedPipeline:
 
     def detect(self, image: Image.Image | None, detector: Detector, regions: Sequence[Box] | None,
                guard: float = .04, presence_region: Box | None = None,
-               scales: Sequence[float] | None = None, canvas_size: tuple[int, int] = (768, 480)) -> tuple[object | None, float]:
-        """选择整图或拼图，所有不确定拼图只回退当前原图，不向 Tracker 发布部分结果。
+               scales: Sequence[float] | None = None, canvas_size: tuple[int, int] = (768, 480),
+               region_names: Sequence[str] | None = None, allow_full_fallback: bool = True,
+               full_label: str = '自动布局整图') -> tuple[object | None, float]:
+        """开局只推理选区、不可靠时等待；记牌阶段允许同帧整图复查。
 
         Args:
             image: 当前原图；None 沿用截图失败语义。
             detector: 当前单模型实例。
-            regions: 全部手动区域；None 表示自动布局，始终整图推理。
+            regions: 当前阶段手动区域；None表示直接推理整图。
             guard: 切口单侧保护宽度比例。
-            presence_region: 手动底牌门禁区域；该区无牌时即使其他区有牌也复查同一原图。
-            scales: 单牌检测框实测权重；None 保留旧统一缩放方图接口。
+            presence_region: 手动底牌区域；记牌中该区无牌时可复查同一原图。
+            scales: 初值或当前单牌测量权重；None保留旧统一缩放方图接口。
             canvas_size: 加权阶段拼图的目标宽高。
+            region_names: 启用真实单牌自适应测量的当前区域名。
+            allow_full_fallback: 开局二区为False，禁止因无底牌而推理整张原图。
+            full_label: 主动选择整图时显示的路线名称。
         Returns:
             原图坐标的模型结果、包含可能补查的模型调用总毫秒。
         Raises:
@@ -174,14 +203,17 @@ class PackedPipeline:
                 inference_ms += elapsed
                 restore_start = perf_counter()
                 cards, reason = plan.restore(read_detections(raw))
-                if not reason and cards and presence_region is not None:
+                if not reason and cards and presence_region is not None and allow_full_fallback:
                     a, b, c, d = presence_region
                     width, height = image.size
                     if not any(a <= (card.bbox[0]+card.bbox[2])/(2*width) <= c
                                and b <= (card.bbox[1]+card.bbox[3])/(2*height) <= d for card in cards):
                         reason = "拼图底牌区无牌，复查原图"
-                if not reason and raw is not None and cards:
+                if (not reason and raw is not None and getattr(raw, 'boxes', None) is not None
+                        and (cards or not allow_full_fallback)):
                     result = detector.restore_result(raw, image, cards)
+                    if region_names is not None:
+                        self.scale_profile.observe(cards, image.size, region_names, regions)
                     self.timings["restore_ms"] = (perf_counter()-restore_start)*1000
                     self.route = f"手动 {len(regions)} 区拼图 {plan.canvas_size[0]}×{plan.canvas_size[1]}"
                     return result, inference_ms
@@ -192,11 +224,20 @@ class PackedPipeline:
                 if call_pending:
                     inference_ms += (perf_counter()-call_started)*1000
                 reason = f"拼图回退：{exc}"
+            if not allow_full_fallback:
+                self.scale_profile.interrupt()
+                self.route = f"开局两区拼图：{reason}，等待下一帧"
+                return None, inference_ms
         if self.timings["prepare_ms"] == 0.:
             self.timings["prepare_ms"] = (perf_counter()-start)*1000
         self.last_input = image
         result, elapsed = detector.detect(image)
         inference_ms += elapsed
         self.timings["model_calls"] += 1
-        self.route = f"整图：{reason}" if reason else ("自动布局整图" if regions is None else "截图不可用")
+        if (result is not None and getattr(result, 'boxes', None) is not None
+                and image is not None and regions is not None and region_names is not None):
+            self.scale_profile.observe(read_detections(result), image.size, region_names, regions)
+        elif region_names is not None:
+            self.scale_profile.interrupt()
+        self.route = f"整图：{reason}" if reason else (full_label if regions is None else "截图不可用")
         return result, inference_ms
