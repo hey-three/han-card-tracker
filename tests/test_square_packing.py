@@ -27,7 +27,8 @@ class SquarePackingTests(unittest.TestCase):
                     plan = make_square_plan(size, regions)
                     self.assertEqual(plan.canvas_size, (640, 640))
                     for a, b, c, d in regions:
-                        roi = (floor(a*size[0]), floor(b*size[1]), ceil(c*size[0]), ceil(d*size[1]))
+                        roi = (ceil(a*size[0]-1e-7), ceil(b*size[1]-1e-7),
+                               floor(c*size[0]+1e-7), floor(d*size[1]+1e-7))
                         intersections = [(max(roi[0], t.source[0]), max(roi[1], t.source[1]),
                                           min(roi[2], t.source[2]), min(roi[3], t.source[3]))
                                          for t in plan.tiles]

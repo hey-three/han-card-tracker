@@ -1,6 +1,6 @@
-"""手动区域的固定方形拼图：完整覆盖、重叠切口、统一缩放和二维装箱。
+"""用户选区的固定画布拼图：框内重叠切口、等比缩放和二维装箱。
 
-规划只依赖窗口尺寸和用户矩形，固定布局可直接缓存；不调用视觉模型找区域。
+规划依赖窗口尺寸、用户矩形及当前权重，固定状态可缓存；不调用视觉模型找区域。
 不旋转图块，不按牌的数量删减裁片，也不把相交区域扩大成包围矩形。
 """
 
@@ -45,16 +45,16 @@ def union_area(rects: Sequence[Rect]) -> int:
 
 
 def _source_rects(size: tuple[int, int], regions: Sequence[Box]) -> list[Rect]:
-    """向外取整并加少量源图保护边，避免切掉用户矩形边缘的牌面。
+    """只读取用户矩形内部的完整像素，不添加任何框外保护边。
 
     Args:
         size: 原图正整数宽高。
         regions: 归一化区域。
     Returns:
-        完整覆盖每个输入区域、限制在原图以内的源矩形。
+        向内取整的源矩形；浮点序列化误差容差1e-7像素，无额外上下文。
     Raises:
         TypeError: 尺寸、区域或坐标类型错误。
-        ValueError: 尺寸非正、区域为空或坐标不合法。
+        ValueError: 尺寸非正、区域为空、坐标不合法或区域不足一个完整像素。
     """
     if not isinstance(size, tuple) or len(size) != 2 or any(type(v) is not int for v in size):
         raise TypeError("原图尺寸必须是整数二元组")
@@ -65,7 +65,6 @@ def _source_rects(size: tuple[int, int], regions: Sequence[Box]) -> list[Rect]:
     if len(regions) > 5:
         raise ValueError("手动拼图最多接受五个业务区域")
     width, height = size
-    pad = max(2, ceil(min(size) * .01))
     rects: list[Rect] = []
     for region in regions:
         if (not isinstance(region, (tuple, list)) or len(region) != 4
@@ -74,11 +73,11 @@ def _source_rects(size: tuple[int, int], regions: Sequence[Box]) -> list[Rect]:
         a, b, c, d = region
         if not all(isfinite(v) for v in region) or not (0 <= a < c <= 1 and 0 <= b < d <= 1):
             raise ValueError("区域必须是 0~1 以内的非空矩形")
-        # 旧手动框用于筛选中心点，目标下半部分可能伸出框外；向下多留上下文。
-        # 仍完整保留原矩形，四周基础保护外，下沿最多补原图高的 3.5% / 区域高的 25%。
-        below = max(pad, min(ceil(height*.035), ceil((d-b)*height*.25)))
-        rects.append((max(0, floor(a*width)-pad), max(0, floor(b*height)-pad),
-                      min(width, ceil(c*width)+pad), min(height, ceil(d*height)+below)))
+        rect = (ceil(a*width-1e-7), ceil(b*height-1e-7),
+                floor(c*width+1e-7), floor(d*height+1e-7))
+        if rect[0] >= rect[2] or rect[1] >= rect[3]:
+            raise ValueError("用户选区不足一个完整像素，请重新框选")
+        rects.append(rect)
     return rects
 
 
@@ -133,7 +132,7 @@ def _split_free(free: Sequence[Rect], used: Rect) -> list[Rect]:
 
 
 def _place(pieces: Sequence[Rect], scale: float, side: int | tuple[int, int],
-           weights: Sequence[float] | None = None) -> list[Tile] | None:
+           weights: Sequence[float] | None = None, source_regions: Sequence[Rect] | None = None) -> list[Tile] | None:
     """用短边优先装箱，保持朝向及统一缩放，图块之间留四像素间隔。
 
     Args:
@@ -141,6 +140,7 @@ def _place(pieces: Sequence[Rect], scale: float, side: int | tuple[int, int],
         scale: 所有图块共同使用的正比例；像素尺寸向上取整。
         side: 画布边长或宽高二元组。
         weights: 每块的等比例权重；None 为统一尺度。
+        source_regions: 每片原属的用户框；用于严格保留边界语义。
     Returns:
         完整放下的图块，或 None；不会返回放不下时的部分结果。
     """
@@ -159,7 +159,7 @@ def _place(pieces: Sequence[Rect], scale: float, side: int | tuple[int, int],
             return None
         rect = min(candidates)[-1]
         x, y = rect[:2]
-        tiles.append(Tile(piece, x, y, (width, height)))
+        tiles.append(Tile(piece, x, y, (width, height), None if source_regions is None else source_regions[index]))
         free = _split_free(free, (x, y, x+padded_w, y+padded_h))
     return tiles
 
@@ -246,7 +246,7 @@ def make_rect_plan(size: tuple[int, int], regions: Sequence[Box], scales: Sequen
     Args:
         size: 原图宽高。
         regions: 当前阶段的一至五个归一化业务区域。
-        scales: 与区域一一对应的正缩放权重，来自单牌检测框测量。
+        scales: 与区域对应的正权重，来自固定初值或当前单牌框测量。
         canvas_size: 固定目标宽高；允许矩形或用于对照的方形。
         guard: 源切口单侧保护宽度比例。
     Returns:
@@ -270,17 +270,17 @@ def make_rect_plan(size: tuple[int, int], regions: Sequence[Box], scales: Sequen
     width, height = canvas_size
     options = [_split_options(r, max(2, ceil(size[0]*guard))) for r in rects]
     total = sum(_area(r) for r in rects)
-    candidates: list[tuple[float, float, tuple[tuple[Rect, float], ...]]] = []
+    candidates: list[tuple[float, float, tuple[tuple[Rect, float, Rect], ...]]] = []
     for groups in product(*options):
-        pieces = tuple((r, float(weight)) for group, weight in zip(groups, scales) for r in group)
-        if sum(_area(r) for r, _ in pieces) > total*1.3:
+        pieces = tuple((r, float(weight), parent) for group, weight, parent in zip(groups, scales, rects) for r in group)
+        if sum(_area(r) for r, _, _ in pieces) > total*1.3:
             continue
-        area = sum(_area(r)*weight*weight for r, weight in pieces)
+        area = sum(_area(r)*weight*weight for r, weight, _ in pieces)
         bound = max(sqrt(area/(width*height)), max(max((r[2]-r[0])*w/(width-8),
-                                                      (r[3]-r[1])*w/(height-8)) for r, w in pieces))
+                                                      (r[3]-r[1])*w/(height-8)) for r, w, _ in pieces))
         candidates.append((bound, area, pieces))
     chosen = [v[2] for v in sorted(candidates)[:64]]
-    uncut = tuple((r, float(w)) for r, w in zip(rects, scales))
+    uncut = tuple((r, float(w), r) for r, w in zip(rects, scales))
     if uncut not in chosen:
         chosen.append(uncut)
     best: list[Tile] | None = None
@@ -294,16 +294,17 @@ def make_rect_plan(size: tuple[int, int], regions: Sequence[Box], scales: Sequen
         }
         for order in sorted(orders):
             low = 0.
-            high = min(min((width-8)/((r[2]-r[0])*w), (height-8)/((r[3]-r[1])*w)) for r, w in order)
+            high = min(min((width-8)/((r[2]-r[0])*w), (height-8)/((r[3]-r[1])*w)) for r, w, _ in order)
             fitted: list[Tile] | None = None
             for _ in range(12):
                 mid = (low+high)/2
-                placed = _place([r for r, _ in order], mid, canvas_size, [w for _, w in order])
+                placed = _place([r for r, _, _ in order], mid, canvas_size,
+                                [w for _, w, _ in order], [p for _, _, p in order])
                 if placed is None:
                     high = mid
                 else:
                     low, fitted = mid, placed
-            candidate_score = (low, -sum(_area(r)*w*w for r, w in order), -len(order))
+            candidate_score = (low, -sum(_area(r)*w*w for r, w, _ in order), -len(order))
             if fitted is not None and candidate_score > score:
                 best, score = fitted, candidate_score
     if best is None:

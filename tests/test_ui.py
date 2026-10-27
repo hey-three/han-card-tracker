@@ -84,13 +84,13 @@ class UITests(unittest.TestCase):
         self.window._reset_ui_to_total()
         self.assertNotIn("old cards", self.window.played_cards_labels["left"].text())
 
-    def test_packed_route_is_explained_without_an_independent_switch(self) -> None:
-        """路线随布局选择，不再展示可覆盖布局语义的开关。"""
+    def test_manual_route_can_select_packed_or_original(self) -> None:
+        """自动始终整图，手动布局有明确的两种检测方式。"""
         dialog = SettingsDialog(self.window)
         self.assertIn("自动布局使用整图", dialog.label_inference_route.text())
-        self.assertIn("手动布局未扣手牌时拼底牌与手牌", dialog.label_inference_route.text())
+        self.assertIn("未扣手牌时拼底牌与手牌", dialog.label_inference_route.text())
         self.assertIn("扣牌后拼三家出牌与底牌", dialog.label_inference_route.text())
-        self.assertFalse(hasattr(dialog, "combo_packed_inference"))
+        self.assertEqual([dialog.combo_manual_inference.itemText(i) for i in range(2)], ['拼图检测', '原图检测'])
         dialog.close()
 
     def test_performance_tooltip_distinguishes_model_and_pipeline(self) -> None:
@@ -99,6 +99,31 @@ class UITests(unittest.TestCase):
         text = self.window.btn_settings.toolTip()
         self.assertIn('子进程整轮：35.0 ms', text)
         self.assertIn('模型调用次数：2', text)
+
+    def test_manual_mode_persists_after_ack_and_failed_change_rolls_back(self) -> None:
+        """检测方式等后端成功才落盘，重开显示已保存值，失败恢复旧选择。"""
+        from config.store import read_config
+
+        settings.PACKED_INFERENCE = True
+        dialog = SettingsDialog(self.window)
+        dialog.manual_inference_changed.connect(self.window.on_manual_inference_changed)
+        self.window._settings_dialog = dialog
+        self.window.worker.state = 'ready'
+        with patch.object(self.window.worker, 'update_settings', return_value=41) as update:
+            dialog.combo_manual_inference.setCurrentIndex(1)
+            update.assert_called_once_with({'PACKED_INFERENCE': False})
+            self.assertNotIn('packed_inference', read_config(settings.CONFIG_PATH))
+            self.window.worker.command_completed.emit(41, 'update_settings', True, '')
+        self.assertFalse(read_config(settings.CONFIG_PATH)['packed_inference'])
+        reopened = SettingsDialog(self.window)
+        self.assertEqual(reopened.combo_manual_inference.currentText(), '原图检测')
+        reopened.close()
+        with patch.object(self.window.worker, 'update_settings', return_value=42):
+            dialog.combo_manual_inference.setCurrentIndex(0)
+            self.window.worker.command_completed.emit(42, 'update_settings', False, 'backend error')
+        self.assertEqual(dialog.combo_manual_inference.currentText(), '原图检测')
+        self.assertFalse(read_config(settings.CONFIG_PATH)['packed_inference'])
+        dialog.close()
 
     def test_pending_topmost_selection_survives_other_setting_ack(self) -> None:
         """其他设置回执不覆盖尚未在关闭窗口时应用的置顶选择。"""

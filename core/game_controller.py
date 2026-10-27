@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, cast
 import time
 
 import config.settings as settings
-from config.packing_profile import PACKED_INPUT_SIZE, stage_regions
+from config.packing_profile import PACKED_INPUT_SIZE, stage_selection
 from core.base_tracker import BaseCardTracker
 from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
 from core.games.doudizhu import DoudizhuTracker
@@ -41,7 +41,7 @@ class GameController:
         tracker: 当前 Tracker 子类实例。
         debug_manager: 调试图片管理器实例（由 GameController 统一管理）。
         last_screenshot_jpeg: 预览启用时最近一帧的 JPEG 截图。
-        last_screenshot_regions: 自动布局当前确认的牌区整体边界。
+        last_screenshot_regions: 为旧预览协议保留的空区域字典。
         packed_pipeline: 同步单帧拼图执行器，处理切口保护和整图回退。
         last_performance: 当前子进程阶段耗时快照，经过回执传回 UI。
     """
@@ -104,18 +104,24 @@ class GameController:
         self.last_screenshot_regions = {}
         raw_result: object | None
         yolo_ms: float
-        # 路线由布局模式唯一决定；旧 packed_inference 偏好不再覆盖用户的布局选择。
+        # 自动布局整图；手动布局由已确认的检测方式偏好选择。
         names: list[str] = []
         regions = None
         scales = None
         if not isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            names, regions, scales = stage_regions(self.layout_config["layout"],
-                                                  self.tracker.state == settings.STARTED_RECORD_CARD)
+            names, selected = stage_selection(self.layout_config["layout"],
+                                                self.tracker.state == settings.STARTED_RECORD_CARD)
+            if settings.PACKED_INFERENCE:
+                regions = selected
+                if img is not None:
+                    scales = self.packed_pipeline.scale_weights(img.size, self.layout_config['layout'], names)
         bottom_region = (None if regions is None else
                          cast(tuple[float, float, float, float], tuple(self.layout_config["layout"]["landlord_cards"])))
         raw_result, yolo_ms = self.packed_pipeline.detect(img, self.yolo_inferencer, regions,
                                                        presence_region=bottom_region, scales=scales,
-                                                       canvas_size=PACKED_INPUT_SIZE)
+                                                       canvas_size=PACKED_INPUT_SIZE, region_names=names or None,
+                                                       allow_full_fallback=self.tracker.state == settings.STARTED_RECORD_CARD,
+                                                       full_label='自动布局整图' if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else '手动布局原图')
         detected = time.perf_counter()
         preview_started = time.perf_counter()
         if settings.SHOW_CURRENT_SCREENSHOT and self.packed_pipeline.last_input is not None:

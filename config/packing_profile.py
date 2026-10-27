@@ -1,8 +1,8 @@
-"""由 tmp 三张参考图的真实 YOLO 单牌框测得的当前牌桌拼图尺度。
+"""拼图画布、阶段区域与历史样例尺度；运行时使用在线自适应尺度。
 
 原图 1284×804；模型 yolov11s_imgsz_960/best.pt，conf=.6，IoU=.45。
 详细样本计数、大小王例外、公式与矩形对照见 docs/V4.3.1设计与验证.md。
-这里的权重归一单牌标记高度，不是归一用户框选的区域尺寸。
+下面实测权重也是用户确认的固定初始比例；识别后由 core/packing_scales.py 在线更新。
 """
 
 from collections.abc import Mapping
@@ -16,14 +16,30 @@ MEASURED_CARD_HEIGHTS: dict[str, float] = {
     "player_hand": 54.80694580078125,
     "player_played": 46.147979736328125,
 }
-REGION_SCALE_FACTORS = {key: REFERENCE_CARD_HEIGHT/value*(1.12 if key == "landlord_cards" else 1.)
+INITIAL_REGION_SCALES = {key: REFERENCE_CARD_HEIGHT/value*(1.12 if key == "landlord_cards" else 1.)
                         for key, value in MEASURED_CARD_HEIGHTS.items()}
+REGION_SCALE_FACTORS = INITIAL_REGION_SCALES  # 历史测量/示意工具兼容别名。
 OPENING_REGIONS = ("landlord_cards", "player_hand")
 RECORDING_REGIONS = ("landlord_cards", "opponent_left", "opponent_right", "player_played")
 
 
+def stage_selection(layout: Mapping[str, list[float]], recording: bool) -> tuple[list[str], list[tuple[float, float, float, float]]]:
+    """只选择当前用户布局的二区或四区，不携带任何样例牌桌比例。
+
+    Args:
+        layout: 当前用户框选的全部区域。
+        recording: 初始手牌是否已扣除。
+    Returns:
+        当前阶段的名称和原始归一化矩形。
+    Raises:
+        KeyError: 缺少当前阶段必需区域。
+    """
+    names = list(RECORDING_REGIONS if recording else OPENING_REGIONS)
+    return names, [(layout[k][0], layout[k][1], layout[k][2], layout[k][3]) for k in names]
+
+
 def stage_regions(layout: Mapping[str, list[float]], recording: bool) -> tuple[list[str], list[tuple[float, float, float, float]], list[float]]:
-    """按初始牌是否已经扣除，选择二个或四个完整区域及实测尺度。
+    """复现历史样例的固定实测尺度；正式运行改用 stage_selection。
 
     Args:
         layout: 已验证的全部五个归一化手工区域。
@@ -33,6 +49,5 @@ def stage_regions(layout: Mapping[str, list[float]], recording: bool) -> tuple[l
     Raises:
         KeyError: 缺少当前阶段必需区域。
     """
-    names = list(RECORDING_REGIONS if recording else OPENING_REGIONS)
-    regions = [(layout[k][0], layout[k][1], layout[k][2], layout[k][3]) for k in names]
+    names, regions = stage_selection(layout, recording)
     return names, regions, [REGION_SCALE_FACTORS[k] for k in names]

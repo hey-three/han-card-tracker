@@ -94,6 +94,8 @@ class SettingsDialog(QDialog):
     auto_layout_requested = Signal()
     layout_status_changed = Signal(int)
 
+    manual_inference_changed = Signal(int)
+
     def __init__(
         self,
         parent=None,
@@ -404,9 +406,15 @@ class SettingsDialog(QDialog):
             tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
-        self.label_inference_route = QLabel("识别路线由布局决定：自动布局使用整图；手动布局未扣手牌时拼底牌与手牌，扣牌后拼三家出牌与底牌。")
+        self.combo_manual_inference = self._add_combo_row(
+            advanced_layout, "手动布局检测方式：", 'ManualInferenceCombo',
+            ["拼图检测", "原图检测"], self.manual_inference_changed.emit,
+        )
+        self.set_current_manual_inference(settings.PACKED_INFERENCE)
+        self.combo_manual_inference.setToolTip("所有手动布局共用此选择，保存后重新打开仍保留。自动布局始终整图。")
+        self.label_inference_route = QLabel("自动布局使用整图；手动布局可选原图。选择拼图时，未扣手牌时拼底牌与手牌，扣牌后拼三家出牌与底牌。")
         self.label_inference_route.setWordWrap(True)
-        self.label_inference_route.setToolTip("按实测单牌尺寸缩放为768×480，底牌稍大。当前阶段选区完整保留；底牌缺失、切边不完整或结果冲突时复查原图。静态模型使用原导出尺寸。")
+        self.label_inference_route.setToolTip("当前布局单牌框自适应尺度，固定768×480；开局前只推理两区，结果不可靠等下一帧。记牌中可复查原图。静态模型保留导出尺寸。")
         advanced_layout.addWidget(self.label_inference_route)
         advanced_layout.addStretch()
 
@@ -699,6 +707,14 @@ class SettingsDialog(QDialog):
         text = "是" if show_current_screenshot else "否"
         index = self.combo_show_current_screenshot.findText(text)
         self._set_combo_current_safely(self.combo_show_current_screenshot, index)
+
+    def set_current_manual_inference(self, packed: bool) -> None:
+        """恢复后端确认的手动检测方式，不触发新的保存请求。
+
+        Args:
+            packed: True使用拼图，False使用原图；不影响自动布局。
+        """
+        self._set_combo_current_safely(self.combo_manual_inference, 0 if packed else 1)
 
     def set_current_show_layout_status(self, enabled: bool) -> None:
         """刷新布局提示开关，不触发设置写回。

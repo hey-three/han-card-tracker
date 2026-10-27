@@ -311,7 +311,7 @@ SHOW_LAYOUT_STATUS = config.get('show_layout_status', True)
 SHOW_TIMING = config.get('show_timing', True)
 
 # 保护拼图仍需真实牌局验证，旧配置默认沿用整图识别。
-PACKED_INFERENCE = config.get('packed_inference', False)  # 仅兼容旧配置；路线由布局模式决定
+PACKED_INFERENCE = config.get('packed_inference', True)  # 手动布局检测方式；自动布局始终整图
 
 # ==================== 设备选择配置 ====================
 # 设备选择选项: "cpu" (使用CPU), "cuda" (使用GPU)

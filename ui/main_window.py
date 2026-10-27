@@ -292,6 +292,7 @@ class CardUI(QMainWindow):
             on_confidence_change_callback=self.on_confidence_changed,
             on_game_change_callback=self.on_game_changed,
         )
+        dialog.manual_inference_changed.connect(self.on_manual_inference_changed)
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
@@ -351,6 +352,7 @@ class CardUI(QMainWindow):
         dialog.set_current_save_debug_images(SAVE_DEBUG_IMAGES)
 
         dialog.set_current_show_current_screenshot(self._preview_requested)
+        dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
         dialog.set_current_show_layout_status(settings.SHOW_LAYOUT_STATUS)
 
         # 设置当前显示耗时
@@ -799,6 +801,15 @@ class CardUI(QMainWindow):
         """
         if index in (0, 1):
             self._apply_setting("debug_mode", bool(index), "DEBUG_MODE")
+
+    def on_manual_inference_changed(self, index: int) -> None:
+        """后端确认后保存手动布局检测方式，不清空正在进行的牌局。
+
+        Args:
+            index: 0为拼图，1为原图。
+        """
+        if index in (0, 1):
+            self._apply_setting('packed_inference', index == 0, 'PACKED_INFERENCE')
 
     def on_save_debug_images_changed(self, index: int) -> None:
         """同步游戏图片保存开关。
