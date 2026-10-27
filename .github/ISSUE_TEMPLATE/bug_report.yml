@@ -1,0 +1,30 @@
+name: 问题反馈 / Bug report
+description: 报告识别、布局、计数或运行问题
+title: "[Bug] "
+body:
+  - type: textarea
+    id: environment
+    attributes:
+      label: 环境与版本 / Environment
+      description: 源码提交或发布包、Windows/Python、模型、CPU/CUDA后端
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤 / Reproduction
+      description: 布局模式、手动原图或拼图、首次出现的时机和最短步骤
+    validations:
+      required: true
+  - type: textarea
+    id: result
+    attributes:
+      label: 期望和实际 / Expected and actual
+      description: 具体哪家、哪手牌或哪次状态变化不符
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: 可选材料 / Optional evidence
+      description: 完整错误、现有原图/标注图或预览；先遮盖账号聊天等信息。完整逐帧诊断包尚未实现。
