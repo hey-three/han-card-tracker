@@ -12,7 +12,7 @@ class TrackerTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """隔离运行配置，禁止测试保存截图。"""
-        changes = patch.multiple(settings, FRAME_LENGTH=1, DEBUG_MODE=False, SAVE_DEBUG_IMAGES=False)
+        changes = patch.multiple(settings, FRAME_LENGTH=1, DEBUG_MODE=False)
         changes.start()
         self.addCleanup(changes.stop)
         self.tracker = DoudizhuTracker()

@@ -286,6 +286,20 @@ class SessionStorage:
                 self.used -= size
             raise
 
+    def write_gap(self, gap: dict[str, object]) -> None:
+        """后台追加明确的缺帧区间，与逐帧索引使用同一文件。
+
+        Args:
+            gap: 首尾帧号和跳过原因，首尾均包含在缺口中。
+        Raises:
+            OSError: 配额不足或索引写入失败。
+        """
+        line = json.dumps({'record_type': 'gap', **gap}, ensure_ascii=False).encode('utf-8')+b'\n'
+        self._ensure_space(len(line))
+        with (self.directory/'events.jsonl').open('ab') as index:
+            index.write(line)
+        self.used += len(line)
+
     def _annotated(self, path: Path, image: Image.Image, boxes: list[dict[str, object]]) -> None:
         """在副本画检测框，避免调用GPU模型对象或修改原始快照。
 

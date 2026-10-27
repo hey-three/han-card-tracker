@@ -16,7 +16,6 @@ from abc import ABC, abstractmethod
 
 import config.settings as settings
 from config.settings import HAS_STARTED, STARTED_RECORD_CARD, WAIT_BEGIN
-from core.image_saver import ImageSaver
 
 
 class BaseCardTracker(ABC):
@@ -46,22 +45,19 @@ class BaseCardTracker(ABC):
         has_found_empty: 各出牌区域是否曾检测到空帧。
         remain_cards: 各牌点剩余数量字典。
         no_target_time: 上次检测到有效目标的时间戳。
-        debug_manager: 调试图片保存器（由 GameController 传入，可选）。
         _last_yolo_ms: 最近一次 YOLO 推理耗时（毫秒）。
     """
 
-    def __init__(self, layout_name: str | None = None, debug_manager: ImageSaver | None = None) -> None:
+    def __init__(self, layout_name: str | None = None) -> None:
         """初始化牌局跟踪器。
 
         Args:
             layout_name: 布局名称。为 None 时自动使用第一个可用配置。
-            debug_manager: 调试图片保存器实例（由 GameController 统一管理并传入，可选）。
         """
         self.layout_name: str | None = layout_name
         self.state: int = WAIT_BEGIN
         self.remain_cards: dict[str, int] = settings.TOTAL_CARDS.copy()
         self.no_target_time: float = time.time()
-        self.debug_manager: ImageSaver | None = debug_manager
         self._last_yolo_ms: float = 0.0
 
         # 从游戏配置初始化帧缓存和出牌记录
@@ -207,7 +203,7 @@ class BaseCardTracker(ABC):
 
     @abstractmethod
     def on_game_started(self) -> None:
-        """游戏开始时的回调（如启动调试图片记录）。"""
+        """游戏开始时初始化本局牌账，不负责图片保存。"""
         ...
 
     @abstractmethod

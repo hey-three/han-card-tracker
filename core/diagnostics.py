@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections import deque
 from collections.abc import Callable
 from datetime import datetime, timezone
 import json
@@ -23,7 +24,7 @@ class DiagnosticLimits:
     """固定安全上限，不把无限队列当作后台加速。
 
     Attributes:
-        frames: 包括正在写的一帧在内的最大待完成数。
+        frames: 待完成帧上限，包含后台正在写入的一帧。
         memory: 待完成图片和JSON预算，不是整个应用内存限制。
         disk: diagnostics目录总容量。
     """
@@ -32,7 +33,7 @@ class DiagnosticLimits:
         """校验正整数上限。
 
         Args:
-            frames: 待完成帧上限。
+            frames: 待完成帧上限，默认8帧。
             memory: 队列字节预算。
             disk: 磁盘字节预算。
         Raises:
@@ -213,6 +214,10 @@ class DiagnosticRecorder:
         self._session = ''
         self._session_start = 1
         self._first_missing: int | None = None
+        self._dropped_frames = 0
+        self._resume_required = 65536
+        self._pending_gaps: deque[dict[str, object]] = deque()
+        self._recent_gaps: deque[dict[str, object]] = deque(maxlen=8)
         self.daily.write('service_started')
 
     def status(self) -> dict[str, object]:
@@ -224,8 +229,11 @@ class DiagnosticRecorder:
         with self._lock:
             return {'at_monotonic_ns': time.monotonic_ns(), 'state': self._state, 'reason': self._reason, 'session': self._session,
                     'pending_frames': self._pending_frames, 'pending_bytes': self._pending_bytes,
+                    'memory_budget_bytes': self.limits.memory, 'disk_budget_bytes': self.limits.disk,
                     'first_frame': self._session_start, 'last_observed_frame': self.frame_id,
                     'saved_frames': self._saved, 'first_missing_frame': self._first_missing,
+                    'dropped_frames': self._dropped_frames,
+                    'recent_gaps': [dict(gap) for gap in self._recent_gaps],
                     'daily_log_error': self.daily.failure}
 
     def _emit(self) -> None:
@@ -254,12 +262,16 @@ class DiagnosticRecorder:
                 self._emit()
             return
         if self._thread is not None and self._thread.is_alive():
-            if self._state in ('starting', 'recording'):
+            if self._state in ('starting', 'recording', 'backpressure'):
                 return
             raise RuntimeError('上次诊断仍在收尾，请稍后重新开启')
         with self._lock:
             self._state, self._reason = 'starting', ''
             self._first_missing = None
+            self._dropped_frames = 0
+            self._pending_gaps.clear()
+            self._recent_gaps.clear()
+            self._resume_required = 65536
             self._saved = 0
             self._session_start = self.frame_id+1
             self._session = 'session_'+datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%fZ')+'_'+uuid4().hex[:8]
@@ -283,14 +295,19 @@ class DiagnosticRecorder:
         """
         self.frame_id += 1
         with self._lock:
+            if self._state == 'backpressure':
+                self._note_gap_locked(self.frame_id, self._reason)
+                return None
             if self._state not in ('starting', 'recording'):
                 return None
-            full = self._pending_frames >= self.limits.frames or self._pending_bytes+65536 > self.limits.memory
+            memory_full = self._pending_bytes+65536 > self.limits.memory
+            full = self._pending_frames >= self.limits.frames or memory_full
             if not full:
                 self._pending_frames += 1
                 self._pending_bytes += 65536
         if full:
-            self.pause('queue_full: 保存队列积压，识别继续，详细记录已暂停', self.frame_id)
+            reason = 'memory_limit: 诊断快照达到内存预算，识别继续' if memory_full else 'queue_full: 保存队列积压，识别继续，详细记录已暂停'
+            self._defer(reason, self.frame_id, 65536)
             return None
         return DiagnosticFrame(self, self.frame_id, context)
 
@@ -310,7 +327,12 @@ class DiagnosticRecorder:
                 self._pending_bytes += size
                 frame.reserved += size
         if not good and active:
-            self.pause('memory_limit: 诊断快照达到内存预算，识别继续', cast(int, frame.payload['frame_id']))
+            reason = 'memory_limit: 诊断快照达到内存预算，识别继续'
+            required = frame.reserved+size
+            if required > self.limits.memory:
+                self.pause('frame_too_large: 单个诊断帧超过内存预算，识别继续', cast(int, frame.payload['frame_id']))
+            else:
+                self._defer(reason, cast(int, frame.payload['frame_id']), required)
         return good
 
     def submit(self, frame: DiagnosticFrame, data: bytes) -> None:
@@ -321,13 +343,65 @@ class DiagnosticRecorder:
             data: 不再修改的JSON。
         """
         with self._lock:
-            accepted = self._state in ('starting', 'recording')
+            accepted = self._state in ('starting', 'recording', 'backpressure')
             if accepted:
                 self._queue.put_nowait((data, dict(frame.images), frame.reserved))
                 frame.images.clear()
                 frame.cancelled = True
         if not accepted:
             frame.cancel()
+
+    def _note_gap_locked(self, number: int, reason: str) -> None:
+        """在状态锁内记录连续缺帧区间，后台负责写入会话索引。
+
+        Args:
+            number: 本次未完整接收的检测帧号。
+            reason: 队列或内存压力原因。
+        """
+        self._dropped_frames += 1
+        self._first_missing = number if self._first_missing is None else min(self._first_missing, number)
+        if self._pending_gaps and self._pending_gaps[-1]['last_frame'] == number-1:
+            self._pending_gaps[-1]['last_frame'] = number
+        else:
+            if len(self._pending_gaps) >= 128:
+                self._state, self._reason = 'paused', 'gap_metadata_limit: 缺帧索引无法及时写入，请处理保存故障后重开'
+                self._stop.set()
+                return
+            gap: dict[str, object] = {'first_frame': number, 'last_frame': number, 'reason': reason}
+            self._pending_gaps.append(gap)
+            self._recent_gaps.append(gap)
+
+    def _defer(self, reason: str, number: int, required: int) -> None:
+        """只暂缓诊断采样；不停止写者或等待磁盘，识别照常继续。
+
+        Args:
+            reason: 压力原因。
+            number: 首个被跳过的帧号。
+            required: 恢复后需能容纳的一整帧估计字节。
+        """
+        with self._lock:
+            if self._state not in ('starting', 'recording', 'backpressure'):
+                return
+            self._state, self._reason = 'backpressure', reason
+            self._resume_required = required
+            self._note_gap_locked(number, reason)
+        self.daily.write('diagnostics_backpressure', reason=reason, first_skipped_frame=number)
+        self._emit()
+        self._try_resume()
+
+    def _flush_gaps(self, storage: SessionStorage) -> None:
+        """仅后台调用，持久化区间后释放元数据，不积累整个会话的缺帧列表。
+
+        Args:
+            storage: 当前会话存储器。
+        Raises:
+            OSError: 区间索引写入失败，转为需要用户处理的诊断故障。
+        """
+        with self._lock:
+            gaps = [dict(gap) for gap in self._pending_gaps]
+            self._pending_gaps.clear()
+        for gap in gaps:
+            storage.write_gap(gap)
 
     def release(self, size: int) -> None:
         """一帧完成或取消后释放名额及预算。
@@ -338,6 +412,18 @@ class DiagnosticRecorder:
         with self._lock:
             self._pending_bytes -= size
             self._pending_frames -= 1
+        self._try_resume()
+
+    def _try_resume(self) -> None:
+        """低水位且有足够字节余量时恢复，兼顾写者释放与生产者检查间的竞态。"""
+        with self._lock:
+            resumed = (self._state == 'backpressure' and self._pending_frames <= self.limits.frames//2
+                       and self._pending_bytes+self._resume_required <= self.limits.memory)
+            if resumed:
+                self._state, self._reason = 'recording', ''
+        if resumed:
+            self.daily.write('diagnostics_resumed', dropped_frames=self.status()['dropped_frames'])
+            self._emit()
 
     def pause(self, reason: str, missing: int | None = None) -> None:
         """诊断故障只暂停诊断，明确标记不完整，不停止记牌。
@@ -366,7 +452,7 @@ class DiagnosticRecorder:
         if self._thread is None or not self._thread.is_alive():
             return True
         with self._lock:
-            if self._state in ('starting', 'recording'):
+            if self._state in ('starting', 'recording', 'backpressure'):
                 self._state = 'stopping'
         self._thread.join(timeout)
         self._emit()
@@ -392,6 +478,8 @@ class DiagnosticRecorder:
                 try:
                     data, images, reserved = self._queue.get(timeout=.05)
                 except Empty:
+                    if not failed:
+                        self._flush_gaps(storage)
                     continue
                 try:
                     if not failed:
@@ -406,9 +494,13 @@ class DiagnosticRecorder:
                         image.close()
                     self.release(reserved)
                     self._queue.task_done()
+                if not failed:
+                    self._flush_gaps(storage)
+            if not failed:
+                self._flush_gaps(storage)
             status = self.status()
             storage.manifest({**status, 'state': 'paused' if status['state'] == 'paused' else 'closed',
-                              'complete': status['state'] != 'paused' and status['pending_frames'] == 0})
+                              'complete': status['state'] != 'paused' and status['pending_frames'] == 0 and status['dropped_frames'] == 0})
         except Exception:
             self.pause('writer_failed: '+traceback.format_exc())
         finally:

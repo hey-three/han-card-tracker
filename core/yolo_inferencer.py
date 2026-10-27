@@ -13,7 +13,6 @@ from PIL import Image
 from ultralytics import YOLO
 
 import config.settings as settings
-from core.image_saver import ImageSaver
 from core.frame_packing import Detection
 from config.packing_profile import PACKED_INPUT_SIZE
 
@@ -32,22 +31,16 @@ class YoloInferencer:
         weight_path: 模型权重路径。
         model: 加载的 YOLO 模型。
         device: 推理设备（cuda/cpu）。
-        debug_manager: 调试图片保存器（由 GameController 传入，可选）。
         _full_input_size: 首次完整推理的输入配置，避免拼图参数污染整图回退。
     """
 
-    def __init__(self, debug_manager: ImageSaver | None = None) -> None:
-        """初始化 YOLO 推理器。
-
-        Args:
-            debug_manager: 调试图片保存器实例（由 GameController 统一管理并传入，可选）。
-        """
+    def __init__(self) -> None:
+        """根据模型和设备配置初始化纯视觉推理器。"""
         self.yolo_iou: float = settings.YOLO_IOU_THRESHOLD
         self.yolo_conf: float = settings.YOLO_CONFIDENCE_THRESHOLD
         self.weight_path: str = settings.YOLO_MODEL_PATH
 
         self.model, self.device = self.__load_model()
-        self.debug_manager: ImageSaver | None = debug_manager
         self._full_input_size: int | list[int] | tuple[int, int] | None = None
 
     def __load_model(self) -> Tuple[YOLO, str]:
@@ -270,21 +263,3 @@ class YoloInferencer:
         indices = {name: index for index, name in names.items()}
         boxes = torch.tensor([(*c.bbox, c.confidence, indices[c.name]) for c in cards], dtype=torch.float32).reshape(-1, 6)
         return Results(np.asarray(img.convert("RGB"))[:, :, ::-1].copy(), path=metadata.path, names=names, boxes=boxes)
-
-    def save_frame(self, img: Image.Image | None, raw: object | None) -> None:
-        """仅保存最终原图和原图坐标标注，不把拼图误当作原始截图。
-
-        Args:
-            img: 当前原图，失败时为 None。
-            raw: 整图或已还原到原图的最终结果。
-        """
-
-        if settings.SAVE_DEBUG_IMAGES and img is not None and raw is not None and self.debug_manager is not None:
-            try:
-                yolo_bgr = cast("Results", raw).plot()
-                yolo_rgb = yolo_bgr[:, :, ::-1]
-                yolo_image = Image.fromarray(yolo_rgb)
-                self.debug_manager.save_frame(img, yolo_image)
-            except Exception as exc:
-                if settings.DEBUG_MODE:
-                    print(f"[YoloInferencer] 保存标注帧失败: {exc}")
