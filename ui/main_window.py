@@ -296,6 +296,7 @@ class CardUI(QMainWindow):
         )
         dialog.manual_inference_changed.connect(self.on_manual_inference_changed)
         dialog.diagnostics_changed.connect(self.on_full_diagnostics_changed)
+        dialog.diagnostic_disk_changed.connect(self.on_diagnostic_disk_changed)
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
@@ -355,6 +356,7 @@ class CardUI(QMainWindow):
         dialog.set_current_show_current_screenshot(self._preview_requested)
         dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
         dialog.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
+        dialog.set_current_diagnostic_disk(float(settings.DIAGNOSTIC_DISK_GIB))
         dialog.set_diagnostic_status(self._diagnostic_status)
         dialog.set_current_show_layout_status(settings.SHOW_LAYOUT_STATUS)
 
@@ -804,6 +806,15 @@ class CardUI(QMainWindow):
         """
         if index in (0, 1):
             self._apply_setting("debug_mode", bool(index), "DEBUG_MODE")
+
+    @Slot(float)
+    def on_diagnostic_disk_changed(self, value: float) -> None:
+        """经现有回执和原子保存流程更新磁盘额度，不改变RAM预算。
+
+        Args:
+            value: 用户选择的GiB额度。
+        """
+        self._apply_setting('diagnostic_disk_gib', value, 'DIAGNOSTIC_DISK_GIB')
 
     @Slot(int)
     def on_full_diagnostics_changed(self, index: int) -> None:

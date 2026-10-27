@@ -66,9 +66,9 @@
 - full_diagnostics/FULL_DIAGNOSTICS缺省false，经设置回执/原子保存启用。run_controller_loop注入DiagnosticRecorder，GameController单独使用默认不落诊断文件；进程退出finally有界收尾。
 - core/diagnostics.py只在完整诊断开启时建立一个后台线程；主识别线程先预留预算、复制RGB图和CPU结果/状态再提交。每次模型调用输入必须在调用前冻结，不能把复用画布、GPU张量或Qt对象入队；异常及同帧整图回退分别留证。
 - 帧数上限8（含正在写的一帧），待保存RGB+JSON预算64MiB，单帧JSON256KiB；后台编码、绘制标注、SHA、配额清理。队列/总内存压力进入backpressure跳过采样，降到最多4帧且有足够字节后自动恢复；区间由后台写入events.jsonl，缺帧使complete为false。单帧过大/容量/写入错误仍暂停并报告，不能阻塞或改变识别业务，也不能隐性丢帧称完整。
-- core/diagnostic_storage.py负责diagnostics/session_*/的manifest/逐帧证据/索引，容量1GiB，只清已结束的已知旧会话，保护当前/未封口/未知目录；日常logs/runtime.jsonl只记关键状态/错误，10MiB×5轮转。两目录均gitignore。
+- core/diagnostic_storage.py负责diagnostics/session_*/的manifest/逐帧证据/索引，按waiting/game_XXXX分局；diagnostic_disk_gib/DIAGNOSTIC_DISK_GIB为持久化GiB总额度，缺省1.0、0.1–1024且最多两位小数。只清已封口旧会话及当前会话已封口旧局，保护当前局/未封口/未知目录；日常logs/runtime.jsonl只记关键状态/错误，10MiB×5轮转。两目录均gitignore。
 - diagnostic_status含当前预算、待写字节与跳过数；独立Response状态diagnostic携带diagnostic_status，不回执或解锁检测；异步状态含单调时间戳，UI拒绝旧通知。暂停警告不随show_layout_status隐藏，后台实际状态不能与保存的开关混淆。
-- 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放；会话跨多局，清理按1GiB总量触发，只删已结束旧会话，不按局删除。
+- 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放；会话跨多局但每局独立子目录，冻结round_id随帧保存；开局边界最多128条元数据按帧序由写线程处理，即使跳过全部图帧也建局标记。GameController._sync_diagnostic_round只观察业务状态转换，不改Tracker规则。清理按所设总额度触发，记录retention_cleanup和pruned_rounds，清理后complete为false。额度改变只在后台下次检查执行；已暂停需关闭重开。
 - 已移除同步图片保存模块及其构造参数、开关、白名单与旧YAML键；YoloInferencer只推理，Tracker只记牌。已有本地历史图片不自动删除。
 - 动态/PT明确请求(H,W)=(480,768)；静态ONNX/TensorRT尊重导出尺寸，首帧直接拼图也不能污染后续输入。CPU优先ONNX，CUDA优先TensorRT FP16，再回退PyTorch；不自动因拼图改权重或重新导出形状。
 - yolo_ms含本轮全部Ultralytics调用及内部前后处理/回退，GPU同步；主进程整轮另含截图/队列/轮询，子进程performance也不等于物理显示延迟。
@@ -79,4 +79,4 @@
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
 - 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
 - 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
-- 当前任务按用户要求撤回本家出牌补扣及关联字段/说明，原始首扣缺张原因保持待查。保留诊断自动恢复及8帧/64MiB内存、1GiB磁盘规则；已授权继续推送V4.3.2、合并main并同步本地。个人配置和已有诊断材料不得混入提交或删除。
+- 当前任务新增诊断按局目录及可配置总磁盘额度，保留8帧/64MiB内存与压力自动恢复。本家出牌补扣仍已撤回，首扣缺张原因保持待查；已授权继续推送V4.3.2、合并main并同步本地。个人配置和已有诊断材料不得混入提交或删除。

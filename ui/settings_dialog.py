@@ -12,6 +12,7 @@ from collections.abc import Callable
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
+    QDoubleSpinBox,
     QHBoxLayout,
     QLabel,
     QListView,
@@ -100,6 +101,7 @@ class SettingsDialog(QDialog):
 
     manual_inference_changed = Signal(int)
     diagnostics_changed = Signal(int)
+    diagnostic_disk_changed = Signal(float)
 
     def __init__(
         self,
@@ -426,6 +428,21 @@ class SettingsDialog(QDialog):
             advanced_layout, '完整诊断：', 'FullDiagnosticsCombo', ['否', '是'], self.diagnostics_changed.emit,
             tooltip='后台保存原图、每次YOLO输入及标注、状态变化。队列/内存拥堵时暂缓采样，回落后自动恢复并记录缺帧；磁盘故障需处理后重开。识别继续。保存期间仍有图片复制等开销。',
         )
+        disk_row = QHBoxLayout()
+        disk_row.addWidget(QLabel('诊断磁盘上限：'))
+        self.spin_diagnostic_disk = QDoubleSpinBox()
+        self.spin_diagnostic_disk.setObjectName('DiagnosticDiskLimit')
+        self.spin_diagnostic_disk.setRange(0.1, 1024.0)
+        self.spin_diagnostic_disk.setDecimals(2)
+        self.spin_diagnostic_disk.setSingleStep(0.5)
+        self.spin_diagnostic_disk.setSuffix(' GiB')
+        self.spin_diagnostic_disk.setKeyboardTracking(False)
+        self.spin_diagnostic_disk.setToolTip('诊断文件总额，0.1～1024 GiB，1 GiB约1.07 GB；不会预先占用磁盘。下调时只清已结束旧局，当前局超额会暂停。')
+        self.spin_diagnostic_disk.editingFinished.connect(self._on_diagnostic_disk_edited)
+        disk_row.addWidget(self.spin_diagnostic_disk)
+        advanced_layout.addLayout(disk_row)
+        self.set_current_diagnostic_disk(float(settings.DIAGNOSTIC_DISK_GIB))
+
         self.label_diagnostics = QLabel('完整诊断未开启')
         self.label_diagnostics.setWordWrap(True)
         advanced_layout.addWidget(self.label_diagnostics)
@@ -717,6 +734,22 @@ class SettingsDialog(QDialog):
         index = self.combo_show_current_screenshot.findText(text)
         self._set_combo_current_safely(self.combo_show_current_screenshot, index)
 
+    def _on_diagnostic_disk_edited(self) -> None:
+        """只提交编辑完成后的磁盘额度，等后端确认后再持久化。"""
+        value = self.spin_diagnostic_disk.value()
+        if value != float(settings.DIAGNOSTIC_DISK_GIB):
+            self.diagnostic_disk_changed.emit(value)
+
+    def set_current_diagnostic_disk(self, value: float) -> None:
+        """刷新已保存磁盘额度，不触发保存请求。
+
+        Args:
+            value: GiB额度。
+        """
+        self.spin_diagnostic_disk.blockSignals(True)
+        self.spin_diagnostic_disk.setValue(value)
+        self.spin_diagnostic_disk.blockSignals(False)
+
     def set_current_full_diagnostics(self, enabled: bool) -> None:
         """刷新已保存的诊断偏好，不将后台暂停误显示为已关闭。
 
@@ -741,6 +774,9 @@ class SettingsDialog(QDialog):
         budget = status.get('memory_budget_bytes', 64*1024*1024)
         if isinstance(pending_bytes, int) and isinstance(budget, int):
             text += f'；待写快照 {pending_bytes/1024/1024:.1f} / {budget/1024/1024:.0f} MiB'
+        disk = status.get('disk_budget_bytes', 1024**3)
+        if isinstance(disk, int):
+            text += f'；磁盘上限 {disk/1024**3:.1f} GiB'
         detail = str(status.get('reason') or status.get('daily_log_error') or '')
         self.label_diagnostics.setText(text + ('\n'+detail if detail else ''))
         self.label_diagnostics.setToolTip(str(settings.BASE_DIR)+'/diagnostics/；日常日志在 logs/；'+detail)

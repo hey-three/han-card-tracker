@@ -150,7 +150,7 @@ class InitialHandContractTests(unittest.TestCase):
                     self.assertEqual(controller.tracker.remain_cards['K'], 1)
                     outputs.append(result)
                     if mode == 'recording':
-                        paths = list(Path(directory).glob('diagnostics/session_*/frames/*/frame.json'))
+                        paths = list(Path(directory).glob('diagnostics/session_*/**/frames/*/frame.json'))
                         evidence = [json.loads(path.read_text(encoding='utf-8')) for path in paths]
                         self.assertTrue(any(frame['after']['initial_hand']==self.fixture['initial_hand'] for frame in evidence))
                 finally:

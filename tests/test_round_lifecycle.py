@@ -106,6 +106,46 @@ class RoundLifecycleTests(unittest.TestCase):
             self.manual_plans[recording] = make_rect_plan(self.image.size, regions, scales, PACKED_INPUT_SIZE)
         self.feed(self.hand)
 
+    def test_diagnostic_folders_follow_real_round_start_and_first_frame(self) -> None:
+        """真实Tracker结束再开局后换文件夹，等待帧及开局首帧不串局。"""
+        import json
+        import tempfile
+        from pathlib import Path
+        from core.diagnostics import DiagnosticRecorder
+        with tempfile.TemporaryDirectory(dir='tests/.tmp') as directory:
+            recorder = DiagnosticRecorder(directory)
+            self.controller.reset()
+            try:
+                with patch.object(settings, 'FULL_DIAGNOSTICS', True):
+                    self.controller.attach_diagnostics(recorder)
+                self.feed(self.hand, 1, bottom=[])
+                recorder._queue.join()
+                for _ in range(3):
+                    self.feed(self.hand, 1)
+                    recorder._queue.join()
+                self.assertEqual(self.tracker.state, settings.STARTED_RECORD_CARD)
+                for _ in range(4):
+                    self.feed(self.hand, 1, bottom=[])
+                    recorder._queue.join()
+                self.assertTrue(self.tracker.awaiting_next_round)
+                for _ in range(3):
+                    self.feed(self.hand, 1)
+                    recorder._queue.join()
+                self.assertEqual(self.tracker.state, settings.STARTED_RECORD_CARD)
+                self.assertTrue(recorder.stop(3))
+                session = next(Path(directory).glob('diagnostics/session_*'))
+                self.assertTrue((session/'waiting').exists())
+                for number in (1, 2):
+                    group = session/f'game_{number:04d}'
+                    self.assertTrue(group.is_dir())
+                    frames = sorted(group.glob('frames/*/frame.json'))
+                    data = json.loads(frames[0].read_text(encoding='utf-8'))
+                    self.assertEqual(data['before']['state'], settings.WAIT_BEGIN)
+                    self.assertNotEqual(data['after']['state'], settings.WAIT_BEGIN)
+                    self.assertEqual(data['round_id'], number)
+            finally:
+                recorder.close()
+
     def test_complete_diagnostics_records_real_controller_state_and_request(self) -> None:
         """真实流水线输出可序列化的前后状态、模型调用和请求标识。"""
         import json
@@ -124,7 +164,7 @@ class RoundLifecycleTests(unittest.TestCase):
         self.feed(self.hand, count=3)
         self.assertTrue(recorder.stop(3))
         self.assertEqual(recorder.status()['saved_frames'], 3)
-        frames = sorted(Path(directory.name).glob('diagnostics/session_*/frames/*/frame.json'))
+        frames = sorted(Path(directory.name).glob('diagnostics/session_*/**/frames/*/frame.json'))
         data = [json.loads(p.read_text(encoding='utf-8')) for p in frames]
         self.assertEqual(data[0]['context']['request_id'], 42)
         self.assertEqual(data[0]['context']['generation'], 4)

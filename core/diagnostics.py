@@ -21,7 +21,7 @@ from core.frame_packing import PackingPlan, read_detections
 
 
 class DiagnosticLimits:
-    """固定安全上限，不把无限队列当作后台加速。
+    """队列/内存保持安全上限，磁盘额度可更新，不使用无限队列。
 
     Attributes:
         frames: 待完成帧上限，包含后台正在写入的一帧。
@@ -188,6 +188,7 @@ class DiagnosticRecorder:
         daily: 限量轮转的关键事件日志。
         limits: 队列和磁盘上限。
         frame_id: 每次检测递增，包括未启用记录的帧。
+        _pending_rounds: 最多128条开局元数据，由写线程按帧顺序建立目录。
     """
 
     def __init__(self, base: str | Path, notify: Callable[[dict[str, object]], None] | None = None,
@@ -217,6 +218,7 @@ class DiagnosticRecorder:
         self._dropped_frames = 0
         self._resume_required = 65536
         self._pending_gaps: deque[dict[str, object]] = deque()
+        self._pending_rounds: deque[tuple[int, int, bool]] = deque()
         self._recent_gaps: deque[dict[str, object]] = deque(maxlen=8)
         self.daily.write('service_started')
 
@@ -270,6 +272,7 @@ class DiagnosticRecorder:
             self._first_missing = None
             self._dropped_frames = 0
             self._pending_gaps.clear()
+            self._pending_rounds.clear()
             self._recent_gaps.clear()
             self._resume_required = 65536
             self._saved = 0
@@ -283,6 +286,62 @@ class DiagnosticRecorder:
             with self._lock:
                 self._state, self._reason = 'paused', '后台诊断线程无法启动'
             raise
+        self._emit()
+
+    def note_round(self, number: int, started: bool = True) -> None:
+        """记录开局元数据，即使该帧受压力跳过也保留这一局的目录边界。
+
+        Args:
+            number: 正整数局号。
+            started: 是否观测到WAIT_BEGIN到开局的转换；中途接入为False。
+        Raises:
+            TypeError: 参数类型不正确。
+            ValueError: 局号非正。
+        """
+        if type(number) is not int or type(started) is not bool:
+            raise TypeError('局号必须为整数，开局标记必须为bool')
+        if number <= 0:
+            raise ValueError('局号必须为正')
+        with self._lock:
+            if self._state not in ('starting', 'recording', 'backpressure'):
+                return
+            full = len(self._pending_rounds) >= 128
+            if not full:
+                self._pending_rounds.append((number, self.frame_id, started))
+        if full:
+            self.pause('round_metadata_limit: 开局索引无法及时保存', self.frame_id)
+
+    def _flush_rounds(self, storage: SessionStorage, through: int | None = None) -> None:
+        """后台按帧序处理开局边界，不能提前封口仍有旧局帧在排队的目录。
+
+        Args:
+            storage: 当前会话。
+            through: 当前将写的帧号；队列暂空或收尾时None表示全部边界。
+        Raises:
+            OSError: 文件夹或标记写入失败。
+        """
+        with self._lock:
+            boundaries: list[tuple[int, int, bool]] = []
+            while self._pending_rounds and (through is None or self._pending_rounds[0][1] <= through):
+                boundaries.append(self._pending_rounds.popleft())
+        for number, first_frame, started in boundaries:
+            storage.start_round(number, first_frame, started)
+
+    def set_disk_limit(self, quota: int) -> None:
+        """非阻塞更新磁盘额度，扫描与清理仍只由保存线程执行。
+
+        Args:
+            quota: 正整数字节额度。
+        Raises:
+            TypeError: 参数非整数。
+            ValueError: 参数非正。
+        """
+        if type(quota) is not int:
+            raise TypeError('磁盘额度必须是整数字节数')
+        if quota <= 0:
+            raise ValueError('磁盘额度必须为正')
+        with self._lock:
+            self.limits.disk = quota
         self._emit()
 
     def begin_frame(self, context: dict[str, object]) -> DiagnosticFrame | None:
@@ -475,14 +534,20 @@ class DiagnosticRecorder:
                     self._state = 'recording'
             self._emit()
             while not self._stop.is_set() or not self._queue.empty():
+                with self._lock:
+                    quota = self.limits.disk
+                if storage.quota != quota:
+                    storage.set_quota(quota)
                 try:
                     data, images, reserved = self._queue.get(timeout=.05)
                 except Empty:
                     if not failed:
+                        self._flush_rounds(storage)
                         self._flush_gaps(storage)
                     continue
                 try:
                     if not failed:
+                        self._flush_rounds(storage, json.loads(data)['frame_id'])
                         storage.write_frame(data, images)
                         with self._lock:
                             self._saved += 1
@@ -497,10 +562,8 @@ class DiagnosticRecorder:
                 if not failed:
                     self._flush_gaps(storage)
             if not failed:
+                self._flush_rounds(storage)
                 self._flush_gaps(storage)
-            status = self.status()
-            storage.manifest({**status, 'state': 'paused' if status['state'] == 'paused' else 'closed',
-                              'complete': status['state'] != 'paused' and status['pending_frames'] == 0 and status['dropped_frames'] == 0})
         except Exception:
             self.pause('writer_failed: '+traceback.format_exc())
         finally:
@@ -514,6 +577,19 @@ class DiagnosticRecorder:
                     image.close()
                 self.release(reserved)
                 self._queue.task_done()
+            if storage is not None:
+                try:
+                    status = self.status()
+                    state = 'paused' if status['state'] == 'paused' else 'closed'
+                    storage.finish_round(state, 'diagnostics_failed' if state == 'paused' else 'diagnostics_stopped')
+                    storage.manifest({**status, 'state': state,
+                        'complete': state == 'closed' and status['pending_frames'] == 0
+                                    and status['dropped_frames'] == 0 and storage.pruned_rounds == 0})
+                except Exception:
+                    if self.status()['state'] != 'paused':
+                        self.pause('manifest_failed: '+traceback.format_exc())
+                    else:
+                        self.daily.write('diagnostic_finalize_failed', error=traceback.format_exc())
             with self._lock:
                 if self._state != 'paused':
                     self._state = 'off'
