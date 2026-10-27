@@ -220,10 +220,13 @@ class CardUI(QMainWindow):
         self.worker = InferenceWorker(self.layout_name, game_name=settings.GAME_NAME)
         self.worker.result_ready.connect(self.on_result_ready)
         self.worker.performance_ready.connect(self.on_performance_ready)
+        self.worker.diagnostic_status_changed.connect(self.on_diagnostic_status)
         self.worker.error.connect(self.on_worker_error)
         self.worker.screenshot_ready.connect(self.on_screenshot_ready)
         self._screenshot_preview: ScreenshotPreviewDialog | None = None
         self._preview_requested = settings.SHOW_CURRENT_SCREENSHOT
+        self._diagnostic_status: dict[str, object] = {}
+        self._diagnostic_warning = ""
         self._layout_status = ""
         self._status_error = ""
         self._closing = False
@@ -293,6 +296,7 @@ class CardUI(QMainWindow):
             on_game_change_callback=self.on_game_changed,
         )
         dialog.manual_inference_changed.connect(self.on_manual_inference_changed)
+        dialog.diagnostics_changed.connect(self.on_full_diagnostics_changed)
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
@@ -353,6 +357,8 @@ class CardUI(QMainWindow):
 
         dialog.set_current_show_current_screenshot(self._preview_requested)
         dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
+        dialog.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
+        dialog.set_diagnostic_status(self._diagnostic_status)
         dialog.set_current_show_layout_status(settings.SHOW_LAYOUT_STATUS)
 
         # 设置当前显示耗时
@@ -447,7 +453,7 @@ class CardUI(QMainWindow):
         """集中显示布局进度和服务状态，隐藏时收起整行。"""
         state = self.worker.state
         labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
-        message = self._status_error or labels.get(state, "")
+        message = self._status_error or labels.get(state, "") or self._diagnostic_warning
         if not message and settings.SHOW_LAYOUT_STATUS:
             message = self._layout_status
         bar = self.statusBar()
@@ -802,6 +808,36 @@ class CardUI(QMainWindow):
         if index in (0, 1):
             self._apply_setting("debug_mode", bool(index), "DEBUG_MODE")
 
+    @Slot(int)
+    def on_full_diagnostics_changed(self, index: int) -> None:
+        """经后端回执和原子保存流程切换完整诊断。
+
+        Args:
+            index: 否为零，是为一。
+        """
+        self._apply_setting('full_diagnostics', bool(index), 'FULL_DIAGNOSTICS')
+
+    @Slot(dict)
+    def on_diagnostic_status(self, status: dict[str, object]) -> None:
+        """即使隐藏普通布局提示，也展示诊断暂停或日志故障。
+
+        Args:
+            status: 后台真实运行状态，不改变识别服务生命周期。
+        """
+        value = status.get('at_monotonic_ns', 0)
+        stamp = value if isinstance(value, int) else 0
+        if stamp and stamp < int(str(self._diagnostic_status.get('at_monotonic_ns', 0))):
+            return
+        self._diagnostic_status = dict(status)
+        reason = str(status.get('reason', ''))
+        warning = ('完整诊断已暂停：'+(reason or '未知原因').splitlines()[-1]+'；关闭后重新开启') if status.get('state') == 'paused' else ''
+        if status.get('daily_log_error'):
+            warning += ' 日常日志写入失败：'+str(status['daily_log_error'])
+        self._diagnostic_warning = warning
+        self._refresh_status_bar()
+        if self._settings_dialog is not None:
+            self._settings_dialog.set_diagnostic_status(status)
+
     def on_manual_inference_changed(self, index: int) -> None:
         """后端确认后保存手动布局检测方式，不清空正在进行的牌局。
 
@@ -907,7 +943,7 @@ class CardUI(QMainWindow):
         labels = {"capture_ms": "截图", "prepare_ms": "拼图准备（含规划与裁剪）", "plan_ms": "其中：拼图规划",
                   "model_ms": "模型调用（含模型内预处理/后处理）",
                   "restore_ms": "坐标恢复/去重", "preview_ms": "预览编码", "layout_save_ms": "布局记牌/截图保存",
-                  "pipeline_ms": "子进程整轮"}
+                  "pipeline_ms": "子进程整轮", "diagnostic_snapshot_ms": "诊断快照（含图片复制）"}
         lines = ["上次检测；主进程整轮耗时另见标题栏"]
         lines.extend(f"{label}：{performance[key]:.1f} ms" for key, label in labels.items() if key in performance)
         if "model_calls" in performance:

@@ -303,6 +303,7 @@ SAVE_DEBUG_IMAGES = config.get('save_debug_images', False)
 
 # 是否将当前窗口截图实时传回主界面预览
 SHOW_CURRENT_SCREENSHOT = config.get('show_current_screenshot', False)
+FULL_DIAGNOSTICS = config.get('full_diagnostics', False)
 
 # 仅控制正常识别时的布局提示；故障及恢复入口始终显示。
 SHOW_LAYOUT_STATUS = config.get('show_layout_status', True)
@@ -363,6 +364,7 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "show_layout_status": ("SHOW_LAYOUT_STATUS", bool),
     "show_timing": ("SHOW_TIMING", bool),
     "packed_inference": ("PACKED_INFERENCE", bool),
+    "full_diagnostics": ("FULL_DIAGNOSTICS", bool),
 }
 
 

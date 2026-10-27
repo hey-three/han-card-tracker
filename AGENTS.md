@@ -25,7 +25,7 @@
 - Command(request_id,generation,name,payload)，None终止。reset/配置切换递增generation，旧结果丢弃。switch_layout必须携带完整标题与区域，不能只传名称。
 - ready/fatal负责启动，ok/error回执指定请求，finished只负责检测/故障结束，不能解锁其他设置请求。结果计数、历史和performance入队前复制。
 - Worker状态stopped→starting→ready，错误进入failed；恢复新建进程/队列、初始化牌局并保留用户暂停偏好。关闭回收轮询和队列，不等待向已死进程发送残留命令。
-- 业务结果remain_cards、zone_cards、yolo_ms；可选screenshot_jpeg为实际YOLO输入，screenshot_regions当前空字典保留兼容。performance仅发布当前代次。
+- 业务结果remain_cards、zone_cards、yolo_ms；可选screenshot_jpeg为实际YOLO输入，screenshot_regions当前空字典保留兼容。performance仅发布当前代次。diagnostic_status是独立的运行状态，不能混入牌局代次或检测busy回执。
 
 ## 5. 记牌契约
 
@@ -53,7 +53,7 @@
 
 - 仅主进程通过settings.save_*及config/store.py写盘。同目录唯一临时文件+os.replace；成功后更新内存，读取损坏必须报错，不能空配置覆盖。
 - 后端成功回执后保存并刷新；后端失败保留旧组件，保存失败停止检测并提示重启。故障时允许修正持久化参数供新进程使用。
-- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览与图片存盘、终端日志三个开关独立。
+- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览、旧图片存盘、终端日志和完整诊断四项功能独立。
 - 编辑布局先保存内容，后端确认切换再保存current_layout。删除当前布局先确认替代布局；失败不删除原记录。
 - 模型/设备/布局切换重建相应组件并重置牌局。控制设置有白名单，子进程只改内存，不写YAML。
 - BASE_DIR是可写运行目录，RESOURCE_DIR负责冻结资源/_internal解析；首次冻结运行复制配置到可写目录。
@@ -64,7 +64,12 @@
 ## 8. 图像、计时与模型
 
 - ImageSaver统一管理原图games_images/row/game_N/N.png及最终原坐标标注games_images/yolo/game_N/N.png，同名成对；当前每局1000张、最近3局，新局清旧。不在组件外新增随意落盘。
-- 当前没有完整逐帧状态/所有模型调用输入与标注/回放包。逐帧诊断仍为待讨论需求；本次文档维护不实现新开关或宣传已支持。
+- full_diagnostics/FULL_DIAGNOSTICS缺省false，经设置回执/原子保存启用。run_controller_loop注入DiagnosticRecorder，GameController单独使用默认不落诊断文件；进程退出finally有界收尾。
+- core/diagnostics.py只在完整诊断开启时建立一个后台线程；主识别线程先预留预算、复制RGB图和CPU结果/状态再提交。每次模型调用输入必须在调用前冻结，不能把复用画布、GPU张量或Qt对象入队；异常及同帧整图回退分别留证。
+- 帧数上限8（含正在写的一帧），待保存RGB+JSON预算64MiB，单帧JSON256KiB；后台编码、绘制标注、SHA、配额清理。队列/容量/写入错误暂停完整诊断并报告，不能阻塞或改变识别业务，也不能隐性丢帧称完整。
+- core/diagnostic_storage.py负责diagnostics/session_*/的manifest/逐帧证据/索引，容量1GiB，只清已结束的已知旧会话，保护当前/未封口/未知目录；日常logs/runtime.jsonl只记关键状态/错误，10MiB×5轮转。两目录均gitignore。
+- 独立Response状态diagnostic携带diagnostic_status，不回执或解锁检测；异步状态含单调时间戳，UI拒绝旧通知。暂停警告不随show_layout_status隐藏，后台实际状态不能与保存的开关混淆。
+- 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放。
 - YoloInferencer.detect不保存中间拼图；Controller在状态更新和开局目录建立后save_frame。保存失败不能当成功排查证据。
 - 动态/PT明确请求(H,W)=(480,768)；静态ONNX/TensorRT尊重导出尺寸，首帧直接拼图也不能污染后续输入。CPU优先ONNX，CUDA优先TensorRT FP16，再回退PyTorch；不自动因拼图改权重或重新导出形状。
 - yolo_ms含本轮全部Ultralytics调用及内部前后处理/回退，GPU同步；主进程整轮另含截图/队列/轮询，子进程performance也不等于物理显示延迟。
@@ -73,6 +78,6 @@
 ## 9. 验证与提交边界
 
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
-- 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把162项单测或42次静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
+- 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
 - 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
-- 本次任务已授权上传V4.3.1、合并main、本地同步及优化仓库公开元信息；范围不包含逐帧诊断实现。
+- 本次任务已授权上传V4.3.1、合并main、本地同步及优化仓库公开元信息；用户随后已授权实现有界后台完整诊断和日常轮转日志；不得更改无关牌局规则。

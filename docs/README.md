@@ -11,6 +11,7 @@
 | 自动判断牌组属于哪家 | [自动布局](自动布局设计说明.md) | core/auto_layout.py |
 | 两阶段拼图、严格选区、在线缩放 | [拼图与自适应](拼图自适应与检测方式.md) | frame_packing.py、square_packing.py、packing_scales.py |
 | 一个模型兼容原图与拼图 | [训练与拼图](模型训练与拼图约定.md) | config/packing_profile.py、训练仓库 |
+| 日常日志、完整逐帧证据、容量和后台保存 | [诊断记录](诊断记录.md) | diagnostics.py、diagnostic_storage.py、diagnostic_state.py |
 | 出错时已有材料、测试证据与未测项 | [排查与验证](排查与验证.md) | image_saver.py、tests/ |
 | 为什么采用这些规则、哪些路线已放弃 | [设计决策](设计决策.md) | 核心契约摘要 |
 | 维护文档、仓库简介、Topics与发布 | [维护与发布](维护与发布.md) | 文档与公开元信息 |

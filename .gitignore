@@ -12,3 +12,7 @@ games_images/
 
 # User-provided local reference screenshots
 /tmp/
+
+# 本机诊断证据与轮转日志
+/diagnostics/
+/logs/

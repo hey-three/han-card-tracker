@@ -27,6 +27,7 @@ class InferenceWorker(QObject):
         layout_status_changed: 当前代次的自动布局进度或歧义说明。
         screenshot_ready: 当前截图 JPEG 数据及自动布局返回的区域边界。
         performance_ready: 当前代次的分阶段耗时，不含图像。
+        diagnostic_status_changed: 保存线程的纯数据状态，不能解锁检测。
         state: 当前生命周期状态。
     """
 
@@ -38,6 +39,7 @@ class InferenceWorker(QObject):
     layout_status_changed = Signal(str)
     screenshot_ready = Signal(bytes, dict)
     performance_ready = Signal(dict)
+    diagnostic_status_changed = Signal(dict)
 
     def __init__(self, layout_name: str, game_name: str = "doudizhu", parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
@@ -286,6 +288,10 @@ class InferenceWorker(QObject):
             if response.status == "fatal":
                 self.fail(response.error)
                 return
+            if response.diagnostic_status is not None:
+                self.diagnostic_status_changed.emit(response.diagnostic_status)
+            if response.status == 'diagnostic':
+                continue
             if response.status == "ready":
                 self._set_state("ready")
                 continue

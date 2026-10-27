@@ -5,7 +5,9 @@ from __future__ import annotations
 from collections.abc import Sequence
 from math import ceil, floor, isfinite
 
-from core.auto_layout import Box
+from typing import cast
+
+from core.auto_layout import Box, YoloResult
 
 Rect = tuple[int, int, int, int]
 PACKED_CANVAS_SIZE = (640, 640)
@@ -46,6 +48,32 @@ class Detection:
         self.name = name
         self.bbox: Box = (float(bbox[0]), float(bbox[1]), float(bbox[2]), float(bbox[3]))
         self.confidence = float(confidence)
+
+
+def read_detections(raw: object | None) -> list[Detection]:
+    """读取模型画布坐标和置信度。
+
+    Args:
+        raw: 当前帧 YOLO 兼容结果，None 表示未取得结果。
+
+    Returns:
+        已校验检测；无结果时为空。
+    Raises:
+        ValueError: 模型框、类别及置信度数量不一致，或检测数值无效。
+    """
+    if raw is None:
+        return []
+    result = cast(YoloResult, raw)
+    if result.boxes is None:
+        return []
+    boxes = result.boxes.xyxy.cpu().tolist()
+    classes = result.boxes.cls.cpu().tolist()
+    confidence_tensor = getattr(result.boxes, "conf", None)
+    scores = confidence_tensor.cpu().tolist() if confidence_tensor is not None else [1.] * len(boxes)
+    if not len(boxes) == len(classes) == len(scores):
+        raise ValueError("检测输出长度不一致")
+    return [Detection(result.names[int(class_id)], cast(Box, tuple(box)), score)
+            for box, class_id, score in zip(boxes, classes, scores)]
 
 
 class Tile:

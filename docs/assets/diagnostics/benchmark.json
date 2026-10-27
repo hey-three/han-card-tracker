@@ -1,0 +1,70 @@
+{
+  "date": "2026-10-28",
+  "scope": "Windows static screenshot controller.detect wall time; CPU PyTorch FP32; 2 torch threads; warm model; no live capture, Qt preview or legacy save; three private screenshots, 9 frames each, 2 mode-order rotations",
+  "comparison": "Background system load was not isolated. Earlier comparison used a 3-byte pixel budget; changing accounting does not change images/model. Baselines also varied substantially. Do not derive a fixed overhead from these short runs.",
+  "weight_sha256": "e2419bb59102168fde02324fe6981a583e4300c524645897c967f521605397b7",
+  "full_frames_published": 54,
+  "outputs_equal_across_modes": true,
+  "expected_remaining_by_image": {
+    "28.png": 35,
+    "466.png": 44,
+    "61.png": 35
+  },
+  "max_snapshot_ms": 7.806899986462668,
+  "raw_images_and_frame_states_public": false,
+  "source": "V4.3.1 working tree before this diagnostic change was committed",
+  "p95_method": "sorted_values[int(0.95*(n-1))]",
+  "snapshot_budget_at_measurement": "Final 64MiB image/JSON budget, conservatively charged at 4 bytes per pixel +1024 per image.",
+  "earlier_comparison": {
+    "none": {
+      "frames": 54,
+      "mean_ms": 105.15545555487431,
+      "median_ms": 84.92169999954058,
+      "p95_ms": 197.9496999992989,
+      "snapshot_mean_ms": 0,
+      "max_pending": 0
+    },
+    "daily": {
+      "frames": 54,
+      "mean_ms": 100.88565000047244,
+      "median_ms": 80.84395000332734,
+      "p95_ms": 198.6215000069933,
+      "snapshot_mean_ms": 0,
+      "max_pending": 0
+    },
+    "full": {
+      "frames": 54,
+      "mean_ms": 137.2161888896328,
+      "median_ms": 119.31850000837585,
+      "p95_ms": 244.65839999902528,
+      "snapshot_mean_ms": 1.932951853733458,
+      "max_pending": 2
+    }
+  },
+  "modes": {
+    "none": {
+      "frames": 54,
+      "mean_ms": 313.0133740748904,
+      "median_ms": 309.071750001749,
+      "p95_ms": 987.9452000022866,
+      "snapshot_mean_ms": 0,
+      "max_pending": 0
+    },
+    "daily": {
+      "frames": 54,
+      "mean_ms": 398.8857129634535,
+      "median_ms": 395.2006999970763,
+      "p95_ms": 998.9137999946252,
+      "snapshot_mean_ms": 0,
+      "max_pending": 0
+    },
+    "full": {
+      "frames": 54,
+      "mean_ms": 555.5428370372048,
+      "median_ms": 431.97855000471463,
+      "p95_ms": 1099.7268999926746,
+      "snapshot_mean_ms": 5.349898144939086,
+      "max_pending": 2
+    }
+  }
+}

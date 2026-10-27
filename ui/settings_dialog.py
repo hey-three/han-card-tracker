@@ -95,6 +95,7 @@ class SettingsDialog(QDialog):
     layout_status_changed = Signal(int)
 
     manual_inference_changed = Signal(int)
+    diagnostics_changed = Signal(int)
 
     def __init__(
         self,
@@ -406,6 +407,15 @@ class SettingsDialog(QDialog):
             tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
+        self.combo_full_diagnostics = self._add_combo_row(
+            advanced_layout, '完整诊断：', 'FullDiagnosticsCombo', ['否', '是'], self.diagnostics_changed.emit,
+            tooltip='后台保存原图、每次YOLO输入及标注、状态变化。队列或磁盘达到上限会暂停诊断，识别继续。保存期间仍有图片复制等开销。',
+        )
+        self.label_diagnostics = QLabel('完整诊断未开启')
+        self.label_diagnostics.setWordWrap(True)
+        advanced_layout.addWidget(self.label_diagnostics)
+        self.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
+
         self.combo_manual_inference = self._add_combo_row(
             advanced_layout, "手动布局检测方式：", 'ManualInferenceCombo',
             ["拼图检测", "原图检测"], self.manual_inference_changed.emit,
@@ -707,6 +717,29 @@ class SettingsDialog(QDialog):
         text = "是" if show_current_screenshot else "否"
         index = self.combo_show_current_screenshot.findText(text)
         self._set_combo_current_safely(self.combo_show_current_screenshot, index)
+
+    def set_current_full_diagnostics(self, enabled: bool) -> None:
+        """刷新已保存的诊断偏好，不将后台暂停误显示为已关闭。
+
+        Args:
+            enabled: 主进程已经确认保存的偏好。
+        """
+        self.combo_full_diagnostics.blockSignals(True)
+        self.combo_full_diagnostics.setCurrentIndex(int(enabled))
+        self.combo_full_diagnostics.blockSignals(False)
+
+    def set_diagnostic_status(self, status: dict[str, object]) -> None:
+        """展示后台实际状态和完整故障原因。
+
+        Args:
+            status: 推理进程传回的纯数据快照。
+        """
+        names = {'off': '未开启', 'starting': '正在准备', 'recording': '正在记录', 'stopping': '正在收尾', 'paused': '已暂停，请关闭后重新开启'}
+        text = '完整诊断：'+names.get(str(status.get('state')), '等待服务回执')
+        text += f"；已保存{status.get('saved_frames', 0)}帧，待保存{status.get('pending_frames', 0)}帧"
+        detail = str(status.get('reason') or status.get('daily_log_error') or '')
+        self.label_diagnostics.setText(text + ('\n'+detail if detail else ''))
+        self.label_diagnostics.setToolTip(str(settings.BASE_DIR)+'/diagnostics/；日常日志在 logs/；'+detail)
 
     def set_current_manual_inference(self, packed: bool) -> None:
         """恢复后端确认的手动检测方式，不触发新的保存请求。

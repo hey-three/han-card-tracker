@@ -68,6 +68,36 @@ class WindowBehaviorTests(unittest.TestCase):
         self.addCleanup(editor.close)
         return editor
 
+    def test_diagnostic_warning_visible_with_layout_status_hidden(self) -> None:
+        """诊断写盘失败不因隐藏普通提示而消失，也不强制停止识别。"""
+        settings.SHOW_LAYOUT_STATUS = False
+        self.window.worker.state = 'ready'
+        self.window.on_diagnostic_status({'state': 'paused', 'reason': 'disk full', 'at_monotonic_ns': 2})
+        self.assertFalse(self.window.statusBar().isHidden())
+        self.assertIn('disk full', self.window.statusBar().currentMessage())
+        self.window.on_diagnostic_status({'state': 'recording', 'at_monotonic_ns': 1})
+        self.assertIn('disk full', self.window.statusBar().currentMessage())
+        self.window.on_diagnostic_status({'state': 'off', 'at_monotonic_ns': 3})
+        self.assertTrue(self.window.statusBar().isHidden())
+        self.assertEqual(self.window.worker.state, 'ready')
+
+    def test_full_diagnostic_preference_waits_for_ack_and_reopens(self) -> None:
+        """后端失败不落盘；成功后重开设置仍显示已保存偏好。"""
+        settings.FULL_DIAGNOSTICS = False
+        self.window.worker.state = 'ready'
+        with patch.object(self.window.worker, 'update_settings', side_effect=[111, 112]):
+            self.window.on_full_diagnostics_changed(1)
+            self.assertFalse(settings.FULL_DIAGNOSTICS)
+            self.window.worker.command_completed.emit(111, 'update_settings', False, 'thread unavailable')
+            self.assertNotIn('full_diagnostics', read_config(str(self.config_path)))
+            self.window.on_full_diagnostics_changed(1)
+            self.window.worker.command_completed.emit(112, 'update_settings', True, '')
+        self.assertTrue(read_config(str(self.config_path))['full_diagnostics'])
+        dialog = SettingsDialog(self.window)
+        self.addCleanup(dialog.close)
+        self.assertEqual(dialog.combo_full_diagnostics.currentIndex(), 1)
+        self.assertEqual(dialog.combo_full_diagnostics.receivers('2currentIndexChanged(int)'), 1)
+
     def test_preview_width_and_shrinking_after_large_image(self) -> None:
         """预览与主窗口同宽；大图不会强迫窗口扩大或阻止缩小。"""
         self.window.resize(640, self.window.height())
