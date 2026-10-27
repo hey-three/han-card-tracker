@@ -1,6 +1,6 @@
 # Han 记牌器 · 斗地主记牌器 / Dou Dizhu Card Tracker
 
-[English](README.en.md) · [使用指南](docs/使用指南.md) · [文档目录](docs/README.md) · [问题反馈](https://github.com/hey-three/han-card-tracker/issues) · [模型训练仓库](https://github.com/hey-three/yolo-for-han-card-tracker)
+[English](README.en.md) · [使用指南](docs/使用指南.md) · [文档目录](docs/README.md) · [问题反馈](https://github.com/hey-three/han-card-tracker/issues) · [模型训练仓库](https://github.com/hey-three/yolo-for-han-card-tracker) · [❤ 赞赏支持](SUPPORT.md)
 
 **Han Card Tracker 是 Windows 桌面的开源斗地主记牌器。** 使用 YOLO 扑克牌目标检测识别游戏窗口，统计本家初始手牌以外尚未打出的牌，并显示上家、本家、下家的出牌历史。项目使用 Python、PySide6 和 PyTorch，支持 CPU/CUDA 推理及自动布局、手动布局。
 
@@ -71,6 +71,10 @@ python main.py
 **能否保证200毫秒或一直不漏牌？** 不能。采样间隔、模型耗时、整轮耗时不同；截图、模型、皮肤、设备和温度都影响结果。已有验证范围见[排查与验证](docs/排查与验证.md)。
 
 **如何保存排查材料？** 日常关键事件日志自动按大小轮转；高级设置可开启[完整诊断](docs/诊断记录.md)，按局建立目录，后台保存原图、每次YOLO调用输入与标注、牌数/历史和状态前后快照。高级设置可调整全部诊断材料的磁盘额度（默认1 GiB）；空间不足清理已封口旧局，保护当前局。队列/内存拥堵自动暂缓并恢复，缺帧明确记录；磁盘故障暂停并提示，识别继续；自动回放和一键导出尚未实现。
+
+## 赞赏支持
+
+如果这个项目对你有帮助，欢迎通过[微信或支付宝二维码](SUPPORT.md)自愿赞赏，支持项目维护。也感谢每一份 Star、问题反馈和代码贡献。
 
 ## 文档与贡献
 
