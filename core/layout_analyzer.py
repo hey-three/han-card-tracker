@@ -5,12 +5,21 @@
 并对每个区域内的检测框进行按行按列的二维空间排序。
 """
 
-from typing import Dict, List, Tuple
+from __future__ import annotations
+
+from typing import Dict, List, Tuple, cast
+
+from config.settings import LayoutConfig
+from core.auto_layout import YoloResult
 
 class LayoutAnalyzer:
-    """基于几何坐标的布局解析与框过滤排序工具。"""
+    """基于几何坐标的布局解析与框过滤排序工具。
 
-    def __init__(self, layout_config: dict) -> None:
+    Attributes:
+        layout_config: 已验证的手动布局，包含归一化区域。
+    """
+
+    def __init__(self, layout_config: LayoutConfig) -> None:
         """初始化分析器。
         
         Args:
@@ -78,58 +87,35 @@ class LayoutAnalyzer:
 
         return [dets[i] for i in sorted_indices]
 
-    def parse_and_sort(self, raw_result, img_size: Tuple[int, int]) -> dict[str, list[dict]]:
-        """解析 YOLO 单帧检测结果，按布局区域分区并排序。
+    def parse_and_sort(self, raw_result: object | None, img_size: tuple[int, int]) -> dict[str, list[dict[str, object]]]:
+        """在原图归一化坐标中分区并按行排序，不向内截断区域边界。
 
         Args:
-            raw_result: YOLO 单帧结果对象 (results[0])。
-            img_size: 原始图像尺寸 (width, height)。
-
+            raw_result: 原始或已恢复原图坐标的 YOLO 结果。
+            img_size: 原图宽高；零尺寸或无结果表示未知画面，返回空区域。
         Returns:
-            各区域的检测结果列表，key 为区域名。
+            全部手动区域及其有序目标；交叠区域按用户配置顺序确定唯一归属。
+        Raises:
+            ValueError: 模型框和类别数量不一致。
         """
         layout = self.layout_config["layout"]
-        img_w, img_h = img_size
-
-        def norm_to_pixel(box):
-            x1, y1, x2, y2 = box
-            return (
-                int(x1 * img_w),
-                int(y1 * img_h),
-                int(x2 * img_w),
-                int(y2 * img_h)
-            )
-
-        def in_region(cx, cy, region):
-            rx1, ry1, rx2, ry2 = region
-            return rx1 <= cx <= rx2 and ry1 <= cy <= ry2
-
-        regions = {key: norm_to_pixel(coords) for key, coords in layout.items()}
-        results = {key: [] for key in layout}
-
-        if raw_result is None or not hasattr(raw_result, 'boxes') or raw_result.boxes is None:
+        results: dict[str, list[dict[str, object]]] = {key: [] for key in layout}
+        width, height = img_size
+        if raw_result is None or min(img_size) <= 0:
             return results
-
-        boxes = raw_result.boxes.xyxy.cpu().numpy()
-        clses = raw_result.boxes.cls.cpu().numpy().astype(int)
-        names = [raw_result.names[c] for c in clses]
-
-        for box, yolo_name in zip(boxes, names):
+        raw = cast(YoloResult, raw_result)
+        if raw.boxes is None:
+            return results
+        boxes = raw.boxes.xyxy.cpu().tolist()
+        classes = raw.boxes.cls.cpu().tolist()
+        if len(boxes) != len(classes):
+            raise ValueError("检测框和类别数量不一致")
+        for box, class_id in zip(boxes, classes):
             x1, y1, x2, y2 = box
-            cx = (x1 + x2) / 2
-            cy = (y1 + y2) / 2
-
-            det = {
-                "bbox": (float(x1), float(y1), float(x2), float(y2)),
-                "name": yolo_name
-            }
-
-            for name, region in regions.items():
-                if in_region(cx, cy, region):
-                    results[name].append(det)
+            cx, cy = (x1+x2)/(2*width), (y1+y2)/(2*height)
+            for key, (a, b, c, d) in layout.items():
+                if a <= cx <= c and b <= cy <= d:
+                    results[key].append({"bbox": (float(x1), float(y1), float(x2), float(y2)),
+                                         "name": raw.names[int(class_id)]})
                     break
-
-        for key in results:
-            results[key] = self.sort_cards_by_topright_rowwise(results[key])
-
-        return results
+        return {key: self.sort_cards_by_topright_rowwise(cards) for key, cards in results.items()}

@@ -18,9 +18,9 @@ class TrackerTests(unittest.TestCase):
         self.tracker = DoudizhuTracker()
         self.frame = {region["key"]: [] for region in settings.LAYOUT_REGIONS}
         self.frame["landlord_cards"] = ["3", "4", "5"]
-        self.frame["player_hand"] = ["A"]
+        self.frame["player_hand"] = ["A"] + ["3"]*4 + ["4"]*4 + ["5"]*4 + ["6"]*4
 
-    def feed(self, count: int = 1) -> None:
+    def feed(self, count: int = 3) -> None:
         """输入指定数量的相同帧。
 
         Args:

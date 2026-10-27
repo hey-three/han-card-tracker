@@ -235,7 +235,7 @@ YOLO_MODEL_NAME = config.get('yolo_model_name', '') or (_scan_model_dirs()[0] if
 YOLO_MODEL_PATH = _resolve_model_path(YOLO_MODEL_NAME)
 
 # ==================== 基本配置 ====================
-RESET_TIME = config.get('reset_time', 3.5)    # 几秒识别不到扑克牌重置
+RESET_TIME = config.get('reset_time', 3.5)    # 全图连续无牌的结束时长；显示保留至新手牌确认
 DETECT_INTERVAL_SEC = config.get('detect_interval_sec', 0.2)  # 检测间隔秒数
 
 # 大小王玩家出牌显示字符
@@ -311,7 +311,7 @@ SHOW_LAYOUT_STATUS = config.get('show_layout_status', True)
 SHOW_TIMING = config.get('show_timing', True)
 
 # 保护拼图仍需真实牌局验证，旧配置默认沿用整图识别。
-PACKED_INFERENCE = config.get('packed_inference', False)
+PACKED_INFERENCE = config.get('packed_inference', False)  # 仅兼容旧配置；路线由布局模式决定
 
 # ==================== 设备选择配置 ====================
 # 设备选择选项: "cpu" (使用CPU), "cuda" (使用GPU)

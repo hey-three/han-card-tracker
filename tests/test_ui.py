@@ -61,13 +61,12 @@ class UITests(unittest.TestCase):
         self.window._reset_ui_to_total()
         self.assertNotIn("old cards", self.window.played_cards_labels["left"].text())
 
-    def test_packed_selector_refresh_does_not_send_commands(self) -> None:
-        """打开或回执刷新设置时不把路线值当作用户修改发送。"""
+    def test_packed_route_is_explained_without_an_independent_switch(self) -> None:
+        """路线随布局选择，不再展示可覆盖布局语义的开关。"""
         dialog = SettingsDialog(self.window)
-        received = []
-        dialog.packed_inference_changed.connect(received.append)
-        dialog.set_current_packed_inference(not settings.PACKED_INFERENCE)
-        self.assertEqual(received, [])
+        self.assertIn("自动布局使用整图", dialog.label_inference_route.text())
+        self.assertIn("手动布局使用五区保护拼图", dialog.label_inference_route.text())
+        self.assertFalse(hasattr(dialog, "combo_packed_inference"))
         dialog.close()
 
     def test_performance_tooltip_distinguishes_model_and_pipeline(self) -> None:
