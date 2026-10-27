@@ -1,244 +1,78 @@
-# AGENTS 指南（han_card_tracker）
+# AGENTS 指南 · Han记牌器
 
-**重要：每次修改代码/文件结构/配置项后，必须主动检查本文件（AGENTS.md）是否需要同步更新。** 若架构、数据流、配置项、文件路径等发生了变化，应及时修正本文件中的对应描述，确保文档始终与代码一致。
+每次修改代码、结构或配置后都检查本文件和相关专题文档是否需要同步。默认简体中文，正确性优先，复用已验证上下文；优先API/CLI，避免重复工具调用。高成本浏览器自动化先评估；用户已明确授权的操作不反复确认。
 
-## 0) AI 开发标准（写代码前必读）
+## 1. 先读与文档职责
 
-项目在 `AI开发标准/` 目录下维护了代码风格规范，**所有新增/修改代码必须遵守**：
+- [文档目录](docs/README.md)是入口，README中英文负责项目介绍与上手，不重复详细契约。
+- [架构](docs/架构与数据流.md)、[记牌规则](docs/斗地主记牌设计说明.md)、[自动布局](docs/自动布局设计说明.md)、[拼图](docs/拼图自适应与检测方式.md)是当前实现说明。
+- [设计决策](docs/设计决策.md)保留长期取舍，[排查与验证](docs/排查与验证.md)区分真实证据/未测项，[CHANGELOG](CHANGELOG.md)记版本变化；不通过层叠“以上废弃”维护当前规则。
+- [配置参考](docs/配置参考.md)、[模型训练](docs/模型训练与拼图约定.md)、[维护与发布](docs/维护与发布.md)随对应变更同步。
 
-- **`AI开发标准/开发总原则.md`**：效率与优美优先、变更策略、输出要求。
-- **`AI开发标准/Python 代码注释规范.md`**：
-  - 所有函数/方法/类必须写 Google 风格 Docstring（中文说明 + 英文关键字：`Args / Returns / Raises / Examples / Attributes / TODO`）。
-  - 类型注解必须完整（函数参数、返回值；类属性在 `Attributes` 写明）。
-  - 异常必须在 `Raises` 中逐条写清触发条件。
-  - 示例必须可运行（`>>>` 形式）。
-  - 输入校验：类型不对抛 `TypeError`，取值/业务约束不满足抛 `ValueError`。
-- **`AI开发标准/Python 类型注解规范.md`**：
-  - 优先使用现代写法（Python 3.10+）：`X | Y`、`list[str]`、`dict[str, int]`。
-  - 每个函数必须标注参数类型 + 返回值类型；无返回值用 `-> None`。
-  - 可选值必须显式写出 `None`：`str | None`。
-  - 不要滥用 `Any`；能用 `TypedDict` / `Protocol` / `Mapping` 表达就不用 `Any`。
-  - 集合/序列参数优先用抽象类型：只读用 `Sequence[T]` / `Mapping[K, V]`，会修改用 `list[T]` / `dict[K, V]`。
+## 2. 编码要求
 
-**硬性约束**：输出的每一个 `def` 都必须带 Docstring，每一个 `class` 都必须带类 Docstring 并为 `__init__` 写 Docstring。
+必须阅读AI开发标准/开发总原则.md、Python 代码注释规范.md、Python 类型注解规范.md。每个def、class和__init__均有中文Google风格Docstring；参数/返回注解完整，异常触发条件写入Raises，可运行示例使用>>>。错误类型抛TypeError，非法值抛ValueError。优先X | None、list、dict及只读Sequence/Mapping，不滥用Any。优先清晰分层与有意义回归，不为低影响文档变更添加镜像实现的测试。
 
-## 1) 先看什么（最快进入状态）
+## 3. 范围与入口
 
-- 入口是 `main.py`：创建 `QApplication`、加载 `ui/ui.qss`、启动 `CardUI`。
-- 业务主链路：`ui/main_window.py` → `core/inference_process.py` → `core/controller_process.py` → `core/game_controller.py` → `core/games/<game>.py` → `core/base_tracker.py` → `core/yolo_inferencer.py` → `core/screen_capture.py`。
-- 配置集中在 `config/settings.py`（运行时常量 + 校验/保存入口）与 `config/config.yaml`（可编辑参数）；`config/store.py` 提供严格读取和原子写入。
-- 设置操作由 `ui/settings_controller.py` 协调，进程协议定义在 `core/inference_protocol.py`。
-- 游戏配置在 `config/games/` 目录下，每个游戏一个 YAML 文件（如 `doudizhu.yaml`）。
-- AI 开发规范详见 `AI开发标准/` 目录（开发总原则 + 代码注释规范 + 类型注解规范），已在第 0 节概述。
+当前仅维护Windows斗地主，不合并够级逻辑；TRACKER_REGISTRY只启用doudizhu，新增YAML不等于新增游戏支持。Android和第三方APK分析是独立工程，不把第三方代码/权重/图片复制进来。
 
-## 2) 架构与数据流（改逻辑前必须理解）
+入口main.py建立QApplication、样式和CardUI，必须保留multiprocessing.freeze_support。主链：ui/main_window.py → inference_process.py → controller_process.py → game_controller.py → 布局/Tracker/YOLO/截图。设置由ui/settings_controller.py协调，协议在core/inference_protocol.py。
 
-### 多进程架构
+## 4. 进程与协议硬约束
 
-- **主进程**（UI）：`CardUI`（`ui/main_window.py`）+ `InferenceWorker`（`core/inference_process.py`）
-- **子进程**（推理）：`GameController`（`core/game_controller.py`）+ 五个核心组件
-- 通信方式：`multiprocessing.Queue`（命令队列 `cmd_queue` + 结果队列 `result_queue`）
-- UI 不因推理耗时而卡顿；子进程不操作任何 Qt 对象
+- UI主进程、推理子进程独立；子进程不创建或操作Qt对象。Worker轮询20ms，UI仅在成功发送检测后置busy。
+- Command(request_id,generation,name,payload)，None终止。reset/配置切换递增generation，旧结果丢弃。switch_layout必须携带完整标题与区域，不能只传名称。
+- ready/fatal负责启动，ok/error回执指定请求，finished只负责检测/故障结束，不能解锁其他设置请求。结果计数、历史和performance入队前复制。
+- Worker状态stopped→starting→ready，错误进入failed；恢复新建进程/队列、初始化牌局并保留用户暂停偏好。关闭回收轮询和队列，不等待向已死进程发送残留命令。
+- 业务结果remain_cards、zone_cards、yolo_ms；可选screenshot_jpeg为实际YOLO输入，screenshot_regions当前空字典保留兼容。performance仅发布当前代次。
 
-### 命令与回执协议
+## 5. 记牌契约
 
-协议定义在 `core/inference_protocol.py`，由 `core/controller_process.py` 执行。
+- WAIT_BEGIN见上方底牌任意一张，当前帧进HAS_STARTED；非空合法手牌按FRAME_LENGTH连续一致，扣一次后进STARTED_RECORD_CARD。无17/20硬门槛，无17→20补扣，空手牌不能通过。
+- remain_cards排除本家首次手牌及已确认对手出牌。本家出牌只记历史，底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
+- frame_caches只保留最新阈值帧；阈值变小时下一帧即可确认，变大需等足够帧。
+- 底牌缺失暂停并清未确认序列；已知为空连续max(3,FRAME_LENGTH)帧且持续RESET_TIME秒才内部结束。同帧模型复查只算一次。未知、截图失败、暂停/恢复中断累计。
+- begin_waiting保留remain_cards/show_cards，新底牌出现开局才刷新。显式reset立即清空。不按某家零张、全图无牌、底牌牌面变化额外结束。
+- 缺区域键是未知，有键空列表才是已知为空。未知清该区确认缓存、保留出牌与空帧历史；未观测区不能补成空区。
 
-- 命令为 `Command(request_id, generation, name, payload)`；`None` 终止进程。
-- `request_id` 唯一标识请求；重置及配置切换递增 `generation`，旧代次检测结果丢弃。
-- `detect` / `reset` / `touch_time` 不需要参数。
-- `switch_layout` 携带 `{"name": 布局名, "config": 完整布局}`，含窗口标题和全部区域坐标；不能只传名称。
-- `switch_model` / `switch_device` / `switch_game` 携带名称；`update_settings` 携带受白名单限制的属性字典。
-- 回执为 `Response`：`ready` 为启动成功，`fatal` 为启动失败，`ok` / `error` 为指定请求的执行结果。
-- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；YOLO输入预览启用时还包含 `screenshot_jpeg`，`screenshot_regions` 当前为空且保留协议兼容；控制命令也必须回执。
-- `finished` 仅用于检测结束或进程故障，不用设置命令的回执解锁其他检测请求。
-- 回传的牌数和出牌记录在入队前复制，避免队列延迟序列化时被后续命令修改。
+## 6. 布局、拼图与尺度
 
-### 检测流水线
+- 自动mode:auto仅需窗口标题和空layout，始终整图。按行组成完整牌组、合并相邻行后归属；短末行不能因初始评分被拆给本家，多重集排序防换行重复扣。回归fixture为tests/fixtures/right_wrapped_play.json。
+- 自动几何initial是定位通知，Controller不得直接初始化扣牌。底牌是业务门禁，不要求三张，也不作必需几何锚点。中央翻牌不等于上方底牌到位。
+- 自动长宽比变化超过5%只重学几何，保留本局历史；未知/歧义暂停，不保证中途恢复或所有皮肤兼容。
+- 旧布局缺mode视manual。PACKED_INFERENCE/packed_inference是所有手动布局共用的布尔偏好，缺省true；自动不受影响，切手动原图/拼图不重扣牌。
+- 手动拼图WAIT_BEGIN/HAS_STARTED只底牌+手牌；首扣后的下一帧底牌+三家出牌，不含手牌。开局无底牌、全空或未知也不跑整图校准；记牌中可同帧复查原图。
+- 用户框就是源边界，向内取整，只用1e-7像素误差容差；不向四周或下沿扩框，不为框外牌补救。内部保护重叠也只在原框内。
+- Tile.source_region区分人工边界与内部切口。内部残片须完整副本覆盖85%自身面积；人工边缘可接受但有完整副本时仍优先去重。按原位置/类别去重，不能按牌点去重。
+- config/packing_profile.py定义固定画布(W,H)=(768,480)、阶段区域及INITIAL_REGION_SCALES。初值底牌1.652110、手牌0.703958、上下家约1、本家出牌0.836045；不在无底牌时试探放大。
+- core/packing_scales.py复用当前检测框学习普通单牌高度，排除大小王长框。三帧最高/最低≤1.2确认，10%迟滞、权重0.25～8；测准底牌和参照后优先出牌、其次手牌，底牌目标多12%。未知/空区中断未确认测量。
+- 布局、截图尺寸、模型、显式重置和检测方式切换隔离学习，二区→四区保留参照。规划缓存只存几何和画布，每帧重新识别；不旋转、不拉伸裁片。make_square_plan是历史/对照接口，正式用加权make_rect_plan。
 
-`GameController.detect()` 执行以下五步：
+## 7. 配置、UI与资源
 
-1. **截图**：`ScreenCapture.capture_window()` → `PIL.Image | None`
-2. **YOLO 纯视觉推理**：自动布局始终整图 `YoloInferencer.detect(img)`；手动布局由 `PackedPipeline` 按状态选二区或四区，交给实测权重 `make_rect_plan()`，恢复原图坐标，不确定或空结果复查同一原图 → `(raw_result, yolo_ms)`
-3. **几何分区 + 二维排序**：`LayoutAnalyzer.parse_and_sort(raw_result, img.size)` → `dict[str, list[dict]]`
-4. **业务映射**：`Tracker.translate_boxes_to_cards(region_boxes)` → `dict[str, list[str]]`
-5. **状态机更新**：`Tracker.get_cards_number(frame_data, yolo_ms)` → `(remain_cards, show_cards, yolo_ms)`
+- 仅主进程通过settings.save_*及config/store.py写盘。同目录唯一临时文件+os.replace；成功后更新内存，读取损坏必须报错，不能空配置覆盖。
+- 后端成功回执后保存并刷新；后端失败保留旧组件，保存失败停止检测并提示重启。故障时允许修正持久化参数供新进程使用。
+- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览与图片存盘、终端日志三个开关独立。
+- 编辑布局先保存内容，后端确认切换再保存current_layout。删除当前布局先确认替代布局；失败不删除原记录。
+- 模型/设备/布局切换重建相应组件并重置牌局。控制设置有白名单，子进程只改内存，不写YAML。
+- BASE_DIR是可写运行目录，RESOURCE_DIR负责冻结资源/_internal解析；首次冻结运行复制配置到可写目录。
+- UI增量更新计数/历史；出牌标签保留布局归属仅切可见性。depleted/count动态属性更新需unpolish/polish。
+- 窗口置顶仅标志变化时设置并保留几何，不反复adjustSize；设置框打开暂停检测，关闭touch_time中断超时连续性。
+- 截图下沉/恢复统一Qt逻辑坐标，防止重入，失败也恢复。延迟定时器随窗口销毁。show_layout_status仅隐藏正常提示，故障和恢复按钮始终可见。
 
-### 分区与排序
+## 8. 图像、计时与模型
 
-- 分区依据检测框中心点是否落在 `window_layouts[*].layout` 区域内；区域坐标为归一化（0~1），直接比较归一化中心点，不向内取整截掉边缘
-- 区域键名从游戏配置的 `layout_regions` 动态获取
-- 排序不是置信度顺序：`LayoutAnalyzer.sort_cards_by_topright_rowwise()` 先按行（top-y 聚类）再按列（right-x 排序），避免出牌串顺序错乱
-- 自动布局 `mode: auto` 时，第 3 步改为 `core/auto_layout.py` 的 `read_yolo_boxes()` + `AutoLayoutAnalyzer.observe()`；只需窗口标题和空 `layout: {}`，不使用手工矩形。旧配置缺省 `mode: manual`，完全保留手动方式。
-- 自动模式按行组成牌组、合并相邻行，再对完整牌组确定归属；左右家使用对应边缘、本家使用中心和第一行顶边锚点，支持单张、长牌组和两行出牌。多重集排序避免同牌换行重复扣减。
-- 短末行不能因初始位置评分落在本家就被拆走：相邻行同侧、同列对齐且牌框尺度一致时，先合并再按完整牌组归属；近期手牌减少或此前单独稳定的本家出牌可阻止误合并。实测框回归位于 `tests/fixtures/right_wrapped_play.json` 与 `tests/test_wrapped_ownership.py`。
-- 自动模式先发布上方中央底牌存在性，任意一张即可进入 HAS_STARTED；不等待完整 17/20 张。手牌任意非空、合法且按 FRAME_LENGTH 稳定后扣一次。几何独立从非空手牌学习，未定位的出牌区保持未知；初始快照 initial 不再由 Controller 直接初始化扣牌。上方底牌判定排除画面中央翻牌；仅支持常见本家在下、两家在左右，不承诺中途恢复历史。
-- `LayoutObservation.regions` 缺失键代表未知，有键空列表才表示空区。自动模式传入 `known_regions`，未知区域清确认缓存但保留出牌/空帧历史；不得把未知补成空列表。校准后底牌隐藏可继续跟踪。
-- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。显式重置、模型/布局切换清除参照；长宽比变化超过 5% 只重新校准几何，保留当前牌局历史，不据此判定换局。底牌牌面变化不触发换局。两种布局均不用普通超时清屏，只按连续有效底牌区无牌的帧数和时长结束。详见 `docs/自动布局设计说明.md`。
+- ImageSaver统一管理原图games_images/row/game_N/N.png及最终原坐标标注games_images/yolo/game_N/N.png，同名成对；当前每局1000张、最近3局，新局清旧。不在组件外新增随意落盘。
+- 当前没有完整逐帧状态/所有模型调用输入与标注/回放包。逐帧诊断仍为待讨论需求；本次文档维护不实现新开关或宣传已支持。
+- YoloInferencer.detect不保存中间拼图；Controller在状态更新和开局目录建立后save_frame。保存失败不能当成功排查证据。
+- 动态/PT明确请求(H,W)=(480,768)；静态ONNX/TensorRT尊重导出尺寸，首帧直接拼图也不能污染后续输入。CPU优先ONNX，CUDA优先TensorRT FP16，再回退PyTorch；不自动因拼图改权重或重新导出形状。
+- yolo_ms含本轮全部Ultralytics调用及内部前后处理/回退，GPU同步；主进程整轮另含截图/队列/轮询，子进程performance也不等于物理显示延迟。
+- 权重仅在yolo/weights/<目录>/best.pt；训练仓库hey-three/yolo-for-han-card-tracker。一个8:5模型混合原图与两阶段图，按牌局先划分，未启动训练或承诺200ms。
 
-### 游戏边界与现有分层
+## 9. 验证与提交边界
 
-- 当前开发范围仅为斗地主，不合入够级分支；保留现有 Tracker 分层。
-- `BaseCardTracker`（`core/base_tracker.py`）为抽象基类
-- 子类在 `core/games/` 目录下（如 `DoudizhuTracker`）
-- 工厂函数 `create_tracker()` 根据 `TRACKER_REGISTRY` 动态创建
-- 注册表只启用 `doudizhu`；当前 UI 不支持切换到其他游戏，不能仅添加 YAML 就视为完成新游戏支持。
-
-## 3) V3 三阶段业务与本次用户修正
-
-`WAIT_BEGIN → HAS_STARTED → STARTED_RECORD_CARD → WAIT_BEGIN（保留旧显示）`。
-
-已核对原始 `origin/han_card_tracker_v3.0`（b1e4bd9）：底牌稳定后开局，手牌稳定后扣一次，无 17/20 张门槛。本次明确放宽为：底牌区任意一张出现的当前帧立即进入 HAS_STARTED；非空合法手牌按 FRAME_LENGTH 连续一致后首次扣除。不限制张数，也不再对后来 17→20 自动补扣。修复 V3 空手牌可稳定通过而漏扣的缺陷。
-
-- 正式流程由 DoudizhuTracker.get_cards_number 调用 BaseCardTracker.run_game，恢复三阶段；Controller 不再凭自动布局 initial 直接扣牌。initialize_from_layout 只保留已稳定快照的兼容入口，不在正式逐帧链路使用。
-- 有底牌才推进帧缓存、确认和记录出牌；底牌缺失立即暂停并清未确认缓存，其他区有牌也不能继续扣牌。原图、区域或 boxes 未知是未知帧，不能当作底牌消失。
-- 底牌区连续至少 max(3, FRAME_LENGTH) 帧已知为空且持续 RESET_TIME 秒才内部结束，包括 HAS_STARTED 尚等手牌阶段。暂停恢复/未知帧打断累计；拼图+原图补查同一截图只计一次。当前个人设置 3 秒，代码缺省 3.5 秒。
-- begin_waiting 保留 remain_cards/show_cards；下一次底牌出现时 on_game_started 刷新成新局 54 张并清历史，稳定非空手牌后再扣实际识别张数。显式重置仍立即清空。
-- 本家初始手牌仅扣一次，本家出牌仅记历史，上下家稳定出牌才扣剩余；has_found_empty 保留相同牌连续两手的空区过渡。按玩家零张和全图无牌都不再作为结束判断。
-- 两种布局均显式提供 known_regions。手动只传当前阶段选中的二区/四区，自动缺失键仍为未知；不能把跳过的手牌/出牌补为空区。
-- V3 放宽数量不等于允许伪造完整手牌：稳定漏检可能使初始扣牌偏少；不能暗中恢复用户取消的 17/20 条件。
-- 详细 V3 对照、实际测量和验证见 [docs/V4.3.1设计与验证.md](docs/V4.3.1设计与验证.md)。
-
-## 4) 配置与持久化模式
-
-### 配置层级
-
-| 配置来源 | 文件/模块 | 说明 |
-|----------|-----------|------|
-| `config/config.yaml` | 运行时可编辑参数 | 用户可直接修改 |
-| `config/games/*.yaml` | 游戏配置 | 牌组、出牌区域、布局区域 |
-| `config/settings.py` | 运行时常量 + 加载/保存函数 | 不直接编辑 YAML |
-
-### 关键约定
-
-- 配置文件只由主进程写入，入口为 `config/settings.py` 的 `save_*` / `save_setting()`；子进程只调用内存应用函数。
-- `config/store.py` 统一使用同目录唯一临时文件 + `os.replace` 原子保存；保存成功后才更新主进程内存。
-- 已有 YAML 损坏或读取失败时必须报错，不得以空字典覆盖；保存失败向调用者传播，编辑器不能误报成功。
-- `SettingsController` 等待后端成功回执后保存设置并刷新 UI；后端切换失败保留旧配置和组件。后端已成功但保存失败时停止检测，提示用户检查后重启。
-- YOLO 输入预览属于主界面偏好：先保存 `show_current_screenshot` 并更新窗口，再同步子进程的截图传输开关；因此关闭预览后，即使进程故障或立即退出，也不会丢失关闭选择。
-- 服务故障时允许在设置界面修正持久化配置，点击“重启识别”后由新进程使用最新快照。
-- 可视化编辑先保存布局内容（不切换 current_layout）；主窗口在布局切换确认后保存当前布局名。
-- 删除当前布局时先等待替代布局切换成功，再删除持久化记录；切换失败保留原布局。
-- `TOTAL_CARDS`、`PLAYED_ZONES`、`LAYOUT_REGIONS` 从游戏配置加载；`YOLO_TO_CARD_MAPPING` 从 `config.yaml` 加载
-- 设备切换通过 `switch_device` 命令即时生效，子进程重建 `YoloInferencer`
-- 底层保留 `switch_game` 命令，子进程只加载内存配置并重建 `Tracker`；当前 UI 仅支持斗地主。
-- 模型切换通过 `switch_model` 命令即时生效，子进程重建 `YoloInferencer` + `Tracker`
-- 布局切换通过 `switch_layout` 命令即时生效，子进程重建 `LayoutAnalyzer` + `ScreenCapture` + `Tracker`
-
-### 资源目录解析
-
-- `BASE_DIR`：可写运行目录（项目根目录或 exe 所在目录）
-- `RESOURCE_DIR`：资源读取目录（兼容 PyInstaller 的 `_internal` 布局）
-- `_resolve_resource_dir()`：智能解析，支持打包后从 `_internal` 读取资源
-- `_ensure_runtime_config_exists()`：冻结环境下首次运行时复制配置到可写目录
-
-## 5) UI 交互与进程边界
-
-### 进程隔离
-
-- 推理在独立子进程中运行，不与 UI 主进程共享 GIL
-- `InferenceWorker` 是主进程中的 `QObject`，通过轮询定时器（20ms）从结果队列读取数据，以信号形式通知 UI
-- **不要在子进程中操作任何 Qt 对象**；子进程只能通过 `result_queue` 回传纯 Python 数据
-
-### UI 更新机制
-
-- 生命周期为 `stopped → starting → ready`，启动失败、进程退出或通信失败进入 `failed`。
-- 定时触发：UI 用 `QTimer` + `_busy` 防抖；Worker 仅在 ready 且无未完成命令时接受检测，UI 只在发送成功后设置 busy。
-- 启动错误通过 fatal 回执显示在状态栏；推理依赖延迟到子进程异常边界内导入。
-- 故障停止检测并显示“重启识别”按钮；恢复创建新进程和新队列、重置牌局，保留用户暂停状态。
-- 关闭时停止轮询并回收队列；不等待向已死亡进程输送残留命令。
-- 增量刷新：通过 `_last_count_values` / `_last_depleted_values` / `_last_played_signature` 缓存，仅在状态变化时更新文本/样式
-- 样式依赖动态属性：`depleted` 与 `count`，更新后需 `unpolish/polish` 触发 QSS 刷新
-
-### 窗口置顶
-
-- 调整窗口置顶仅在标志变化时调用 `setWindowFlag`，保留窗口几何和可见性，不重复 `adjustSize()`；截图不改变置顶标志。
-- 主窗口按整个 `QMainWindow` 的布局计算最小高度，包含状态栏；出牌标签始终保留布局归属，仅切换可见性，避免反复开关后丢失标签。
-- `show_layout_status`（默认 true）在“基本设置 → 显示布局状态提示”控制底部正常布局提示；隐藏时收起状态栏，故障信息及恢复按钮始终可见。
-- 设置对话框打开期间暂停定时器，关闭后调用 `_touch_no_target_time()` 防止立即超时重置
-
-### 出牌记录显示
-
-- 由 `_show_played_cards` 控制，通过 `_update_played_cards_visibility()` 切换标签可见性，不从布局移除标签
-- 出牌区域标签从游戏配置的 `played_zones` 动态生成
-- `played_cards_labels` 为 `dict[str, QLabel]`，key 为区域键名
-
-## 6) 扩展工作流（布局/调试）
-
-### 可视化布局编辑（推荐）
-
-“设置 → 基本设置 → 自动布局…”可选择目标窗口，无需框选；选择后等待后端成功回执再保存一个 `mode: auto` 布局。关闭设置后开始校准，请在开局前启用。自动生成的参照不写入 YAML，重新启动/重置时重新学习。切到“可视化编辑”时为自动模式创建新的手动布局，不覆盖自动配置。
-
-在主界面"设置"→"基本设置"页中点击"可视化编辑"，打开 `LayoutEditorDialog`：
-
-1. 选择目标窗口标题
-2. 点击"截图"（自动下沉本程序窗口避免遮挡）
-3. 在画布上框选五个牌区：玩家手牌 / 本家出牌 / 上家出牌 / 下家出牌 / 地主底牌
-4. 点击"预览校验"确认区域标注正确
-5. "保存"写入 `config.yaml`。手动五区会用于实际裁剪，需覆盖全部牌角标记及可能的第二行；外围余量不能补救任意漏框。
-
-截图时窗口下沉/恢复通过 `_send_app_windows_to_bottom()` / `_restore_app_windows_after_capture()` 完成；位置和客户区尺寸统一使用 Qt 逻辑坐标，不混用 Windows 原生像素或边框尺寸。截图期间防止重复进入，失败也恢复窗口。画布及预览的延迟刷新使用随窗口销毁的子定时器。
-
-设置页面提供 ↻ 刷新按钮手动刷新布局列表，支持在布局下拉项中直接删除布局。
-
-### 命令行工具（高级/调试用）
-
-- `utils/add_layout/list_windows.py`：列出窗口标题
-- `utils/add_layout/draw_layout.py`：手动绘制区域
-
-### 运行主程序
-
-```bash
-python main.py
-```
-
-## 7) 调试截图资产约定
-
-- 统一由 `core/image_saver.py` 管理，不要在 `YoloInferencer` / `BaseCardTracker` 外部手写落盘逻辑
-- 保存内容是"成对帧"：原始截图到 `games_images/row/`，YOLO 标注图到 `games_images/yolo/`，同局同帧同名
-- 每局目录命名固定为 `game_N`（`game_1`, `game_2`, ...），帧命名固定为 `1.png` 递增
-- 单局最多 `1000` 张；达到上限后该局后续帧不保存，并且仅打印一次提示
-- 全局只保留最近 `3` 局；新局创建后会清理更旧目录
-- **保存图片与调试模式分开控制**：`SAVE_DEBUG_IMAGES` 控制是否保存游戏图片，`DEBUG_MODE` 仅控制终端日志输出
-- SHOW_CURRENT_SCREENSHOT / show_current_screenshot 保留键名兼容，现为“实时显示 YOLO 输入”。Controller 在路线确定后编码最后一次模型调用的 PIL 原图或拼图；回退显示原图，关闭不编码/传图，无效帧不重发旧图。screenshot_regions 当前为空，不把原图坐标框叠在拼图上。预览不等于内部 NCHW 张量；debug 成对原图/原坐标标注保存不变。
-- “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示 YOLO 输入”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
-- `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
-- V4.3 的模型 detect 不自行保存中间拼图；`GameController` 在最终结果还原后调用 `YoloInferencer.save_frame()`，仍由 `ImageSaver` 保存同尺寸原图/标注图。
-- 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例
-- 启动时执行 `ImageSaver.bootstrap_static(BASE_DIR, SAVE_DEBUG_IMAGES)` 初始化目录
-
-## 8) 耗时统计约定
-
-- **YOLO 推理耗时**：仅包含 `self.model(...)` 调用，不含截图和保存图片时间；在 `YoloInferencer.detect()` 中用 `time.perf_counter()` 计时
-- **整轮耗时**：从 `request_one_update()` 发出检测请求到 `on_result_ready()` 收到结果，包含截图+推理+队列通信+轮询延迟
-- 标题栏显示格式：`Han记牌器  ·  推理 XXms  ·  整轮 XXms`，由 `SHOW_TIMING` 配置项控制是否显示
-- V4.3 的 `yolo_ms` 包含本轮全部 Ultralytics 调用及回退，不是纯网络前向；调用内部预处理/后处理包含其中。CUDA 前后同步。`Response.performance` 深拷贝传回分阶段毫秒与调用次数，Worker 只发布当前代次；设置按钮提示显示上次指标，子进程整轮不等于主进程往返或物理显示延迟。
-
-## 9) 环境与集成边界
-
-- `.vscode/` 与 `games_images/` 是本地目录，由 `.gitignore` 排除，不加入 Git 提交；取消跟踪时仅移除索引，保留本地文件。
-
-- 当前实现依赖 Windows 截图链路（`win32gui/win32ui/win32con` + DPI Aware），默认是 Windows 场景
-- YOLO 推理在独立子进程中运行（`multiprocessing`），主进程（UI）与子进程不共享 GIL；`main.py` 必须调用 `multiprocessing.freeze_support()` 以支持 PyInstaller 打包
-- YOLO 权重在 `yolo/weights/` 目录下的子目录中（如 `yolo/weights/yolov11s_imgsz_960/best.pt`），不支持直接放在 `weights/` 下；通过设置界面切换模型
-- 模型加载策略：
-  - GPU（`device_choice == "cuda"`）：TensorRT（FP16）> PyTorch CUDA + FP16
-  - CPU（`device_choice == "cpu"`）：ONNX Runtime > PyTorch CPU
-  - ONNX / TensorRT 引擎在首次使用时自动从 `best.pt` 导出
-- 关键三方：`ultralytics`、`torch`、`PySide6`、`opencv-python`、`PyYAML`、`pillow`
-- 回归测试位于 `tests/`，运行 `python -B -m unittest discover -s tests -v`。配置测试仅使用 `tests/.tmp/` 下的独立临时文件；Qt 测试使用 offscreen 平台；UITests 隔离临时配置，关闭后处理 DeferredDelete，主动销毁窗口和子定时器，防止遗留事件进入后续窗口测试。
-- 自动测试覆盖斗地主扣牌、帧阈值、配置原子保存、布局同步、切换回退、请求隔离、故障恢复及真实 spawn 启动错误回传，不加载真实 YOLO 模型。
-- 实际游戏截图、CUDA/ONNX/TensorRT 推理及打包版本仍需在具备模型依赖的环境中回归。
-
-## 10) V4.3.1 续更拼图与训练契约
-
-- 当前设计以 [docs/拼图自适应与检测方式.md](docs/拼图自适应与检测方式.md) 为准。自动布局始终整图；手动通过高级设置的“手动布局检测方式”选择拼图或原图。packed_inference/PACKED_INFERENCE 是所有手动布局共用的布尔偏好，缺省true；沿用后端回执后原子保存、失败恢复流程。切换重建拼图缓存和尺度学习，保留牌局计数。
-- 手动拼图 WAIT_BEGIN/HAS_STARTED 从第一帧仅取 landlord_cards+player_hand，不需看到底牌才拼。开局阶段即使底牌缺失、全空或结果未知也不整图复查；不可靠结果等待下一帧。首次扣牌后的下一帧取底牌+三家出牌四区，不含手牌。记牌阶段仍可同帧原图复查，状态机只推进一次。
-- 用户框就是源边界，不拓展四周或下沿，不为框外牌补救。_source_rects向内取整，仅1e-7像素误差容差；至少一个完整像素。保护切分只在用户框内部重复取像素。Tile.source_region携带原用户框，恢复时仅内部切口要求完整副本，人工外边界不误判为算法切坏。
-- PACKED_INPUT_SIZE=(768,480)宽高固定。INITIAL_REGION_SCALES 是用户认可的固定初值：底牌1.652110、手牌0.703958、上下家约1、本家出牌0.836045；没有先整图校准，也不在无底牌时试探加大。旧REGION_SCALE_FACTORS是兼容别名。
-- core/packing_scales.py按当前YOLO单牌框的帧级中位高度学习；普通牌连续3帧高度比不超过1.2才确认，排除大小王长框。未知/失败/空区清未确认样本；测准底牌和参照前保留固定初值，之后以已观测出牌、其次手牌作参照，底牌额外12%，10%迟滞、权重0.25～8。布局、截图尺寸、模型、显式重置和检测方式切换隔离学习，二区→四区保留参照。
-- make_rect_plan按权重×共同倍率、最多64候选/四种排序、MaxRects等比装箱；每片不旋转不拉伸，间隔4像素、114灰。按原坐标/类别去重，不按牌点合并。只缓存几何和画布，每帧重新识别。
-- 预览显示实际最后一次YOLO接口输入，原图/拼图/记牌中复查的原图都如实显示。动态/PT请求(H,W)=(480,768)，静态后端保留导出形状；不自动重导出或换权重。
-- 初版V4.3.1的外扩、固定运行权重及面积数值是历史对照，不能套用于当前严格选区。utils.preview_staged_packing生成当前固定初始比例的合成示例，不代表所有用户布局或学习后的固定排列。
-- 单模型仍建议宽高8:5、768×480，混合原图与两阶段拼图，先按牌局划分再变换标注。未训练或替换权重，不承诺200ms、手机或实战验收。训练仓库见README。
-- 用户授权继续推送V4.3.1并合并main、本地同步。个人config/config.yaml、tmp参考图、tests/.tmp中间产物、已有权重不提交。
+- 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
+- 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把162项单测或42次静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
+- 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
+- 本次任务已授权上传V4.3.1、合并main、本地同步及优化仓库公开元信息；范围不包含逐帧诊断实现。
