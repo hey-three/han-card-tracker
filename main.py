@@ -5,9 +5,7 @@ from PySide6.QtGui import QFont
 from PySide6.QtCore import qInstallMessageHandler
 from ui.main_window import CardUI
 from ui.styles import load_qss
-import config.settings as settings
-from config.settings import BASE_DIR, QSS_PATH
-from core.image_saver import ImageSaver
+from config.settings import QSS_PATH
 
 
 def _qt_message_handler(msg_type, context, message):
@@ -20,16 +18,14 @@ def _qt_message_handler(msg_type, context, message):
     sys.__stderr__.write(str(message) + "\n")
 
 
-def main():
+def main() -> None:
+    """创建Qt应用并启动记牌界面，图片证据由完整诊断独立管理。"""
     try:
         qInstallMessageHandler(_qt_message_handler)
     except Exception:
         pass
 
     app = QApplication(sys.argv)
-
-    # 启动时根据 save_debug_images 做一次初始化
-    ImageSaver.bootstrap_static(BASE_DIR, settings.SAVE_DEBUG_IMAGES)
 
     # 设置一个明确的应用程序字体，避免 Qt 在内部使用无效的 pointSize (-1)
     try:

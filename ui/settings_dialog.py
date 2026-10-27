@@ -5,6 +5,10 @@
 提供应用程序的设置界面，包括基本设置和高级设置
 """
 
+from __future__ import annotations
+
+from collections.abc import Callable
+
 from PySide6.QtWidgets import (
     QComboBox,
     QDialog,
@@ -99,25 +103,45 @@ class SettingsDialog(QDialog):
 
     def __init__(
         self,
-        parent=None,
-        on_reset_callback=None,
-        on_interval_change_callback=None,
-        on_layout_change_callback=None,
-        on_device_change_callback=None,
-        on_reset_time_change_callback=None,
-        on_frame_length_change_callback=None,
-        on_always_on_top_change_callback=None,
-        on_show_played_cards_change_callback=None,
-        on_debug_mode_change_callback=None,
-        on_save_debug_images_change_callback=None,
-        on_show_current_screenshot_change_callback=None,
-        on_show_timing_change_callback=None,
-        on_layout_editor_callback=None,
-        on_layout_delete_callback=None,
-        on_model_change_callback=None,
-        on_confidence_change_callback=None,
-        on_game_change_callback=None,
-    ):
+        parent: QWidget | None = None,
+        on_reset_callback: Callable[[], None] | None = None,
+        on_interval_change_callback: Callable[[int], None] | None = None,
+        on_layout_change_callback: Callable[[int], None] | None = None,
+        on_device_change_callback: Callable[[int], None] | None = None,
+        on_reset_time_change_callback: Callable[[int], None] | None = None,
+        on_frame_length_change_callback: Callable[[int], None] | None = None,
+        on_always_on_top_change_callback: Callable[[int], None] | None = None,
+        on_show_played_cards_change_callback: Callable[[int], None] | None = None,
+        on_debug_mode_change_callback: Callable[[int], None] | None = None,
+        on_show_current_screenshot_change_callback: Callable[[int], None] | None = None,
+        on_show_timing_change_callback: Callable[[int], None] | None = None,
+        on_layout_editor_callback: Callable[[SettingsDialog], None] | None = None,
+        on_layout_delete_callback: Callable[[SettingsDialog, str], bool] | None = None,
+        on_model_change_callback: Callable[[int], None] | None = None,
+        on_confidence_change_callback: Callable[[int], None] | None = None,
+        on_game_change_callback: Callable[[int], None] | None = None,
+    ) -> None:
+        """创建设置页及可选操作回调。
+
+        Args:
+            parent: 父窗口。
+            on_reset_callback: 对应设置操作的回调；None不连接外部处理。
+            on_interval_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_layout_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_device_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_reset_time_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_frame_length_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_always_on_top_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_show_played_cards_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_debug_mode_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_show_current_screenshot_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_show_timing_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_layout_editor_callback: 对应设置操作的回调；None不连接外部处理。
+            on_layout_delete_callback: 对应设置操作的回调；None不连接外部处理。
+            on_model_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_confidence_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_game_change_callback: 对应设置操作的回调；None不连接外部处理。
+        """
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.setMinimumSize(680, 400)
@@ -131,7 +155,6 @@ class SettingsDialog(QDialog):
         self.on_always_on_top_change_callback = on_always_on_top_change_callback
         self.on_show_played_cards_change_callback = on_show_played_cards_change_callback
         self.on_debug_mode_change_callback = on_debug_mode_change_callback
-        self.on_save_debug_images_change_callback = on_save_debug_images_change_callback
         self.on_show_current_screenshot_change_callback = on_show_current_screenshot_change_callback
         self.on_show_timing_change_callback = on_show_timing_change_callback
         self.on_layout_editor_callback = on_layout_editor_callback
@@ -380,14 +403,6 @@ class SettingsDialog(QDialog):
             tooltip="连续多少帧检测相同内容才确认，避免误检",
         )
 
-        self.combo_save_debug_images = self._add_combo_row(
-            advanced_layout,
-            "保存游戏截图：",
-            "SaveDebugImagesCombo",
-            ["否", "是"],
-            self._on_save_debug_images_changed,
-            tooltip="开启后会保存每帧的截图和 YOLO 标注图到 games_images 目录，用于排查识别问题。只保留最近 3 局游戏图片",
-        )
 
         self.combo_show_current_screenshot = self._add_combo_row(
             advanced_layout,
@@ -409,7 +424,7 @@ class SettingsDialog(QDialog):
 
         self.combo_full_diagnostics = self._add_combo_row(
             advanced_layout, '完整诊断：', 'FullDiagnosticsCombo', ['否', '是'], self.diagnostics_changed.emit,
-            tooltip='后台保存原图、每次YOLO输入及标注、状态变化。队列或磁盘达到上限会暂停诊断，识别继续。保存期间仍有图片复制等开销。',
+            tooltip='后台保存原图、每次YOLO输入及标注、状态变化。队列/内存拥堵时暂缓采样，回落后自动恢复并记录缺帧；磁盘故障需处理后重开。识别继续。保存期间仍有图片复制等开销。',
         )
         self.label_diagnostics = QLabel('完整诊断未开启')
         self.label_diagnostics.setWordWrap(True)
@@ -520,12 +535,6 @@ class SettingsDialog(QDialog):
         if self.on_debug_mode_change_callback:
             self.on_debug_mode_change_callback(index)
 
-    def _on_save_debug_images_changed(self, index):
-        """
-        保存游戏图片改变事件
-        """
-        if self.on_save_debug_images_change_callback:
-            self.on_save_debug_images_change_callback(index)
 
     def _on_show_timing_changed(self, index):
         """
@@ -686,16 +695,6 @@ class SettingsDialog(QDialog):
         index = self.combo_debug_mode.findText(debug_mode_text)
         self._set_combo_current_safely(self.combo_debug_mode, index)
 
-    def set_current_save_debug_images(self, save_debug_images):
-        """
-        设置当前保存游戏图片
-
-        参数:
-            save_debug_images: 是否保存游戏图片（True/False）
-        """
-        text = "是" if save_debug_images else "否"
-        index = self.combo_save_debug_images.findText(text)
-        self._set_combo_current_safely(self.combo_save_debug_images, index)
 
     def set_current_show_timing(self, show_timing):
         """
@@ -734,9 +733,14 @@ class SettingsDialog(QDialog):
         Args:
             status: 推理进程传回的纯数据快照。
         """
-        names = {'off': '未开启', 'starting': '正在准备', 'recording': '正在记录', 'stopping': '正在收尾', 'paused': '已暂停，请关闭后重新开启'}
+        names = {'off': '未开启', 'starting': '正在准备', 'recording': '正在记录', 'backpressure': '暂缓采样，队列回落后自动恢复', 'stopping': '正在收尾', 'paused': '已暂停，请关闭后重新开启'}
         text = '完整诊断：'+names.get(str(status.get('state')), '等待服务回执')
         text += f"；已保存{status.get('saved_frames', 0)}帧，待保存{status.get('pending_frames', 0)}帧"
+        text += f"；主动跳过{status.get('dropped_frames', 0)}帧"
+        pending_bytes = status.get('pending_bytes', 0)
+        budget = status.get('memory_budget_bytes', 64*1024*1024)
+        if isinstance(pending_bytes, int) and isinstance(budget, int):
+            text += f'；待写快照 {pending_bytes/1024/1024:.1f} / {budget/1024/1024:.0f} MiB'
         detail = str(status.get('reason') or status.get('daily_log_error') or '')
         self.label_diagnostics.setText(text + ('\n'+detail if detail else ''))
         self.label_diagnostics.setToolTip(str(settings.BASE_DIR)+'/diagnostics/；日常日志在 logs/；'+detail)

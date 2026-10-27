@@ -25,14 +25,11 @@ class RoundLifecycleTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """建立一张底牌与十七张手牌开局，使用可控时钟而非真实等待。"""
-        self.enterContext(patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False,
-                                        SHOW_CURRENT_SCREENSHOT=False, DEBUG_MODE=False,
+        self.enterContext(patch.multiple(settings, FRAME_LENGTH=3, SHOW_CURRENT_SCREENSHOT=False, DEBUG_MODE=False,
                                         PACKED_INFERENCE=True, RESET_TIME=3.))
         config = settings.validate_layout({"window_title": "Game", "mode": "auto", "layout": {}})
         self.enterContext(patch.object(settings, "WINDOW_LAYOUTS", {"Auto": config}))
-        with patch.object(GameController, "_create_inferencer", return_value=Mock()), patch(
-            "core.game_controller.ImageSaver"
-        ), patch("core.game_controller.ScreenCapture"):
+        with patch.object(GameController, "_create_inferencer", return_value=Mock()), patch("core.game_controller.ScreenCapture"):
             self.controller = GameController("doudizhu", "Auto")
         self.hand = opening()[:-3]
         self.bottom = row(["A"], .43, .1, .035, .035)

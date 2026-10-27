@@ -25,13 +25,12 @@ if TYPE_CHECKING:
 from core.layout_analyzer import LayoutAnalyzer
 from core.games import create_tracker
 from core.screen_capture import ScreenCapture
-from core.image_saver import ImageSaver
 
 
 class GameController:
     """游戏控制器，编排截图→识别→状态更新，并格式化输出。
 
-    运行在推理子进程中，通过组合模式持有三个核心组件：
+    运行在推理子进程中，通过组合模式持有四个核心组件：
         - ScreenCapture：负责截图
         - YoloInferencer：负责纯视觉推理
         - LayoutAnalyzer：负责几何空间划分
@@ -44,7 +43,6 @@ class GameController:
         yolo_inferencer: YOLO 推理器实例。
         layout_analyzer: 手动空间分析或自动牌组归属实例。
         tracker: 当前 Tracker 子类实例。
-        debug_manager: 调试图片管理器实例（由 GameController 统一管理）。
         last_screenshot_jpeg: 预览启用时最近一帧的 JPEG 截图。
         last_screenshot_regions: 为旧预览协议保留的空区域字典。
         packed_pipeline: 同步单帧拼图执行器，处理切口保护和整图回退。
@@ -70,19 +68,11 @@ class GameController:
         self.layout_name: str = layout_name
         self.layout_config: settings.LayoutConfig = settings.validate_layout(settings.WINDOW_LAYOUTS[self.layout_name])
         
-        # 创建调试图片保存器（由 GameController 统一管理）
-        self.debug_manager: ImageSaver = ImageSaver(settings.BASE_DIR)
-        # 根据当前运行时设置初始化保存器（允许热切换）
-        try:
-            self.debug_manager.bootstrap(settings.SAVE_DEBUG_IMAGES)
-        except Exception:
-            pass
-        
         self.yolo_inferencer: YoloInferencer = self._create_inferencer()
         self.layout_analyzer: LayoutAnalyzer | AutoLayoutAnalyzer = self._create_analyzer(self.layout_config)
         window_title: str = self.layout_config["window_title"]
         self.screen_capture: ScreenCapture = ScreenCapture(window_title)
-        self.tracker: BaseCardTracker = create_tracker(game_name, layout_name, self.debug_manager)
+        self.tracker: BaseCardTracker = create_tracker(game_name, layout_name)
         self.last_screenshot_jpeg: bytes | None = None
         self.last_screenshot_regions: dict[str, tuple[float, float, float, float]] = {}
         self.packed_pipeline = PackedPipeline()
@@ -161,7 +151,10 @@ class GameController:
                 self._diagnostic_round = getattr(self, '_diagnostic_round', 0)+1
             if before_light != after_light:
                 recorder.daily.write('state_changed', frame_id=recorder.frame_id, state=self.tracker.state,
-                                     remaining=self.tracker.remain_cards, played=self.tracker.show_cards)
+                                     remaining=self.tracker.remain_cards, played=self.tracker.show_cards,
+                                     initial_hand=list(getattr(self.tracker, '_initial_hand', [])),
+                                     initial_hand_corrections=dict(getattr(self.tracker, 'initial_hand_corrections', {})),
+                                     counting_conflicts=dict(getattr(self.tracker, 'counting_conflicts', {})))
         if trace and not trace.cancelled:
             started = time.perf_counter()
             try:
@@ -254,8 +247,6 @@ class GameController:
         remain_cards: dict[str, int]
         show_cards: dict[str, list[list[str]]]
         remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms, known_regions)
-        # 开局回调先建立新局目录，首张有效开局图不再写入上一局。
-        self.yolo_inferencer.save_frame(img, raw_result)
         if (isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and isinstance(self.tracker, DoudizhuTracker)
                 and self.tracker.awaiting_next_round and self.layout_analyzer.ready):
             self.layout_analyzer.wait_for_next_round(self.tracker.round_end_reason)
@@ -327,7 +318,7 @@ class GameController:
         """
         from core.yolo_inferencer import YoloInferencer
 
-        return YoloInferencer(self.debug_manager)
+        return YoloInferencer()
 
     def switch_layout(self, layout_name: str, layout_config: object) -> None:
         """使用命令携带的完整布局，所有组件创建成功后一起替换。
@@ -348,7 +339,7 @@ class GameController:
         config = settings.validate_layout(layout_config)
         analyzer = self._create_analyzer(config)
         capture = ScreenCapture(config["window_title"])
-        tracker = create_tracker(self.game_name, layout_name, self.debug_manager)
+        tracker = create_tracker(self.game_name, layout_name)
         self.layout_name, self.layout_config = layout_name, config
         self.layout_analyzer, self.screen_capture, self.tracker = analyzer, capture, tracker
         self.packed_pipeline = PackedPipeline()
@@ -370,7 +361,7 @@ class GameController:
         try:
             settings.apply_runtime_settings({"YOLO_MODEL_NAME": model_name})
             inferencer = self._create_inferencer()
-            tracker = create_tracker(self.game_name, self.layout_name, self.debug_manager)
+            tracker = create_tracker(self.game_name, self.layout_name)
         except Exception:
             settings.apply_runtime_settings(previous)
             raise
@@ -414,7 +405,7 @@ class GameController:
         previous = self.game_name
         try:
             settings.apply_game_choice(game_name)
-            tracker = create_tracker(game_name, self.layout_name, self.debug_manager)
+            tracker = create_tracker(game_name, self.layout_name)
         except Exception:
             settings.apply_game_choice(previous)
             raise
@@ -434,7 +425,7 @@ class GameController:
             ValueError: 属性不可热更新或值无效。
         """
         allowed = {
-            "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH", "PACKED_INFERENCE",
+            "DEBUG_MODE", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH", "PACKED_INFERENCE",
             "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD", "FULL_DIAGNOSTICS",
         }
         if not set(updates).issubset(allowed):
@@ -454,8 +445,6 @@ class GameController:
             self.packed_pipeline = PackedPipeline()
         self.yolo_inferencer.yolo_conf = settings.YOLO_CONFIDENCE_THRESHOLD
         self.yolo_inferencer.yolo_iou = settings.YOLO_IOU_THRESHOLD
-        if "SAVE_DEBUG_IMAGES" in updates:
-            self.debug_manager.set_enabled(settings.SAVE_DEBUG_IMAGES)
 
     def execute_command(self, name: str, payload: object) -> None:
         """分派控制命令，统一由进程入口捕获错误并回执。

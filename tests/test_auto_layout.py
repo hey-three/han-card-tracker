@@ -40,7 +40,7 @@ class AutoLayoutTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """校准默认牌桌，禁用所有磁盘写入。"""
-        changes = patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False, DEBUG_MODE=False, PACKED_INFERENCE=False)
+        changes = patch.multiple(settings, FRAME_LENGTH=3, DEBUG_MODE=False, PACKED_INFERENCE=False)
         changes.start()
         self.addCleanup(changes.stop)
         self.analyzer = AutoLayoutAnalyzer()
@@ -70,10 +70,10 @@ class AutoLayoutTests(unittest.TestCase):
 
     def test_single_card_for_each_player(self) -> None:
         """本家、左家、右家单张出牌均归入独立区域。"""
-        plays = row(["A"], .22, .37) + row(["K"], .47, .57) + row(["Q"], .76, .37)
+        plays = row(["A"], .22, .37) + row(["seven"], .47, .57) + row(["Q"], .76, .37)
         observation = self.feed(self.cards + plays)
         self.assertEqual([c.name for c in observation.regions["opponent_left"]], ["A"])
-        self.assertEqual(self.tracker.show_cards, {"left": [["A"]], "self": [["K"]], "right": [["Q"]]})
+        self.assertEqual(self.tracker.show_cards, {"left": [["A"]], "self": [["7"]], "right": [["Q"]]})
         self.assertEqual(self.tracker.remain_cards["K"], 4)
         self.assertEqual(self.tracker.remain_cards["A"], 3)
 
@@ -249,7 +249,7 @@ class AutoLayoutTests(unittest.TestCase):
         config = settings.validate_layout({"window_title": "Game", "mode": "auto", "layout": {}})
         with patch.object(settings, "WINDOW_LAYOUTS", {"Auto": config}), patch.object(
             GameController, "_create_inferencer", return_value=Mock(),
-        ), patch("core.game_controller.ImageSaver"), patch("core.game_controller.ScreenCapture") as capture:
+        ), patch("core.game_controller.ScreenCapture") as capture:
             capture.return_value.capture_window.return_value = Image.new("RGB", (1000, 800))
             controller = GameController("doudizhu", "Auto")
         controller.yolo_inferencer.detect.return_value = (Mock(), 1.)

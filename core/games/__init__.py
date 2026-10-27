@@ -15,7 +15,6 @@ from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
     from core.base_tracker import BaseCardTracker
-    from core.image_saver import ImageSaver
 
 # 游戏名称 → Tracker 子类的注册表
 # 延迟导入以避免循环依赖
@@ -24,13 +23,12 @@ TRACKER_REGISTRY: dict[str, str] = {
 }
 
 
-def create_tracker(game_name: str, layout_name: str | None = None, debug_manager=None) -> BaseCardTracker:
+def create_tracker(game_name: str, layout_name: str | None = None) -> BaseCardTracker:
     """根据游戏名称创建对应的 Tracker 实例。
 
     Args:
         game_name: 游戏名称（如 ``"doudizhu"``）。
         layout_name: 布局名称。为 None 时自动使用第一个可用配置。
-        debug_manager: 调试图片保存器实例（由 GameController 统一管理并传入）。
 
     Returns:
         BaseCardTracker: 游戏对应的 Tracker 子类实例。
@@ -46,4 +44,4 @@ def create_tracker(game_name: str, layout_name: str | None = None, debug_manager
     import importlib
     module = importlib.import_module(module_path)
     cls = getattr(module, class_name)
-    return cls(layout_name=layout_name, debug_manager=debug_manager)
+    return cls(layout_name=layout_name)

@@ -280,14 +280,15 @@ class WindowBehaviorTests(unittest.TestCase):
         self.app.processEvents()
 
     def test_settings_grouping_and_labels(self) -> None:
-        """日志、截图存盘和实时预览是高级设置里的三个独立选项。"""
+        """终端日志、完整诊断和实时预览独立，移除旧截图开关。"""
         dialog = SettingsDialog(self.window)
         self.addCleanup(dialog.close)
-        for combo in (dialog.combo_debug_mode, dialog.combo_save_debug_images, dialog.combo_show_current_screenshot):
+        for combo in (dialog.combo_debug_mode, dialog.combo_full_diagnostics, dialog.combo_show_current_screenshot):
             self.assertTrue(dialog.tab2.isAncestorOf(combo))
         texts = {label.text() for label in dialog.tab2.findChildren(QLabel)}
         self.assertIn("输出调试日志：", texts)
-        self.assertIn("保存游戏截图：", texts)
+        self.assertIn("完整诊断：", texts)
+        self.assertNotIn("保存游戏截图：", texts)
         self.assertTrue(dialog.tab1.isAncestorOf(dialog.combo_show_layout_status))
 
 

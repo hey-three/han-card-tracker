@@ -30,7 +30,7 @@
 ## 5. 记牌契约
 
 - WAIT_BEGIN见上方底牌任意一张，当前帧进HAS_STARTED；非空合法手牌按FRAME_LENGTH连续一致，扣一次后进STARTED_RECORD_CARD。无17/20硬门槛，无17→20补扣，空手牌不能通过。
-- remain_cards排除本家首次手牌及已确认对手出牌。本家出牌只记历史，底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
+- remain_cards排除本家首次手牌及已确认对手出牌。本家出牌通常只记历史；累计确认本家牌面超过原始首扣+已补扣时，只补可证明缺口。原始_initial_hand不改，initial_hand_corrections单列；越界或剩余不足记counting_conflicts不盲扣。底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
 - frame_caches只保留最新阈值帧；阈值变小时下一帧即可确认，变大需等足够帧。
 - 底牌缺失暂停并清未确认序列；已知为空连续max(3,FRAME_LENGTH)帧且持续RESET_TIME秒才内部结束。同帧模型复查只算一次。未知、截图失败、暂停/恢复中断累计。
 - begin_waiting保留remain_cards/show_cards，新底牌出现开局才刷新。显式reset立即清空。不按某家零张、全图无牌、底牌牌面变化额外结束。
@@ -53,7 +53,7 @@
 
 - 仅主进程通过settings.save_*及config/store.py写盘。同目录唯一临时文件+os.replace；成功后更新内存，读取损坏必须报错，不能空配置覆盖。
 - 后端成功回执后保存并刷新；后端失败保留旧组件，保存失败停止检测并提示重启。故障时允许修正持久化参数供新进程使用。
-- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览、旧图片存盘、终端日志和完整诊断四项功能独立。
+- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览、终端日志和完整诊断三项功能独立，完整诊断为唯一图片保存入口。
 - 编辑布局先保存内容，后端确认切换再保存current_layout。删除当前布局先确认替代布局；失败不删除原记录。
 - 模型/设备/布局切换重建相应组件并重置牌局。控制设置有白名单，子进程只改内存，不写YAML。
 - BASE_DIR是可写运行目录，RESOURCE_DIR负责冻结资源/_internal解析；首次冻结运行复制配置到可写目录。
@@ -63,14 +63,13 @@
 
 ## 8. 图像、计时与模型
 
-- ImageSaver统一管理原图games_images/row/game_N/N.png及最终原坐标标注games_images/yolo/game_N/N.png，同名成对；当前每局1000张、最近3局，新局清旧。不在组件外新增随意落盘。
 - full_diagnostics/FULL_DIAGNOSTICS缺省false，经设置回执/原子保存启用。run_controller_loop注入DiagnosticRecorder，GameController单独使用默认不落诊断文件；进程退出finally有界收尾。
 - core/diagnostics.py只在完整诊断开启时建立一个后台线程；主识别线程先预留预算、复制RGB图和CPU结果/状态再提交。每次模型调用输入必须在调用前冻结，不能把复用画布、GPU张量或Qt对象入队；异常及同帧整图回退分别留证。
-- 帧数上限8（含正在写的一帧），待保存RGB+JSON预算64MiB，单帧JSON256KiB；后台编码、绘制标注、SHA、配额清理。队列/容量/写入错误暂停完整诊断并报告，不能阻塞或改变识别业务，也不能隐性丢帧称完整。
+- 帧数上限8（含正在写的一帧），待保存RGB+JSON预算64MiB，单帧JSON256KiB；后台编码、绘制标注、SHA、配额清理。队列/总内存压力进入backpressure跳过采样，降到最多4帧且有足够字节后自动恢复；区间由后台写入events.jsonl，缺帧使complete为false。单帧过大/容量/写入错误仍暂停并报告，不能阻塞或改变识别业务，也不能隐性丢帧称完整。
 - core/diagnostic_storage.py负责diagnostics/session_*/的manifest/逐帧证据/索引，容量1GiB，只清已结束的已知旧会话，保护当前/未封口/未知目录；日常logs/runtime.jsonl只记关键状态/错误，10MiB×5轮转。两目录均gitignore。
-- 独立Response状态diagnostic携带diagnostic_status，不回执或解锁检测；异步状态含单调时间戳，UI拒绝旧通知。暂停警告不随show_layout_status隐藏，后台实际状态不能与保存的开关混淆。
-- 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放。
-- YoloInferencer.detect不保存中间拼图；Controller在状态更新和开局目录建立后save_frame。保存失败不能当成功排查证据。
+- diagnostic_status含当前预算、待写字节与跳过数；独立Response状态diagnostic携带diagnostic_status，不回执或解锁检测；异步状态含单调时间戳，UI拒绝旧通知。暂停警告不随show_layout_status隐藏，后台实际状态不能与保存的开关混淆。
+- 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放；会话跨多局，清理按1GiB总量触发，只删已结束旧会话，不按局删除。
+- 已移除同步图片保存模块及其构造参数、开关、白名单与旧YAML键；YoloInferencer只推理，Tracker只记牌。已有本地历史图片不自动删除。
 - 动态/PT明确请求(H,W)=(480,768)；静态ONNX/TensorRT尊重导出尺寸，首帧直接拼图也不能污染后续输入。CPU优先ONNX，CUDA优先TensorRT FP16，再回退PyTorch；不自动因拼图改权重或重新导出形状。
 - yolo_ms含本轮全部Ultralytics调用及内部前后处理/回退，GPU同步；主进程整轮另含截图/队列/轮询，子进程performance也不等于物理显示延迟。
 - 权重仅在yolo/weights/<目录>/best.pt；训练仓库hey-three/yolo-for-han-card-tracker。一个8:5模型混合原图与两阶段图，按牌局先划分，未启动训练或承诺200ms。
@@ -80,4 +79,4 @@
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
 - 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
 - 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
-- 本次任务已授权上传V4.3.1、合并main、本地同步及优化仓库公开元信息；用户随后已授权实现有界后台完整诊断和日常轮转日志；不得更改无关牌局规则。
+- 当前任务已授权在V4.3.2移除旧截图链路、按确认本家出牌修复首扣漏K、加入压力自动恢复；推送该分支、合并main并本地同步。最终预算保留64MiB/8帧，磁盘1GiB，不能把曾讨论的1GiB写成RAM预算。

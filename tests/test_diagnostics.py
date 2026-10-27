@@ -161,7 +161,7 @@ class DiagnosticTests(unittest.TestCase):
             started = time.perf_counter()
             self.assertIsNone(recorder.begin_frame({}))
             self.assertLess(time.perf_counter()-started, .25)
-            self.assertEqual(recorder.status()['state'], 'paused')
+            self.assertEqual(recorder.status()['state'], 'backpressure')
             self.assertEqual(recorder.status()['first_missing_frame'], 2)
             self.assertFalse(recorder.stop(.001))
             with self.assertRaisesRegex(RuntimeError, '收尾'):
@@ -307,3 +307,104 @@ class DiagnosticTests(unittest.TestCase):
         self.assertEqual(recorder.status()['first_missing_frame'], 1)
         self.assertEqual(recorder.status()['reason'], 'write_failed')
         self.assertEqual(recorder.status()['pending_frames'], 0)
+
+    def test_default_budget_is_64_mib_eight_frames_and_one_gib_disk(self) -> None:
+        """保留64MiB内存与8帧限制，磁盘1GiB是独立限额。"""
+        recorder = self.recorder()
+        self.assertEqual(recorder.limits.memory, 64*1024*1024)
+        self.assertEqual(recorder.limits.frames, 8)
+        self.assertEqual(recorder.limits.disk, 1024**3)
+        recorder.set_enabled(True)
+        frames = [self.frame(recorder) for _ in range(8)]
+        self.assertTrue(recorder.claim(frames[0], 32*1024*1024))
+        self.assertLess(recorder.status()['pending_bytes'], 64*1024*1024)
+        self.assertIsNone(recorder.begin_frame({}))
+        self.assertIn('queue_full', recorder.status()['reason'])
+        for frame in frames:
+            frame.cancel()
+        self.assertEqual(recorder.status()['pending_bytes'], 0)
+        self.assertTrue(recorder.stop(2))
+
+    def test_slow_writer_recovers_automatically_and_persists_gap_ranges(self) -> None:
+        """队列满时跳过诊断，写者排空后自动接收新帧，完整保留缺口索引。"""
+        recorder = self.recorder(DiagnosticLimits(frames=1))
+        entered, release, resumed = Event(), Event(), Event()
+        original = SessionStorage.write_frame
+
+        def notify(status: dict[str, object]) -> None:
+            """观察自动恢复，不向保存线程传Qt对象。
+
+            Args:
+                status: 状态快照。
+            """
+            if status['state'] == 'recording' and status['dropped_frames'] == 2:
+                resumed.set()
+
+        def delayed(storage: SessionStorage, data: bytes, images: dict[str, Image.Image]) -> None:
+            """仅阻塞第一帧写入，允许测试在后台积压时继续生产。
+
+            Args:
+                storage: 当前会话。
+                data: 当前帧JSON。
+                images: 当前帧图片。
+            """
+            if json.loads(data)['frame_id'] == 1:
+                entered.set()
+                release.wait(2)
+            original(storage, data, images)
+
+        recorder._notify = notify
+        with patch.object(SessionStorage, 'write_frame', delayed):
+            recorder.set_enabled(True)
+            self.frame(recorder).finish({})
+            self.assertTrue(entered.wait(2))
+            self.assertIsNone(recorder.begin_frame({}))
+            self.assertIsNone(recorder.begin_frame({}))
+            self.assertEqual(recorder.status()['state'], 'backpressure')
+            self.assertFalse(recorder._stop.is_set())
+            release.set()
+            self.assertTrue(resumed.wait(2))
+            self.frame(recorder).finish({})
+            self.assertTrue(recorder.stop(2))
+        paths = list((self.base/'diagnostics').glob('session_*/manifest.json'))
+        self.assertEqual(len(paths), 1)
+        manifest = json.loads(paths[0].read_text(encoding='utf-8'))
+        self.assertFalse(manifest['complete'])
+        self.assertEqual(manifest['dropped_frames'], 2)
+        self.assertEqual(manifest['saved_frames'], 2)
+        events = [json.loads(line) for line in (paths[0].parent/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual([e['frame_id'] for e in events if 'frame_id' in e], [1, 4])
+        gaps = [e for e in events if e.get('record_type') == 'gap']
+        self.assertEqual([(g['first_frame'], g['last_frame']) for g in gaps], [(2, 3)])
+
+    def test_memory_backpressure_waits_for_enough_bytes_then_recovers(self) -> None:
+        """内存先满时取消半成品，直到可容纳整帧才恢复，字节数不会超预算。"""
+        recorder = self.recorder(DiagnosticLimits(memory=3*65536))
+        recorder.set_enabled(True)
+        first = self.frame(recorder)
+        self.assertTrue(recorder.claim(first, 65536))
+        second = self.frame(recorder)
+        self.assertFalse(recorder.claim(second, 1))
+        second.cancel()
+        self.assertEqual(recorder.status()['state'], 'backpressure')
+        self.assertLessEqual(recorder.status()['pending_bytes'], recorder.limits.memory)
+        first.cancel()
+        self.assertEqual(recorder.status()['state'], 'recording')
+        self.frame(recorder).finish({})
+        self.assertTrue(recorder.stop(2))
+        self.assertEqual(recorder.status()['dropped_frames'], 1)
+
+    def test_low_water_hysteresis_keeps_sampling_deferred_until_half_queue(self) -> None:
+        """8帧满后降到7帧仍暂缓，降到4帧才恢复，避免每帧频繁开关。"""
+        recorder = self.recorder()
+        recorder.set_enabled(True)
+        frames = [self.frame(recorder) for _ in range(8)]
+        self.assertIsNone(recorder.begin_frame({}))
+        frames[0].cancel()
+        self.assertEqual(recorder.status()['state'], 'backpressure')
+        for frame in frames[1:4]:
+            frame.cancel()
+        self.assertEqual(recorder.status()['state'], 'recording')
+        for frame in frames[4:]:
+            frame.cancel()
+        self.assertTrue(recorder.stop(2))

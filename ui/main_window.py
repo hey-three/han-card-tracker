@@ -286,7 +286,6 @@ class CardUI(QMainWindow):
             on_always_on_top_change_callback=None,
             on_show_played_cards_change_callback=self.on_show_played_cards_changed,
             on_debug_mode_change_callback=self.on_debug_mode_changed,
-            on_save_debug_images_change_callback=self.on_save_debug_images_changed,
             on_show_current_screenshot_change_callback=self.on_show_current_screenshot_changed,
             on_show_timing_change_callback=self.on_show_timing_changed,
             on_layout_editor_callback=self.on_layout_editor_clicked,
@@ -352,8 +351,6 @@ class CardUI(QMainWindow):
         dialog.set_current_debug_mode(DEBUG_MODE)
 
         # 设置当前保存游戏图片
-        from config.settings import SAVE_DEBUG_IMAGES
-        dialog.set_current_save_debug_images(SAVE_DEBUG_IMAGES)
 
         dialog.set_current_show_current_screenshot(self._preview_requested)
         dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
@@ -831,6 +828,8 @@ class CardUI(QMainWindow):
         self._diagnostic_status = dict(status)
         reason = str(status.get('reason', ''))
         warning = ('完整诊断已暂停：'+(reason or '未知原因').splitlines()[-1]+'；关闭后重新开启') if status.get('state') == 'paused' else ''
+        if status.get('state') == 'backpressure':
+            warning = '完整诊断暂缓：'+(reason or '保存队列拥堵').splitlines()[-1]+'；队列回落后自动恢复'
         if status.get('daily_log_error'):
             warning += ' 日常日志写入失败：'+str(status['daily_log_error'])
         self._diagnostic_warning = warning
@@ -847,14 +846,6 @@ class CardUI(QMainWindow):
         if index in (0, 1):
             self._apply_setting('packed_inference', index == 0, 'PACKED_INFERENCE')
 
-    def on_save_debug_images_changed(self, index: int) -> None:
-        """同步游戏图片保存开关。
-
-        Args:
-            index: 否/是选项索引。
-        """
-        if index in (0, 1):
-            self._apply_setting("save_debug_images", bool(index), "SAVE_DEBUG_IMAGES")
 
     def on_game_changed(self, index: int) -> None:
         """保持当前斗地主功能范围，只接受已注册的斗地主选项。
@@ -942,7 +933,7 @@ class CardUI(QMainWindow):
         """
         labels = {"capture_ms": "截图", "prepare_ms": "拼图准备（含规划与裁剪）", "plan_ms": "其中：拼图规划",
                   "model_ms": "模型调用（含模型内预处理/后处理）",
-                  "restore_ms": "坐标恢复/去重", "preview_ms": "预览编码", "layout_save_ms": "布局记牌/截图保存",
+                  "restore_ms": "坐标恢复/去重", "preview_ms": "预览编码", "layout_save_ms": "布局与记牌",
                   "pipeline_ms": "子进程整轮", "diagnostic_snapshot_ms": "诊断快照（含图片复制）"}
         lines = ["上次检测；主进程整轮耗时另见标题栏"]
         lines.extend(f"{label}：{performance[key]:.1f} ms" for key, label in labels.items() if key in performance)

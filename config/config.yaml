@@ -7,7 +7,6 @@ device_choice: cuda
 frame_length: 3
 little_joker_shown: 🃟
 reset_time: 3.0
-save_debug_images: false
 show_played_cards: true
 show_timing: true
 window_layouts:

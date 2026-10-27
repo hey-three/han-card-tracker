@@ -298,9 +298,6 @@ FRAME_LENGTH = config.get('frame_length', 3)
 
 DEBUG_MODE = config.get('debug_mode', True)
 
-# 是否保存游戏图片（与调试模式分开控制）
-SAVE_DEBUG_IMAGES = config.get('save_debug_images', False)
-
 # 是否将当前窗口截图实时传回主界面预览
 SHOW_CURRENT_SCREENSHOT = config.get('show_current_screenshot', False)
 FULL_DIAGNOSTICS = config.get('full_diagnostics', False)
@@ -359,7 +356,6 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "always_on_top": ("ALWAYS_ON_TOP", bool),
     "show_played_cards": ("SHOW_PLAYED_CARDS", bool),
     "debug_mode": ("DEBUG_MODE", bool),
-    "save_debug_images": ("SAVE_DEBUG_IMAGES", bool),
     "show_current_screenshot": ("SHOW_CURRENT_SCREENSHOT", bool),
     "show_layout_status": ("SHOW_LAYOUT_STATUS", bool),
     "show_timing": ("SHOW_TIMING", bool),
@@ -659,19 +655,6 @@ def save_debug_mode(debug_mode: bool) -> None:
     save_setting("debug_mode", debug_mode)
 
 
-def save_debug_images_choice(save_debug_images: bool) -> None:
-    """保存 save_debug_images，成功后同步内存。
-
-    Args:
-        save_debug_images: 新设置值。
-
-    Raises:
-        TypeError: 值类型错误。
-        ValueError: 值无效或原配置损坏。
-        OSError: 配置读写失败。
-        yaml.YAMLError: 序列化失败。
-    """
-    save_setting("save_debug_images", save_debug_images)
 
 
 def save_show_timing_choice(show_timing: bool) -> None:

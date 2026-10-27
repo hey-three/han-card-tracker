@@ -16,7 +16,7 @@ class WrappedOwnershipTests(unittest.TestCase):
 
     def setUp(self) -> None:
         """读取真实检测框，以补全的模拟开局建立同一牌桌参照。"""
-        self.enterContext(patch.multiple(settings, FRAME_LENGTH=3, SAVE_DEBUG_IMAGES=False, DEBUG_MODE=False))
+        self.enterContext(patch.multiple(settings, FRAME_LENGTH=3, DEBUG_MODE=False))
         data = json.loads((Path(__file__).parent / "fixtures/right_wrapped_play.json").read_text(encoding="utf-8"))
         self.size = tuple(data["size"])
         cards = [CardBox(item["name"], tuple(item["bbox"])) for item in data["cards"]]

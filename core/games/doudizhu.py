@@ -1,4 +1,4 @@
-"""斗地主 V3 三阶段流程：底牌即开局，非空手牌稳定后仅扣一次。"""
+"""斗地主三阶段流程及基于已确认本家出牌的漏检手牌补扣。"""
 
 from __future__ import annotations
 
@@ -9,32 +9,34 @@ import time
 import config.settings as settings
 from config.settings import HAS_STARTED, STARTED_RECORD_CARD, WAIT_BEGIN
 from core.base_tracker import BaseCardTracker
-from core.image_saver import ImageSaver
 
 
 class DoudizhuTracker(BaseCardTracker):
-    """以底牌控制开局与结束，沿用 V3 的稳定手牌一次扣减。
+    """以底牌控制开局与结束，首扣稳定手牌并按本家确认出牌补齐漏检。
 
     Attributes:
         awaiting_next_round: 底牌消失后保留旧显示，等待下一次底牌出现。
         round_end_reason: 最近一次底牌消失结束的原因。
+        initial_hand_corrections: 已由本家累计确认出牌证明的开局漏检补扣数量。
+        counting_conflicts: 超出牌组容量或当前剩余量的补扣冲突，不盲目扣成负数。
         _initial_hand: 第一次稳定确认并扣除的非空手牌，不要求 17/20 张。
         _bottom_visible: 当前有效观测中底牌区是否至少有一张牌。
         _empty_frames: 连续已知底牌区无牌的截图数量。
         _empty_since: 当前无牌序列的单调时钟起点。
     """
 
-    def __init__(self, layout_name: str | None = None, debug_manager: ImageSaver | None = None) -> None:
+    def __init__(self, layout_name: str | None = None) -> None:
         """创建尚未开局的跟踪器。
 
         Args:
             layout_name: 当前布局名。
-            debug_manager: 统一的可选调试图片管理器。
         """
-        super().__init__(layout_name, debug_manager)
+        super().__init__(layout_name)
         self.awaiting_next_round = False
         self.round_end_reason = ""
         self._initial_hand: list[str] = []
+        self.initial_hand_corrections: dict[str, int] = {}
+        self.counting_conflicts: dict[str, str] = {}
         self._bottom_visible = False
         self._empty_frames = 0
         self._empty_since: float | None = None
@@ -45,6 +47,8 @@ class DoudizhuTracker(BaseCardTracker):
         self.awaiting_next_round = False
         self.round_end_reason = ""
         self._initial_hand = []
+        self.initial_hand_corrections.clear()
+        self.counting_conflicts.clear()
         self.interrupt_observation()
         self.no_target_time = time.time()
 
@@ -134,13 +138,13 @@ class DoudizhuTracker(BaseCardTracker):
         self.show_cards = {z["key"]: [] for z in settings.PLAYED_ZONES}
         self.has_found_empty = {z["key"]: False for z in settings.PLAYED_ZONES}
         self._initial_hand = []
+        self.initial_hand_corrections.clear()
+        self.counting_conflicts.clear()
         self.awaiting_next_round = False
         self.round_end_reason = ""
-        if settings.SAVE_DEBUG_IMAGES and self.debug_manager is not None:
-            self.debug_manager.start_new_game()
 
     def on_start_recording(self) -> None:
-        """仅扣除首次稳定的非空手牌，之后手牌变化不再重扣或自动补扣。"""
+        """首扣稳定的非空手牌；后续仅用本家确认出牌证明的缺口补扣。"""
         self._initial_hand = list(self.frame_caches["player_hand"][-1])
         self._delete_played_cards(self._initial_hand)
 
@@ -166,11 +170,33 @@ class DoudizhuTracker(BaseCardTracker):
         self.state = STARTED_RECORD_CARD
 
     def process_played_cards(self, zone_key: str, cards: list[str]) -> None:
-        """对手出牌扣剩余，本家出牌只记录。
+        """对手出牌扣剩余；本家通常只记录，确认漏扣时只补缺口。
 
         Args:
             zone_key: left、self 或 right。
             cards: 稳定确认的牌点列表。
         """
-        if zone_key != "self":
+        if zone_key == 'self':
+            self._reconcile_initial_hand()
+        else:
             self._delete_played_cards(cards)
+
+    def _reconcile_initial_hand(self) -> None:
+        """累计已确认本家出牌超过首扣数量时，补扣可被证实的最小差额。
+
+        不重跑手牌推理、不要求17/20张，也不按每次本家出牌重复扣牌。
+        原始首扣手牌保留不变，修正单独记账；矛盾证据只记冲突。
+        """
+        confirmed = Counter(card for play in self.show_cards['self'] for card in play)
+        initial = Counter(self._initial_hand)
+        for card, count in confirmed.items():
+            accounted = initial[card]+self.initial_hand_corrections.get(card, 0)
+            missing = count-accounted
+            if missing <= 0:
+                continue
+            if count > settings.TOTAL_CARDS.get(card, 0) or missing > self.remain_cards.get(card, 0):
+                self.counting_conflicts[card] = f'本家累计确认{count}张，首扣及补扣{accounted}张，剩余量不足以安全补扣{missing}张'
+                continue
+            self._delete_played_cards([card]*missing)
+            self.initial_hand_corrections[card] = self.initial_hand_corrections.get(card, 0)+missing
+            self.counting_conflicts.pop(card, None)

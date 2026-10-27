@@ -42,15 +42,15 @@ Weights are stored in `yolo/weights/<model-name>/best.pt`. Custom models must pr
 3. For a manual layout, choose packed or original inference in advanced settings. This preference applies to all manual layouts.
 4. Start before the round begins and inspect the actual YOLO input preview.
 
-Any detected bottom card opens a round. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays are recorded without a second deduction.
+Any detected bottom card opens a round. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays normally add history only; confirmed own plays can repair a provable undercount in the initial hand.
 
 Missing bottom cards pause updates. A consecutive-frame and elapsed-time threshold ends the round internally while preserving the displayed history until the next round starts. See the [counting contract](docs/斗地主记牌设计说明.md).
 
 ## Releases and verification
 
-As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-tracker/releases) contains a historical `v2.3` archive. It is not a packaged build of the current V4.3.1 source. See [CHANGELOG](CHANGELOG.md).
+As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-tracker/releases) contains a historical `v2.3` archive. It is not a packaged build of the current V4.3.2 source. See [CHANGELOG](CHANGELOG.md).
 
-The diagnostic update passed 180 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) now records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
+The diagnostic update passed 189 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) now records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Queue/memory backpressure recovers automatically with explicit gap records. Disk/write failures still pause diagnostics. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
 
 ## Contributing and license
 

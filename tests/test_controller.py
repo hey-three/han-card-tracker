@@ -25,7 +25,6 @@ class ControllerTests(unittest.TestCase):
         self.controller.screen_capture = Mock()
         self.controller.layout_analyzer = Mock()
         self.controller.yolo_inferencer = Mock()
-        self.controller.debug_manager = Mock()
         self.controller.packed_pipeline = PackedPipeline()
 
     def test_new_layout_does_not_depend_on_child_snapshot(self) -> None:

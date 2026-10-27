@@ -1,0 +1,196 @@
+{
+  "source": "Local key-event log, 2026-10-28 01:51-01:52 China time; screenshots are not included.",
+  "initial_hand": [
+    "3",
+    "4",
+    "4",
+    "4",
+    "5",
+    "6",
+    "6",
+    "7",
+    "8",
+    "9",
+    "J",
+    "J",
+    "Q",
+    "K",
+    "A",
+    "2"
+  ],
+  "plays": [
+    {
+      "zone": "right",
+      "cards": [
+        "3"
+      ]
+    },
+    {
+      "zone": "self",
+      "cards": [
+        "6"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "K"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "9",
+        "8",
+        "7",
+        "6",
+        "5"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "J",
+        "10",
+        "9",
+        "8",
+        "7"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "5",
+        "5"
+      ]
+    },
+    {
+      "zone": "self",
+      "cards": [
+        "J",
+        "J"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "2",
+        "2"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "4"
+      ]
+    },
+    {
+      "zone": "self",
+      "cards": [
+        "Q"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "小"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "2"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "A",
+        "A",
+        "A",
+        "6"
+      ]
+    },
+    {
+      "zone": "left",
+      "cards": [
+        "3",
+        "3"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "10",
+        "10"
+      ]
+    },
+    {
+      "zone": "self",
+      "cards": [
+        "K",
+        "K"
+      ]
+    },
+    {
+      "zone": "self",
+      "cards": [
+        "9",
+        "8",
+        "7",
+        "6",
+        "5"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "K",
+        "Q",
+        "J",
+        "10",
+        "9"
+      ]
+    },
+    {
+      "zone": "right",
+      "cards": [
+        "大"
+      ]
+    }
+  ],
+  "expected_remaining": {
+    "3": 0,
+    "4": 0,
+    "5": 0,
+    "6": 0,
+    "7": 1,
+    "8": 1,
+    "9": 0,
+    "10": 0,
+    "J": 0,
+    "Q": 2,
+    "K": 0,
+    "A": 0,
+    "2": 0,
+    "小": 0,
+    "大": 0
+  },
+  "observed_remaining_before_fix": {
+    "3": 0,
+    "4": 0,
+    "5": 0,
+    "6": 0,
+    "7": 1,
+    "8": 1,
+    "9": 0,
+    "10": 0,
+    "J": 0,
+    "Q": 2,
+    "K": 1,
+    "A": 0,
+    "2": 0,
+    "小": 0,
+    "大": 0
+  }
+}
