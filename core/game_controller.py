@@ -88,7 +88,21 @@ class GameController:
             recorder: 当前推理进程唯一的诊断服务。
         """
         self.diagnostics = recorder
+        recorder.set_disk_limit(settings.diagnostic_disk_bytes())
         recorder.set_enabled(settings.FULL_DIAGNOSTICS)
+
+    def _sync_diagnostic_round(self, before_state: int) -> None:
+        """在业务更新后记录局号，异常回执也不能丢失已经发生的开局边界。
+
+        Args:
+            before_state: 本帧更新前的Tracker状态。
+        """
+        if self.tracker.state != settings.WAIT_BEGIN and (before_state == settings.WAIT_BEGIN
+                or getattr(self, '_diagnostic_round', 0) == 0):
+            self._diagnostic_round = getattr(self, '_diagnostic_round', 0)+1
+            recorder = getattr(self, 'diagnostics', None)
+            if recorder is not None:
+                recorder.note_round(self._diagnostic_round, before_state == settings.WAIT_BEGIN)
 
     def _diagnostic_context(self) -> dict[str, object]:
         """冻结当前选中布局和参数，不复制整个用户配置。
@@ -136,10 +150,13 @@ class GameController:
         except Exception:
             error = traceback.format_exc()
             if recorder:
+                if before_light is not None:
+                    self._sync_diagnostic_round(before_light[0])
                 recorder.daily.write('detect_failed', frame_id=recorder.frame_id, error=error)
             if trace:
                 try:
-                    trace.finish({'error': error, 'after': tracker_snapshot(self.tracker)})
+                    trace.finish({'error': error, 'after': tracker_snapshot(self.tracker),
+                                  'round_id': getattr(self, '_diagnostic_round', 0)})
                 except Exception as exc:
                     trace.owner.pause('state_snapshot_failed: '+str(exc), cast(int, trace.payload['frame_id']))
                     trace.cancel()
@@ -147,8 +164,8 @@ class GameController:
         if recorder:
             after_light = (self.tracker.state, dict(self.tracker.remain_cards),
                            {key: len(value) for key, value in self.tracker.show_cards.items()})
-            if before_light is not None and before_light[0] == settings.WAIT_BEGIN and after_light[0] != settings.WAIT_BEGIN:
-                self._diagnostic_round = getattr(self, '_diagnostic_round', 0)+1
+            if before_light is not None:
+                self._sync_diagnostic_round(before_light[0])
             if before_light != after_light:
                 recorder.daily.write('state_changed', frame_id=recorder.frame_id, state=self.tracker.state,
                                      remaining=self.tracker.remain_cards, played=self.tracker.show_cards,
@@ -424,20 +441,26 @@ class GameController:
         """
         allowed = {
             "DEBUG_MODE", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH", "PACKED_INFERENCE",
-            "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD", "FULL_DIAGNOSTICS",
+            "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD", "FULL_DIAGNOSTICS", "DIAGNOSTIC_DISK_GIB",
         }
         if not set(updates).issubset(allowed):
             raise ValueError("存在不能直接热更新的属性")
         previous = settings.runtime_snapshot()
         settings.apply_runtime_settings(updates)
-        if 'FULL_DIAGNOSTICS' in updates:
+        if 'FULL_DIAGNOSTICS' in updates or 'DIAGNOSTIC_DISK_GIB' in updates:
+            recorder = getattr(self, 'diagnostics', None)
+            old_quota = recorder.limits.disk if recorder is not None else None
             try:
-                recorder = getattr(self, 'diagnostics', None)
                 if recorder is None:
                     raise RuntimeError('诊断服务尚未初始化')
-                recorder.set_enabled(settings.FULL_DIAGNOSTICS)
+                if 'DIAGNOSTIC_DISK_GIB' in updates:
+                    recorder.set_disk_limit(settings.diagnostic_disk_bytes())
+                if 'FULL_DIAGNOSTICS' in updates:
+                    recorder.set_enabled(settings.FULL_DIAGNOSTICS)
             except Exception:
                 settings.apply_runtime_settings(previous)
+                if recorder is not None and old_quota is not None:
+                    recorder.set_disk_limit(old_quota)
                 raise
         if "PACKED_INFERENCE" in updates:
             self.packed_pipeline = PackedPipeline()

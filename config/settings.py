@@ -301,6 +301,7 @@ DEBUG_MODE = config.get('debug_mode', True)
 # 是否将当前窗口截图实时传回主界面预览
 SHOW_CURRENT_SCREENSHOT = config.get('show_current_screenshot', False)
 FULL_DIAGNOSTICS = config.get('full_diagnostics', False)
+DIAGNOSTIC_DISK_GIB = config.get('diagnostic_disk_gib', 1.0)
 
 # 仅控制正常识别时的布局提示；故障及恢复入口始终显示。
 SHOW_LAYOUT_STATUS = config.get('show_layout_status', True)
@@ -361,6 +362,7 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "show_timing": ("SHOW_TIMING", bool),
     "packed_inference": ("PACKED_INFERENCE", bool),
     "full_diagnostics": ("FULL_DIAGNOSTICS", bool),
+    "diagnostic_disk_gib": ("DIAGNOSTIC_DISK_GIB", float),
 }
 
 
@@ -388,10 +390,27 @@ def _validate_setting(key: str, value: object) -> None:
             raise ValueError(f"{key} 必须是有限正数")
         if key in ("yolo_confidence_threshold", "yolo_iou_threshold") and value > 1:
             raise ValueError(f"{key} 不能大于 1")
+        if key == 'diagnostic_disk_gib' and not 0.1 <= value <= 1024:
+            raise ValueError('诊断磁盘额度必须在0.1至1024 GiB之间')
+        if key == 'diagnostic_disk_gib' and abs(value*100-round(value*100)) > 1e-6:
+            raise ValueError('诊断磁盘额度最多保留两位小数')
     if isinstance(value, str) and not value.strip():
         raise ValueError(f"{key} 不能为空")
     if key == "device_choice" and value not in ("cpu", "cuda"):
         raise ValueError("设备必须是 cpu 或 cuda")
+
+
+def diagnostic_disk_bytes() -> int:
+    """校验并换算用户磁盘额度，旧配置缺省1GiB。
+
+    Returns:
+        可用于诊断文件总配额的字节数，不预分配硬盘。
+    Raises:
+        TypeError: 配置不是数值。
+        ValueError: 非有限值或超出允许范围。
+    """
+    _validate_setting('diagnostic_disk_gib', DIAGNOSTIC_DISK_GIB)
+    return int(DIAGNOSTIC_DISK_GIB*1024**3)
 
 
 def validate_layout(value: object) -> LayoutConfig:

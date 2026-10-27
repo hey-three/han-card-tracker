@@ -34,6 +34,30 @@ class SettingsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_diagnostic_disk_quota_validates_and_persists(self) -> None:
+        """磁盘额度严格校验并原子持久化，支持两位小数和旧配置缺省值。"""
+        self.assertEqual(settings._SETTING_FIELDS['diagnostic_disk_gib'][0], 'DIAGNOSTIC_DISK_GIB')
+        for invalid in (True, '2', None):
+            with self.assertRaises(TypeError):
+                settings.save_setting('diagnostic_disk_gib', invalid)
+        for invalid in (0, -.1, .09, 1024.01, float('nan'), float('inf'), 1.234):
+            with self.assertRaises(ValueError):
+                settings.save_setting('diagnostic_disk_gib', invalid)
+        settings.save_setting('diagnostic_disk_gib', 2.25)
+        self.assertEqual(read_config(str(self.path))['diagnostic_disk_gib'], 2.25)
+        self.assertEqual(settings.diagnostic_disk_bytes(), int(2.25*1024**3))
+        self.assertEqual(settings.runtime_snapshot()['DIAGNOSTIC_DISK_GIB'], 2.25)
+
+    def test_diagnostic_disk_save_failure_keeps_old_value(self) -> None:
+        """替换文件失败时磁盘和内存保留旧额度。"""
+        previous = settings.DIAGNOSTIC_DISK_GIB
+        original = self.path.read_bytes()
+        with patch('config.store.os.replace', side_effect=OSError('read only')):
+            with self.assertRaises(OSError):
+                settings.save_setting('diagnostic_disk_gib', 5.)
+        self.assertEqual(settings.DIAGNOSTIC_DISK_GIB, previous)
+        self.assertEqual(self.path.read_bytes(), original)
+
     def test_save_preserves_unknown_fields_and_updates_memory(self) -> None:
         """单项保存保留其他配置，并同步当前进程。"""
         settings.save_frame_length(1)

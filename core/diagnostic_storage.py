@@ -120,6 +120,10 @@ class SessionStorage:
     Attributes:
         directory: 当前会话目录，开局前即存在。
         used: 诊断根目录已使用的估计字节数。
+        quota: 可更新的全局磁盘字节额度。
+        _round_directory: 当前写入的等待段或局目录。
+        _round_info: 当前采集段状态、数量与边界信息。
+        pruned_rounds: 当前会话已按额度清理的旧采集段数量。
     """
 
     def __init__(self, root: Path, session: str, quota: int) -> None:
@@ -138,6 +142,9 @@ class SessionStorage:
         self.quota = quota
         self.used = sum(p.stat().st_size for p in self.root.rglob('*') if p.is_file() and not p.is_symlink())
         self._hashes: dict[tuple[str, int, int], str] = {}
+        self._round_directory: Path | None = None
+        self._round_info: dict[str, object] = {}
+        self.pruned_rounds = 0
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.environment: dict[str, object] = {'python': sys.version, 'system': platform.system(),
             'release': platform.release(), 'machine': platform.machine(),
@@ -153,35 +160,172 @@ class SessionStorage:
                 self.environment['source_head_at_start'] = None
         self._ensure_space(4096)
         self.directory.mkdir()
-        (self.directory/'frames').mkdir()
         self.manifest({'state': 'recording', 'complete': False})
 
     def _ensure_space(self, required: int) -> None:
-        """腾出配额；不删除当前会话、未知目录或未正常结束的会话。
+        """腾出总配额，优先按时间清理已结束会话或本会话已结束旧局。
 
         Args:
-            required: 计划新增的字节数。
+            required: 计划新增字节。
         Raises:
-            StorageLimitError: 没有可安全清理的材料或当前会话已触顶。
-            OSError: 已结束会话无法清理。
+            StorageLimitError: 当前局/受保护材料占满且无可安全清理空间。
+            OSError: 读取或清理失败。
         """
         if self.used+required+4096 <= self.quota:
             return
         for path in sorted(self.root.glob('session_*')):
-            if path == self.directory or path.is_symlink() or path.resolve().parent != self.root:
+            if path.is_symlink() or path.resolve().parent != self.root:
                 continue
-            try:
-                info = json.loads((path/'manifest.json').read_text(encoding='utf-8'))
-            except (OSError, ValueError):
-                continue
-            if info.get('schema') != 'han-diagnostics/v1' or info.get('state') not in ('closed', 'paused', 'failed'):
-                continue
-            size = sum(p.stat().st_size for p in path.rglob('*') if p.is_file() and not p.is_symlink())
-            shutil.rmtree(path)
-            self.used -= size
-            if self.used+required+4096 <= self.quota:
-                return
-        raise StorageLimitError('完整诊断容量达到上限，已暂停记录；请导出或清理旧会话后重新开启')
+            if path == self.directory:
+                candidates = sorted(path.glob('waiting'))+sorted(path.glob('game_*'))
+                for group in candidates:
+                    if group == self._round_directory or group.is_symlink() or group.resolve().parent != self.directory:
+                        continue
+                    if not self._closed_metadata(group/'round.json', 'han-diagnostic-round/v1'):
+                        continue
+                    self._delete_owned(group)
+                    self.pruned_rounds += 1
+                    line = json.dumps({'record_type': 'retention_cleanup', 'directory': group.name}).encode('utf-8')+b'\n'
+                    with (self.directory/'events.jsonl').open('ab') as index:
+                        index.write(line)
+                    self.used += len(line)
+                    if self.used+required+4096 <= self.quota:
+                        return
+            elif self._closed_metadata(path/'manifest.json', 'han-diagnostics/v1'):
+                self._delete_owned(path)
+                if self.used+required+4096 <= self.quota:
+                    return
+        raise StorageLimitError('完整诊断达到磁盘上限，当前局或未封口材料不能自动删除；请提高磁盘额度或处理旧材料后重新开启')
+
+    @staticmethod
+    def _closed_metadata(path: Path, schema: str) -> bool:
+        """只认可本工具已结束的目录标记，不把未知或崩溃目录当垃圾。
+
+        Args:
+            path: 标记文件。
+            schema: 允许删除的schema。
+        Returns:
+            是否带正确标记且已经结束采集。
+        """
+        try:
+            info = json.loads(path.read_text(encoding='utf-8'))
+        except (OSError, ValueError):
+            return False
+        return isinstance(info, dict) and info.get('schema') == schema and info.get('state') in ('closed', 'paused', 'failed')
+
+    def _delete_owned(self, path: Path) -> None:
+        """验证绝对路径在受管范围内，再删除已由调用者核实标记的目录。
+
+        Args:
+            path: 已结束旧会话或旧局。
+        Raises:
+            OSError: 路径越界、别名链接或删除失败。
+        """
+        resolved = path.resolve()
+        if (path.is_symlink() or resolved != path.absolute()
+                or resolved.parent not in (self.root, self.directory) or path == self._round_directory):
+            raise OSError('拒绝清理非受管诊断目录')
+        size = sum(item.stat().st_size for item in path.rglob('*') if item.is_file() and not item.is_symlink())
+        shutil.rmtree(path)
+        self.used -= size
+
+    def set_quota(self, quota: int) -> None:
+        """后台应用新磁盘额度，重新核对使用量并清理已结束旧局。
+
+        Args:
+            quota: 新额度，正整数且单位字节。
+        Raises:
+            TypeError: quota不是整数。
+            ValueError: quota非正。
+            OSError: 扫描、清理失败或当前局无法容纳。
+        """
+        if type(quota) is not int:
+            raise TypeError('磁盘额度必须是整数字节数')
+        if quota <= 0:
+            raise ValueError('磁盘额度必须为正')
+        self.quota = quota
+        self.used = sum(path.stat().st_size for path in self.root.rglob('*') if path.is_file() and not path.is_symlink())
+        self._ensure_space(0)
+
+    def _write_round_metadata(self) -> None:
+        """原子保存当前局标记，关键收尾使用预留的少量元数据空间。
+
+        Raises:
+            OSError: 写入或替换失败。
+        """
+        if self._round_directory is None:
+            return
+        target = self._round_directory/'round.json'
+        previous = target.stat().st_size if target.exists() else 0
+        data = json.dumps({'schema': 'han-diagnostic-round/v1', **self._round_info}, ensure_ascii=False, indent=2).encode('utf-8')
+        temporary = target.with_suffix('.tmp')
+        temporary.write_bytes(data)
+        temporary.replace(target)
+        self.used += len(data)-previous
+
+    def finish_round(self, state: str = 'closed', reason: str = 'diagnostics_stopped') -> None:
+        """封口当前局的采集段，不据此宣称已捕获整局或没有缺帧。
+
+        Args:
+            state: closed或paused。
+            reason: 下一局开始、关闭诊断或保存故障。
+        Raises:
+            OSError: 标记写入失败。
+        """
+        if self._round_directory is not None and self._round_directory.is_dir():
+            self._round_info.update(state=state, closed_reason=reason)
+            self._write_round_metadata()
+
+    def start_round(self, number: int, first_frame: int, started: bool = True) -> None:
+        """建立开局目录，即使该局尚未成功接收图片也有可追踪标记。
+
+        Args:
+            number: 局号。
+            first_frame: 开局观测帧号。
+            started: 是否观察到实际Tracker开局转换。
+        Raises:
+            OSError: 文件夹或标记写入失败。
+            TypeError: 参数类型错误。
+            ValueError: 局号/帧号非正，或局号倒退。
+        """
+        if type(number) is not int or type(first_frame) is not int or type(started) is not bool:
+            raise TypeError('局号、帧号必须为整数，开局标记必须为bool')
+        if number <= 0 or first_frame <= 0:
+            raise ValueError('局号、开局帧号必须为正')
+        self._select_round({'round_id': number, 'frame_id': first_frame})
+        self._round_info['saw_start'] = bool(self._round_info['saw_start']) or started
+        self._write_round_metadata()
+
+    def _select_round(self, payload: dict[str, object]) -> Path:
+        """按冻结帧的局号切目录，确保排队中的上一局图片不会串到新局。
+
+        Args:
+            payload: 已冻结的帧数据。
+        Returns:
+            当前局或等待区目录。
+        Raises:
+            TypeError: 局号非整数。
+            ValueError: 局号为负、倒退或目录重复。
+            OSError: 文件夹或标记创建失败。
+        """
+        number = payload.get('round_id', 0)
+        if type(number) is not int:
+            raise TypeError('诊断局号必须为整数')
+        number = cast(int, number)
+        if number < 0 or number < cast(int, self._round_info.get('round_id', 0)):
+            raise ValueError('诊断局号不能为负或倒退')
+        target = self.directory/(f'game_{number:04d}' if number else 'waiting')
+        if target != self._round_directory:
+            self.finish_round(reason='next_round_started')
+            self._round_directory = target
+            self._round_info = {'round_id': number, 'kind': 'game' if number else 'waiting', 'state': 'recording',
+                                'first_frame': payload['frame_id'], 'last_frame': payload['frame_id'], 'saved_frames': 0,
+                                'saw_start': False, 'saw_end': False}
+            self._ensure_space(1024)
+            target.mkdir()
+            (target/'frames').mkdir()
+            self._write_round_metadata()
+        return target
 
     def _blob(self, path: Path, data: bytes) -> None:
         """检查配额并写一个会话内文件。
@@ -209,7 +353,7 @@ class SessionStorage:
         target = self.directory/'manifest.json'
         previous = target.stat().st_size if target.exists() else 0
         data = json.dumps({'schema': 'han-diagnostics/v1', 'session': self.directory.name,
-                          'started_at': self.started_at, 'environment': self.environment, **fields},
+                          'started_at': self.started_at, 'environment': self.environment, 'pruned_rounds': self.pruned_rounds, **fields},
                          ensure_ascii=False, indent=2).encode('utf-8')
         temporary = self.directory/'manifest.tmp'
         temporary.write_bytes(data)
@@ -255,7 +399,8 @@ class SessionStorage:
         """
         payload = json.loads(payload_bytes)
         number = int(payload['frame_id'])
-        pending = self.directory/'frames'/f'.pending_{number:08d}'
+        group = self._select_round(payload)
+        pending = group/'frames'/f'.pending_{number:08d}'
         final = pending.with_name(f'{number:08d}')
         pending.mkdir()
         try:
@@ -273,12 +418,21 @@ class SessionStorage:
             payload['model_artifact_sha256_at_write'] = self._model_hash(payload, 'artifact_path')
             self._blob(pending/'frame.json', json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8'))
             pending.replace(final)
-            line = json.dumps({'frame_id': number, 'path': f'frames/{number:08d}/frame.json',
+            line = json.dumps({'frame_id': number, 'path': f'{group.name}/frames/{number:08d}/frame.json',
                                'reasons': payload.get('reasons'), 'error': payload.get('error')}, ensure_ascii=False).encode('utf-8')+b'\n'
             self._ensure_space(len(line))
             with (self.directory/'events.jsonl').open('ab') as index:
                 index.write(line)
             self.used += len(line)
+            self._round_info['last_frame'] = number
+            self._round_info['saved_frames'] = cast(int, self._round_info['saved_frames'])+1
+            before = cast(dict[str, object], payload.get('before', {}))
+            after = cast(dict[str, object], payload.get('after', {}))
+            if before.get('state') == 0 and after.get('state') in (1, 2):
+                self._round_info['saw_start'] = True
+            if after.get('awaiting_next_round') is True:
+                self._round_info['saw_end'] = True
+            self._write_round_metadata()
         except Exception:
             if pending.exists():
                 size = sum(p.stat().st_size for p in pending.rglob('*') if p.is_file())

@@ -68,6 +68,26 @@ class WindowBehaviorTests(unittest.TestCase):
         self.addCleanup(editor.close)
         return editor
 
+    def test_disk_quota_waits_for_backend_ack_and_reopens_with_saved_value(self) -> None:
+        """后端拒绝不保存，确认后重新打开显示选中的磁盘额度。"""
+        settings.DIAGNOSTIC_DISK_GIB = 1.
+        self.window.worker.state = 'ready'
+        with patch.object(self.window.worker, 'update_settings', side_effect=[121, 122]) as update:
+            self.window.on_diagnostic_disk_changed(2.25)
+            update.assert_called_with({'DIAGNOSTIC_DISK_GIB': 2.25})
+            self.assertEqual(settings.DIAGNOSTIC_DISK_GIB, 1.)
+            self.window.worker.command_completed.emit(121, 'update_settings', False, 'not available')
+            self.assertNotIn('diagnostic_disk_gib', read_config(str(self.config_path)))
+            self.window.on_diagnostic_disk_changed(2.25)
+            self.window.worker.command_completed.emit(122, 'update_settings', True, '')
+        self.assertEqual(read_config(str(self.config_path))['diagnostic_disk_gib'], 2.25)
+        dialog = SettingsDialog(self.window)
+        self.addCleanup(dialog.close)
+        self.assertEqual(dialog.spin_diagnostic_disk.value(), 2.25)
+        self.assertTrue(dialog.tab2.isAncestorOf(dialog.spin_diagnostic_disk))
+        self.assertEqual(dialog.spin_diagnostic_disk.minimum(), .1)
+        self.assertEqual(dialog.spin_diagnostic_disk.maximum(), 1024.)
+
     def test_diagnostic_warning_visible_with_layout_status_hidden(self) -> None:
         """诊断写盘失败不因隐藏普通提示而消失，也不强制停止识别。"""
         settings.SHOW_LAYOUT_STATUS = False

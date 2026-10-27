@@ -27,6 +27,21 @@ class ControllerTests(unittest.TestCase):
         self.controller.yolo_inferencer = Mock()
         self.controller.packed_pipeline = PackedPipeline()
 
+    def test_failed_enable_rolls_back_quota_and_settings_together(self) -> None:
+        """同批修改额度后启动线程失败，后端内存也须恢复旧额度。"""
+        from core.diagnostics import DiagnosticLimits
+        recorder = Mock()
+        recorder.limits = DiagnosticLimits()
+        recorder.set_enabled.side_effect = RuntimeError('writer failed')
+        self.controller.diagnostics = recorder
+        with patch.multiple(settings, FULL_DIAGNOSTICS=False, DIAGNOSTIC_DISK_GIB=1.):
+            with self.assertRaisesRegex(RuntimeError, 'writer failed'):
+                self.controller.update_settings({'FULL_DIAGNOSTICS': True, 'DIAGNOSTIC_DISK_GIB': 5.})
+            self.assertEqual(settings.DIAGNOSTIC_DISK_GIB, 1.)
+            self.assertFalse(settings.FULL_DIAGNOSTICS)
+            self.assertEqual(recorder.set_disk_limit.call_args_list[0].args, (5*1024**3,))
+            self.assertEqual(recorder.set_disk_limit.call_args_list[-1].args, (1024**3,))
+
     def test_new_layout_does_not_depend_on_child_snapshot(self) -> None:
         """子进程从未见过的布局也能立即应用。"""
         layout = deepcopy(self.controller.layout_config)

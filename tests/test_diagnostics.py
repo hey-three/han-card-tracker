@@ -63,7 +63,7 @@ class DiagnosticTests(unittest.TestCase):
         Returns:
             帧元数据与所属帧目录。
         """
-        paths = list((self.base/'diagnostics').glob('session_*/frames/*/frame.json'))
+        paths = list((self.base/'diagnostics').glob('session_*/**/frames/*/frame.json'))
         self.assertEqual(len(paths), 1)
         return json.loads(paths[0].read_text(encoding='utf-8')), paths[0].parent
 
@@ -109,7 +109,7 @@ class DiagnosticTests(unittest.TestCase):
             self.assertEqual(frozen.getpixel((0, 0)), (255, 0, 0))
         self.assertTrue((directory/'call_01_input_annotated.png').exists())
         self.assertTrue((directory/'final_original_annotated.png').exists())
-        manifest = json.loads((directory.parent.parent/'manifest.json').read_text(encoding='utf-8'))
+        manifest = json.loads((directory.parent.parent.parent/'manifest.json').read_text(encoding='utf-8'))
         self.assertTrue(manifest['complete'])
         self.assertEqual(recorder.status()['pending_bytes'], 0)
 
