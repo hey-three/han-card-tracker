@@ -107,15 +107,15 @@ class BaseCardTracker(ABC):
     ) -> bool:
         """处理一帧检测结果，更新帧缓存。
 
-        手动模式以 ``_get_validity_region()`` 返回的区域是否非空作为门禁。
-        自动模式仅收集 known_regions 中的观测，未知区域清确认缓存；
+        旧兼容调用以 ``_get_validity_region()`` 的区域非空作为门禁。
+        当前斗地主两种布局均仅收集 known_regions 中的观测，未知区域清确认缓存；
         至少有一个已知区域非空时刷新 no_target_time 并推进状态。
         缓存始终裁剪到最新 FRAME_LENGTH 帧。
 
         Args:
             frame_data: 各区域的牌点列表，key 为区域名。
             yolo_ms: YOLO 推理耗时（毫秒）。
-            known_regions: 自动布局明确确认的区域；None 保留手动模式底牌门禁。
+            known_regions: 明确已知区域；None 仅保留旧基类门禁，当前正式链路显式提供。
 
         Returns:
             本帧是否可用于状态更新。未知区域清缓存，不伪造空帧。

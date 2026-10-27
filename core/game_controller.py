@@ -108,15 +108,19 @@ class GameController:
         previewed = time.perf_counter()
         raw_result: object | None
         yolo_ms: float
-        regions, guard = (self.layout_analyzer.inference_regions()
-                          if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else (None, .04))
-        # 首版仅在自动布局校准后尝试拼图，手动布局及未校准阶段保持原整图链路。
-        raw_result, yolo_ms = self.packed_pipeline.detect(
-            img, self.yolo_inferencer, regions, settings.PACKED_INFERENCE,
-            settings.FRAME_LENGTH, guard,
-        )
+        # 路线由布局模式唯一决定；旧 packed_inference 偏好不再覆盖用户的布局选择。
+        regions = (None if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else
+                   [cast(tuple[float, float, float, float], tuple(bounds))
+                    for bounds in self.layout_config["layout"].values()])
+        raw_result, yolo_ms = self.packed_pipeline.detect(img, self.yolo_inferencer, regions)
         detected = time.perf_counter()
         self.yolo_inferencer.save_frame(img, raw_result)
+        valid_frame = img is not None and raw_result is not None and getattr(raw_result, "boxes", None) is not None
+        size = img.size if img is not None and valid_frame else (0, 0)
+        cards = read_yolo_boxes(raw_result, size)
+        if isinstance(self.tracker, DoudizhuTracker):
+            # 非空拼图证明本帧有牌；空拼图在执行器内整图复查后才发布为空。
+            self.tracker.observe_frame_presence(bool(cards) if valid_frame else None)
         
         # 几何布局分析（把 raw box 切分到不同区域并做二维排序）
         # 输入：YOLO 原始检测结果 + 图片尺寸
@@ -125,11 +129,7 @@ class GameController:
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
             if not isinstance(self.tracker, DoudizhuTracker):
                 raise ValueError("自动布局仅支持斗地主")
-            valid_frame = img is not None and raw_result is not None
-            size = img.size if img is not None and valid_frame else (0, 0)
-            cards = read_yolo_boxes(raw_result, size)
             observation = self.layout_analyzer.observe(cards, size, settings.FRAME_LENGTH)
-            self.tracker.observe_frame_presence(bool(cards) if valid_frame else None)
             if settings.SHOW_CURRENT_SCREENSHOT:
                 self.last_screenshot_regions = {
                     key: (
@@ -156,6 +156,7 @@ class GameController:
                 )
         else:
             region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
+            known_regions = set(region_boxes) if valid_frame else set()
             if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
                 self.last_screenshot_regions = {
                     key: cast(tuple[float, float, float, float], tuple(bounds))
@@ -172,9 +173,7 @@ class GameController:
         remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms, known_regions)
         if (isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and isinstance(self.tracker, DoudizhuTracker)
                 and self.tracker.awaiting_next_round and self.layout_analyzer.ready):
-            self.layout_analyzer.wait_for_next_round(
-                self.tracker.round_end_reason, allow_same_hand=valid_frame and not cards,
-            )
+            self.layout_analyzer.wait_for_next_round(self.tracker.round_end_reason)
             self.packed_pipeline.reset()
         zone_cards: dict[str, list[list[str]]] = self._format_zone_cards(show_cards)
         finished = time.perf_counter()
@@ -195,11 +194,13 @@ class GameController:
 
     @property
     def layout_status(self) -> str:
-        """返回自动布局的用户状态；手动布局不显示校准提示。"""
+        """返回当前布局、真实识别路线及等待状态。"""
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            route = self.packed_pipeline.route if settings.PACKED_INFERENCE else ""
-            return self.layout_analyzer.last_observation.message + (f" · {route}" if route else "")
-        return ""
+            return self.layout_analyzer.last_observation.message + " · " + self.packed_pipeline.route
+        state = "记牌中"
+        if isinstance(self.tracker, DoudizhuTracker) and self.tracker.state != settings.STARTED_RECORD_CARD:
+            state = "保留上一局，等待完整 17/20 张新手牌" if self.tracker.awaiting_next_round else "等待完整 17/20 张手牌"
+        return f"手动布局 · {self.packed_pipeline.route} · {state}"
 
     @staticmethod
     def _create_analyzer(config: settings.LayoutConfig) -> LayoutAnalyzer | AutoLayoutAnalyzer:
@@ -214,7 +215,7 @@ class GameController:
         if config.get("mode") == "auto":
             limits = {label: settings.TOTAL_CARDS[card] for label, card in settings.YOLO_TO_CARD_MAPPING.items()}
             return AutoLayoutAnalyzer(limits)
-        return LayoutAnalyzer(dict(config))
+        return LayoutAnalyzer(config)
 
     def _create_inferencer(self) -> YoloInferencer:
         """延迟加载重型依赖并创建推理器。
@@ -386,8 +387,12 @@ class GameController:
             raise ValueError(f"未知命令: {name}")
 
     def touch_time(self) -> None:
-        """刷新 no_target_time，防止暂停后立即超时重置。"""
+        """刷新时间并打断无牌连续性，暂停时长不能被当作持续空白。"""
         self.tracker.no_target_time = time.time()
+        if isinstance(self.tracker, DoudizhuTracker):
+            self.tracker.interrupt_observation()
+        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            self.layout_analyzer.interrupt_observation()
 
     def _format_zone_cards(self, show_cards: dict[str, list[list[str]]]) -> dict[str, list[list[str]]]:
         """将 Tracker 的 show_cards 格式化为 zone_cards。

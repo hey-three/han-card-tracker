@@ -6,6 +6,7 @@ from unittest.mock import Mock, patch
 
 from config import settings
 from core.game_controller import GameController
+from core.packed_pipeline import PackedPipeline
 
 
 class ControllerTests(unittest.TestCase):
@@ -25,6 +26,7 @@ class ControllerTests(unittest.TestCase):
         self.controller.layout_analyzer = Mock()
         self.controller.yolo_inferencer = Mock()
         self.controller.debug_manager = Mock()
+        self.controller.packed_pipeline = PackedPipeline()
 
     def test_new_layout_does_not_depend_on_child_snapshot(self) -> None:
         """子进程从未见过的布局也能立即应用。"""
@@ -80,11 +82,14 @@ class ControllerTests(unittest.TestCase):
             self.controller.switch_game("doudizhu")
         save.assert_not_called()
 
-    def test_packed_toggle_clears_old_frame_reference_without_resetting_round(self) -> None:
-        """热切换只清理拼图参照，不重复初始化当前牌局。"""
+    def test_legacy_packing_update_clears_geometry_without_resetting_round(self) -> None:
+        """兼容旧命令只使已有规划失效，不清除牌局或改变布局路线。"""
         previous = self.controller.tracker
+        pipeline = self.controller.packed_pipeline
+        pipeline._plan = Mock()
         self.controller.update_settings({"PACKED_INFERENCE": True})
-        self.assertIsNone(self.controller.packed_pipeline._reference)
+        self.assertIsNot(self.controller.packed_pipeline, pipeline)
+        self.assertIsNone(self.controller.packed_pipeline._plan)
         self.assertIs(self.controller.tracker, previous)
         previous.reset.assert_not_called()
 

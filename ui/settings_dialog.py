@@ -93,7 +93,6 @@ class SettingsDialog(QDialog):
     PAGE_SPACING = 20
     auto_layout_requested = Signal()
     layout_status_changed = Signal(int)
-    packed_inference_changed = Signal(int)
 
     def __init__(
         self,
@@ -362,11 +361,11 @@ class SettingsDialog(QDialog):
 
         self.combo_reset_time = self._add_combo_row(
             advanced_layout,
-            "重置时间：",
+            "无牌结束时长：",
             "ResetTimeCombo",
             ["1.0秒", "1.5秒", "2.0秒", "2.5秒", "3.0秒", "3.5秒", "4.0秒", "4.5秒", "5.0秒"],
             self._on_reset_time_changed,
-            tooltip="多久没有检测到地主底牌，就自动重置计牌器",
+            tooltip="全图持续无牌达到此时长，且连续至少 max(3, 帧长度) 帧，才结束本局；保留旧显示，等新完整手牌稳定后刷新。截图失败和暂停不计入。",
         )
 
         self.combo_frame_length = self._add_combo_row(
@@ -405,32 +404,11 @@ class SettingsDialog(QDialog):
             tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
-        self.combo_packed_inference = self._add_combo_row(
-            advanced_layout,
-            "识别路线：",
-            "PackedInferenceCombo",
-            ["整图（默认）", "保护拼图（试验）"],
-            self._on_packed_inference_changed,
-            tooltip="自动布局校准后尝试重叠拼图；手牌继续检测。切边、冲突、区外变化或定期复查时回到整图。静态模型不保证降低推理输入尺寸。",
-        )
-        self.set_current_packed_inference(settings.PACKED_INFERENCE)
+        self.label_inference_route = QLabel("识别路线由布局决定：自动布局使用整图，手动布局使用五区保护拼图。")
+        self.label_inference_route.setWordWrap(True)
+        self.label_inference_route.setToolTip("五区完整保留；拼图为空、切边不完整或结果冲突时复查同一原图。静态模型仍使用原导出输入尺寸。")
+        advanced_layout.addWidget(self.label_inference_route)
         advanced_layout.addStretch()
-
-    def _on_packed_inference_changed(self, index: int) -> None:
-        """通知主窗口应用识别路线。
-
-        Args:
-            index: 整图/试验拼图索引。
-        """
-        self.packed_inference_changed.emit(index)
-
-    def set_current_packed_inference(self, enabled: bool) -> None:
-        """无副作用地同步已保存路线。
-
-        Args:
-            enabled: 是否开启保护拼图。
-        """
-        self._set_combo_current_safely(self.combo_packed_inference, int(enabled))
 
     def _on_reset_clicked(self):
         """

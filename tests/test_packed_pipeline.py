@@ -1,16 +1,18 @@
-"""拼图执行、画面变化、同帧回退和缓冲复用测试。"""
+"""手动五区拼图、规划缓存、同帧回退和缓冲复用测试。"""
 
 import unittest
 from unittest.mock import Mock, patch
 
-from PIL import Image, ImageDraw
+import numpy as np
+from PIL import Image
 
-from core.frame_packing import Detection, make_plan
+from core.frame_packing import Detection
 from core.packed_pipeline import PackedPipeline
+from core.square_packing import make_square_plan
 
 
 def raw_result(cards: list[Detection]) -> Mock:
-    """建立模型输出边界替身。
+    """建立同时支持整图解析和拼图恢复的模型输出替身。
 
     Args:
         cards: 像素坐标检测。
@@ -20,100 +22,99 @@ def raw_result(cards: list[Detection]) -> Mock:
     result = Mock()
     names = list(dict.fromkeys(c.name for c in cards))
     result.names = dict(enumerate(names))
-    result.boxes.xyxy.cpu.return_value.tolist.return_value = [list(c.bbox) for c in cards]
-    result.boxes.cls.cpu.return_value.tolist.return_value = [float(names.index(c.name)) for c in cards]
-    result.boxes.conf.cpu.return_value.tolist.return_value = [c.confidence for c in cards]
+    boxes = np.array([c.bbox for c in cards], dtype=float).reshape((-1, 4))
+    classes = np.array([names.index(c.name) for c in cards], dtype=float)
+    scores = np.array([c.confidence for c in cards], dtype=float)
+    for tensor, values in ((result.boxes.xyxy, boxes), (result.boxes.cls, classes), (result.boxes.conf, scores)):
+        tensor.cpu.return_value.tolist.return_value = values.tolist()
+        tensor.cpu.return_value.numpy.return_value = values
     return result
 
 
 class PipelineTests(unittest.TestCase):
-    """不使用权重，验证任何回退都只重新识别当前原图。"""
+    """不使用权重，验证布局路线、完整性与当前帧语义。"""
 
     def setUp(self) -> None:
-        """准备同一原图和确定的双块重叠输出。"""
+        """建立覆盖五区的几何规划和安全的单个目标。"""
         self.pipeline = PackedPipeline()
-        self.image = Image.new('RGB', (1000, 200), (80, 80, 80))
-        self.regions = [(0., 0., 1., 1.)]
-        self.plan = make_plan(self.image.size, self.regions).fit()
+        self.image = Image.new("RGB", (1000, 800), (80, 80, 80))
+        self.regions = [(.04, .7, .96, .85), (.04, .46, .96, .57), (.2, .25, .47, .45),
+                        (.48, .25, .85, .45), (.37, 0., .55, .08)]
+        self.plan = make_square_plan(self.image.size, self.regions)
         self.detector = Mock()
-        self.detector.detect.return_value = ('full', 10.)
-        self.detector.detect_packed.return_value = (raw_result([
-            Detection('A', t.project((480., 30., 500., 80.))) for t in self.plan.tiles
-        ]), 5.)
-        self.detector.restore_result.return_value = 'restored'
+        self.detector.detect.return_value = ("full", 10.)
+        self.detector.restore_result.return_value = "restored"
+        tile = self.plan.tiles[0]
+        a, b, _, _ = tile.source
+        self.card = Detection("A", (a+20., b+20., a+40., b+50.))
+        self.detector.detect_packed.return_value = (raw_result([Detection("A", tile.project(self.card.bbox))]), 5.)
 
-    def prime(self) -> None:
-        """首帧整图建立参照；不复制上一帧检测结果。"""
-        self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
+    def test_auto_always_uses_full_and_does_not_build_a_plan(self) -> None:
+        """自动模式始终整图，哪怕已曾运行过手动拼图。"""
+        self.pipeline.detect(self.image, self.detector, self.regions)
         self.detector.reset_mock()
-
-    def test_disabled_and_uncalibrated_only_use_full(self) -> None:
-        """默认和未校准模式均不尝试裁剪。"""
-        for enabled, regions in ((False, self.regions), (True, None)):
-            self.pipeline.detect(self.image, self.detector, regions, enabled, 3)
+        with patch("core.packed_pipeline.make_square_plan") as build:
+            for _ in range(8):
+                self.pipeline.detect(self.image, self.detector, None)
+        build.assert_not_called()
         self.detector.detect_packed.assert_not_called()
+        self.assertEqual(self.detector.detect.call_count, 8)
 
-    def test_packed_restores_deduplicated_source_boxes_and_reuses_canvas(self) -> None:
-        """复用画布但不复用模型结果，最终输出只有一个原图 A。"""
-        self.prime()
-        result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
-        canvas = self.detector.detect_packed.call_args.args[0]
-        self.assertEqual(canvas.size, (640, 640))
-        self.assertEqual((result, elapsed), ('restored', 5.))
+    def test_manual_first_frame_packs_and_restores_original_coordinates(self) -> None:
+        """手动首帧无需整图预热，返回原图坐标而非画布坐标。"""
+        result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions)
+        self.assertEqual((result, elapsed), ("restored", 5.))
+        self.assertEqual(self.detector.detect_packed.call_args.args[0].size, (640, 640))
+        self.detector.detect.assert_not_called()
         cards = self.detector.restore_result.call_args.args[2]
         self.assertEqual(len(cards), 1)
-        for actual, expected in zip(cards[0].bbox, (480., 30., 500., 80.)):
+        for actual, expected in zip(cards[0].bbox, self.card.bbox):
             self.assertAlmostEqual(actual, expected)
-        self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
+
+    def test_geometry_and_canvas_are_reused_but_model_is_called_each_frame(self) -> None:
+        """固定布局只规划一次，下一帧仍重新采图和推理。"""
+        with patch("core.packed_pipeline.make_square_plan", wraps=make_square_plan) as build:
+            self.pipeline.detect(self.image, self.detector, self.regions)
+            canvas = self.detector.detect_packed.call_args.args[0]
+            self.pipeline.detect(self.image.copy(), self.detector, self.regions)
+        self.assertEqual(build.call_count, 1)
         self.assertIs(canvas, self.detector.detect_packed.call_args.args[0])
-        self.detector.detect.assert_not_called()
+        self.assertEqual(self.pipeline.timings["plan_ms"], 0.)
+        self.assertEqual(self.detector.detect_packed.call_count, 2)
 
-    def test_conflict_rechecks_same_image_and_accumulates_model_time(self) -> None:
-        """冲突后完整推理当前原图，计入两次调用成本。"""
-        self.prime()
-        self.detector.detect_packed.return_value = (raw_result([
-            Detection(name, tile.project((480., 30., 500., 80.)))
-            for name, tile in zip(('A', 'K'), self.plan.tiles)
-        ]), 5.)
-        result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
-        self.assertEqual((result, elapsed), ('full', 15.))
-        self.detector.detect.assert_called_once_with(self.image)
-        self.detector.restore_result.assert_not_called()
-        self.assertEqual(self.pipeline.timings['model_calls'], 2.)
-
-    def test_changed_outside_region_triggers_full(self) -> None:
-        """候选区外变化会在运行拼图模型前触发整图复查。"""
-        self.prime()
-        changed = self.image.copy()
-        ImageDraw.Draw(changed).rectangle((0, 0, 150, 150), fill='white')
-        self.pipeline.detect(changed, self.detector, [(.3, .1, .9, .9)], True, 3)
-        self.detector.detect.assert_called_once_with(changed)
-        self.detector.detect_packed.assert_not_called()
-        self.assertIn('区外', self.pipeline.route)
-
-    def test_periodic_scan_and_geometry_change_do_not_reuse_old_reference(self) -> None:
-        """满复查间隔及窗口变形时回到整图。"""
-        self.prime()
-        self.pipeline._packed_count = 6
-        self.pipeline.detect(self.image, self.detector, self.regions, True, 3)
-        self.assertIn('定期', self.pipeline.route)
-        self.detector.reset_mock()
-        resized = self.image.resize((900, 200))
-        self.pipeline.detect(resized, self.detector, self.regions, True, 3)
-        self.detector.detect.assert_called_once_with(resized)
-        self.detector.detect_packed.assert_not_called()
-
-    def test_empty_or_runtime_failure_never_publishes_fake_empty(self) -> None:
-        """空拼图和后端错误均回到原图，原图错误仍向上报告。"""
-        self.prime()
+    def test_size_or_region_changes_rebuild_geometry(self) -> None:
+        """窗口尺寸或用户框变化时不能套用旧坐标。"""
         self.detector.detect_packed.return_value = (raw_result([]), 5.)
-        self.assertEqual(self.pipeline.detect(self.image, self.detector, self.regions, True, 3)[0], 'full')
-        self.detector.detect_packed.side_effect = RuntimeError('bad shape')
-        self.assertEqual(self.pipeline.detect(self.image, self.detector, self.regions, True, 3)[0], 'full')
-        self.detector.detect.side_effect = RuntimeError('device failed')
-        with self.assertRaisesRegex(RuntimeError, 'device failed'):
-            self.pipeline.detect(None, self.detector, self.regions, True, 3)
+        with patch("core.packed_pipeline.make_square_plan", wraps=make_square_plan) as build:
+            self.pipeline.detect(self.image, self.detector, self.regions)
+            self.pipeline.detect(self.image.resize((900, 700)), self.detector, self.regions)
+            self.pipeline.detect(self.image, self.detector, self.regions[:-1])
+        self.assertEqual(build.call_count, 3)
+
+    def test_empty_checks_same_whole_image_and_accumulates_both_calls(self) -> None:
+        """空拼图复查当前整图；不能将五区之外仍有牌误判为全图无牌。"""
+        self.detector.detect_packed.return_value = (raw_result([]), 5.)
+        result, elapsed = self.pipeline.detect(self.image, self.detector, self.regions)
+        self.assertEqual((result, elapsed), ("full", 15.))
+        self.detector.detect.assert_called_once_with(self.image)
+        self.assertEqual(self.pipeline.timings["model_calls"], 2.)
+        self.detector.restore_result.assert_not_called()
+
+    def test_cross_tile_or_padding_result_falls_back(self) -> None:
+        """灰边内的伪目标不作为可靠牌面发布。"""
+        self.detector.detect_packed.return_value = (raw_result([Detection("A", (0., 0., 2., 2.))]), 5.)
+        self.assertEqual(self.pipeline.detect(self.image, self.detector, self.regions), ("full", 15.))
+        self.detector.restore_result.assert_not_called()
+
+    def test_runtime_failure_falls_back_and_full_failure_propagates(self) -> None:
+        """拼图后端失败可补查，整图失败向上传播真实故障。"""
+        self.detector.detect_packed.side_effect = RuntimeError("bad shape")
+        self.assertEqual(self.pipeline.detect(self.image, self.detector, self.regions)[0], "full")
+        self.assertEqual(self.pipeline.timings["model_calls"], 2.)
+        self.detector.detect.side_effect = RuntimeError("device failed")
+        with self.assertRaisesRegex(RuntimeError, "device failed"):
+            self.pipeline.detect(None, self.detector, self.regions)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     unittest.main()

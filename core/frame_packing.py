@@ -232,11 +232,13 @@ class PackingPlan:
                 return [], "检测落在拼图间隔或跨越图块"
             index, tile = owners[0]
             x1, y1, x2, y2 = tile.bounds
-            if a < x1 or b < y1 or c > x2 or d > y2:
-                return [], "检测跨越图块边界"
+            crossing = a < x1 or b < y1 or c > x2 or d > y2
+            # 模型框可能越过切口少量像素。先截到唯一中心归属块，再要求完整副本覆盖，
+            # 不能让本可由另一块完整识别的残片强制整轮回退，也不能直接发布截短目标。
+            a, b, c, d = max(a, x1), max(b, y1), min(c, x2), min(d, y2)
             sx, sy, ex, ey = tile.source
-            restored = Detection(detection.name, tile.unproject(detection.bbox), detection.confidence)
-            cut = ((sx > 0 and a <= x1+2) or (sy > 0 and b <= y1+2)
+            restored = Detection(detection.name, tile.unproject((a, b, c, d)), detection.confidence)
+            cut = (crossing or (sx > 0 and a <= x1+2) or (sy > 0 and b <= y1+2)
                    or (ex < self.size[0] and c >= x2-2) or (ey < self.size[1] and d >= y2-2))
             if cut:
                 clipped.append(restored)
@@ -257,13 +259,18 @@ class PackingPlan:
             if not duplicate:
                 kept.append((detection, index))
         for fragment in clipped:
-            if not any(overlap(fragment.bbox, whole.bbox, smaller=True) >= .85 for whole, _ in kept):
+            # 切口碎片可能错分类，以完整副本为准；但必须覆盖碎片本身的大部分。
+            # 不能用较小框作分母，否则一个大残片包含一张完整牌就可能被整体丢弃。
+            a, b, c, d = fragment.bbox
+            if not any(max(0., min(c, whole.bbox[2])-max(a, whole.bbox[0]))
+                       * max(0., min(d, whole.bbox[3])-max(b, whole.bbox[1])) >= .85*(c-a)*(d-b)
+                       for whole, _ in kept):
                 return [], "切边目标缺少完整副本"
         return [d for d, _ in kept], ""
 
 
 def make_plan(size: tuple[int, int], regions: Sequence[Box], guard: float = .04) -> PackingPlan:
-    """将归一化区域向外取整、合并相交区、重叠切分长条并选取紧凑排列。
+    """提供旧式排列用于历史面积对照；正式手动链路使用 make_square_plan。
 
     Args:
         size: 正整数原图宽高。
