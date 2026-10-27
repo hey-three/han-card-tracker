@@ -18,8 +18,6 @@ def tracker_snapshot(tracker: BaseCardTracker) -> dict[str, object]:
             'show_cards': deepcopy(tracker.show_cards), 'frame_caches': deepcopy(tracker.frame_caches),
             'has_found_empty': dict(tracker.has_found_empty),
             'initial_hand': list(getattr(tracker, '_initial_hand', [])),
-            'initial_hand_corrections': dict(getattr(tracker, 'initial_hand_corrections', {})),
-            'counting_conflicts': dict(getattr(tracker, 'counting_conflicts', {})),
             'bottom_visible': getattr(tracker, '_bottom_visible', False),
             'empty_frames': getattr(tracker, '_empty_frames', 0),
             'empty_since_monotonic': getattr(tracker, '_empty_since', None),
@@ -61,10 +59,6 @@ def decision_reasons(before: dict[str, object], after: dict[str, object], data: 
         result.append({'code': 'remaining_changed', 'delta': delta})
     if before['show_cards'] != after['show_cards']:
         result.append({'code': 'play_history_changed'})
-    if before.get('initial_hand_corrections') != after.get('initial_hand_corrections'):
-        result.append({'code': 'initial_hand_corrected', 'corrections': after.get('initial_hand_corrections')})
-    if before.get('counting_conflicts') != after.get('counting_conflicts'):
-        result.append({'code': 'counting_conflict', 'conflicts': after.get('counting_conflicts')})
     caches = cast(dict[str, list[list[str]]], after['frame_caches'])
     for key in known:
         cards = data.get(key, [])

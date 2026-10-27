@@ -30,7 +30,7 @@
 ## 5. 记牌契约
 
 - WAIT_BEGIN见上方底牌任意一张，当前帧进HAS_STARTED；非空合法手牌按FRAME_LENGTH连续一致，扣一次后进STARTED_RECORD_CARD。无17/20硬门槛，无17→20补扣，空手牌不能通过。
-- remain_cards排除本家首次手牌及已确认对手出牌。本家出牌通常只记历史；累计确认本家牌面超过原始首扣+已补扣时，只补可证明缺口。原始_initial_hand不改，initial_hand_corrections单列；越界或剩余不足记counting_conflicts不盲扣。底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
+- remain_cards只排除本家首次确认手牌及已确认的对手出牌。本家后续任何出牌只记历史，不补扣、不重扣、不反推初始手牌；用户已明确撤回累计出牌补扣。底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
 - frame_caches只保留最新阈值帧；阈值变小时下一帧即可确认，变大需等足够帧。
 - 底牌缺失暂停并清未确认序列；已知为空连续max(3,FRAME_LENGTH)帧且持续RESET_TIME秒才内部结束。同帧模型复查只算一次。未知、截图失败、暂停/恢复中断累计。
 - begin_waiting保留remain_cards/show_cards，新底牌出现开局才刷新。显式reset立即清空。不按某家零张、全图无牌、底牌牌面变化额外结束。
@@ -79,4 +79,4 @@
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
 - 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
 - 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
-- 当前任务已授权在V4.3.2移除旧截图链路、按确认本家出牌修复首扣漏K、加入压力自动恢复；推送该分支、合并main并本地同步。最终预算保留64MiB/8帧，磁盘1GiB，不能把曾讨论的1GiB写成RAM预算。
+- 当前任务按用户要求撤回本家出牌补扣及关联字段/说明，原始首扣缺张原因保持待查。保留诊断自动恢复及8帧/64MiB内存、1GiB磁盘规则；已授权继续推送V4.3.2、合并main并同步本地。个人配置和已有诊断材料不得混入提交或删除。

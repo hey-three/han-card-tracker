@@ -70,10 +70,10 @@ class AutoLayoutTests(unittest.TestCase):
 
     def test_single_card_for_each_player(self) -> None:
         """本家、左家、右家单张出牌均归入独立区域。"""
-        plays = row(["A"], .22, .37) + row(["seven"], .47, .57) + row(["Q"], .76, .37)
+        plays = row(["A"], .22, .37) + row(["K"], .47, .57) + row(["Q"], .76, .37)
         observation = self.feed(self.cards + plays)
         self.assertEqual([c.name for c in observation.regions["opponent_left"]], ["A"])
-        self.assertEqual(self.tracker.show_cards, {"left": [["A"]], "self": [["7"]], "right": [["Q"]]})
+        self.assertEqual(self.tracker.show_cards, {"left": [["A"]], "self": [["K"]], "right": [["Q"]]})
         self.assertEqual(self.tracker.remain_cards["K"], 4)
         self.assertEqual(self.tracker.remain_cards["A"], 3)
 
