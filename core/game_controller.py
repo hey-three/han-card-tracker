@@ -9,6 +9,7 @@ from typing import TYPE_CHECKING, cast
 import time
 
 import config.settings as settings
+from config.packing_profile import PACKED_INPUT_SIZE, stage_regions
 from core.base_tracker import BaseCardTracker
 from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
 from core.games.doudizhu import DoudizhuTracker
@@ -101,26 +102,30 @@ class GameController:
         captured = time.perf_counter()
         self.last_screenshot_jpeg = None
         self.last_screenshot_regions = {}
-        if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
-            image_buffer = BytesIO()
-            img.convert("RGB").save(image_buffer, format="JPEG", quality=75)
-            self.last_screenshot_jpeg = image_buffer.getvalue()
-        previewed = time.perf_counter()
         raw_result: object | None
         yolo_ms: float
         # 路线由布局模式唯一决定；旧 packed_inference 偏好不再覆盖用户的布局选择。
-        regions = (None if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else
-                   [cast(tuple[float, float, float, float], tuple(bounds))
-                    for bounds in self.layout_config["layout"].values()])
-        raw_result, yolo_ms = self.packed_pipeline.detect(img, self.yolo_inferencer, regions)
+        names: list[str] = []
+        regions = None
+        scales = None
+        if not isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+            names, regions, scales = stage_regions(self.layout_config["layout"],
+                                                  self.tracker.state == settings.STARTED_RECORD_CARD)
+        bottom_region = (None if regions is None else
+                         cast(tuple[float, float, float, float], tuple(self.layout_config["layout"]["landlord_cards"])))
+        raw_result, yolo_ms = self.packed_pipeline.detect(img, self.yolo_inferencer, regions,
+                                                       presence_region=bottom_region, scales=scales,
+                                                       canvas_size=PACKED_INPUT_SIZE)
         detected = time.perf_counter()
-        self.yolo_inferencer.save_frame(img, raw_result)
+        preview_started = time.perf_counter()
+        if settings.SHOW_CURRENT_SCREENSHOT and self.packed_pipeline.last_input is not None:
+            image_buffer = BytesIO()
+            self.packed_pipeline.last_input.convert("RGB").save(image_buffer, format="JPEG", quality=75)
+            self.last_screenshot_jpeg = image_buffer.getvalue()
+        preview_ms = (time.perf_counter()-preview_started)*1000
         valid_frame = img is not None and raw_result is not None and getattr(raw_result, "boxes", None) is not None
         size = img.size if img is not None and valid_frame else (0, 0)
         cards = read_yolo_boxes(raw_result, size)
-        if isinstance(self.tracker, DoudizhuTracker):
-            # 非空拼图证明本帧有牌；空拼图在执行器内整图复查后才发布为空。
-            self.tracker.observe_frame_presence(bool(cards) if valid_frame else None)
         
         # 几何布局分析（把 raw box 切分到不同区域并做二维排序）
         # 输入：YOLO 原始检测结果 + 图片尺寸
@@ -130,39 +135,11 @@ class GameController:
             if not isinstance(self.tracker, DoudizhuTracker):
                 raise ValueError("自动布局仅支持斗地主")
             observation = self.layout_analyzer.observe(cards, size, settings.FRAME_LENGTH)
-            if settings.SHOW_CURRENT_SCREENSHOT:
-                self.last_screenshot_regions = {
-                    key: (
-                        min(card.bbox[0] for card in cards),
-                        min(card.bbox[1] for card in cards),
-                        max(card.bbox[2] for card in cards),
-                        max(card.bbox[3] for card in cards),
-                    )
-                    for key, cards in observation.regions.items()
-                    if cards
-                }
             region_boxes = observation.as_boxes()
             known_regions = set(region_boxes)
-            if observation.initial is not None:
-                initial_data = self.tracker.translate_boxes_to_cards(region_boxes)
-                if self.tracker.state != settings.STARTED_RECORD_CARD:
-                    self.tracker.initialize_from_layout(initial_data)
-                else:
-                    # 比例变化只重新学习几何，不能凭窗口变形把同一局历史清空。
-                    self.tracker.update_initial_hand(initial_data["player_hand"])
-            if observation.initial_hand_update is not None:
-                self.tracker.update_initial_hand(
-                    self.tracker.translate_boxes_to_cards({"player_hand": region_boxes["player_hand"]})["player_hand"]
-                )
         else:
-            region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0))
-            known_regions = set(region_boxes) if valid_frame else set()
-            if settings.SHOW_CURRENT_SCREENSHOT and img is not None:
-                self.last_screenshot_regions = {
-                    key: cast(tuple[float, float, float, float], tuple(bounds))
-                    for key, bounds in self.layout_config["layout"].items()
-                }
-        
+            region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0), names)
+            known_regions = set(names) if valid_frame else set()
         # 业务逻辑映射（将 YOLO 标签转换为游戏牌点名称）
         # 输入：{区域名: [{"bbox": ..., "name": "three"}, ...]}  （YOLO 原始标签）
         # 输出：{区域名: ["3", "A", "小", ...]}  （通过 YOLO_TO_CARD_MAPPING 转换后的业务牌点）
@@ -171,6 +148,8 @@ class GameController:
         remain_cards: dict[str, int]
         show_cards: dict[str, list[list[str]]]
         remain_cards, show_cards, yolo_ms = self.tracker.get_cards_number(frame_data, yolo_ms, known_regions)
+        # 开局回调先建立新局目录，首张有效开局图不再写入上一局。
+        self.yolo_inferencer.save_frame(img, raw_result)
         if (isinstance(self.layout_analyzer, AutoLayoutAnalyzer) and isinstance(self.tracker, DoudizhuTracker)
                 and self.tracker.awaiting_next_round and self.layout_analyzer.ready):
             self.layout_analyzer.wait_for_next_round(self.tracker.round_end_reason)
@@ -179,8 +158,8 @@ class GameController:
         finished = time.perf_counter()
         self.last_performance = dict(self.packed_pipeline.timings)
         self.last_performance.update(capture_ms=(captured-started)*1000, model_ms=yolo_ms,
-                                     preview_ms=(previewed-captured)*1000,
-                                     layout_save_ms=(finished-detected)*1000, pipeline_ms=(finished-started)*1000)
+                                     preview_ms=preview_ms,
+                                     layout_save_ms=(finished-detected)*1000-preview_ms, pipeline_ms=(finished-started)*1000)
         if settings.DEBUG_MODE:
             print(f"[V4.3] {self.packed_pipeline.route} {self.last_performance}")
         return remain_cards, zone_cards, yolo_ms
@@ -199,7 +178,9 @@ class GameController:
             return self.layout_analyzer.last_observation.message + " · " + self.packed_pipeline.route
         state = "记牌中"
         if isinstance(self.tracker, DoudizhuTracker) and self.tracker.state != settings.STARTED_RECORD_CARD:
-            state = "保留上一局，等待完整 17/20 张新手牌" if self.tracker.awaiting_next_round else "等待完整 17/20 张手牌"
+            state = "保留上一局，等待底牌出现" if self.tracker.awaiting_next_round else "等待底牌出现"
+            if self.tracker.state == settings.HAS_STARTED:
+                state = "已开局，等待非空手牌稳定"
         return f"手动布局 · {self.packed_pipeline.route} · {state}"
 
     @staticmethod

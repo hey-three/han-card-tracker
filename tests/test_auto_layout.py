@@ -158,19 +158,20 @@ class AutoLayoutTests(unittest.TestCase):
         self.assertEqual(self.tracker.show_cards["self"], [["3"]])
         self.assertEqual(self.tracker.remain_cards["3"], 0)
 
-    def test_hidden_bottom_after_start_does_not_stop_recording(self) -> None:
-        """开局已确认后底牌隐藏，仍可使用手牌参照记录对手出牌。"""
-        hand_only = [c for c in self.cards if c.bbox[1] > .5]
-        self.feed(hand_only + row(["A"], .22, .37))
-        self.assertEqual(self.tracker.show_cards["left"], [["A"]])
+    def test_hidden_bottom_pauses_recording(self) -> None:
+        """底牌区无牌时不再把中央出现的牌记作对手出牌。"""
+        observation = self.feed(self.cards[:-3] + row(["A"], .22, .37))
+        self.assertEqual(observation.regions["landlord_cards"], [])
+        self.assertNotIn("opponent_left", observation.regions)
+        self.assertEqual(self.tracker.show_cards["left"], [])
 
-    def test_late_start_with_incomplete_hand_does_not_initialize(self) -> None:
-        """中途只剩八张手牌时保持等待，不能扣成初始手牌。"""
+    def test_arbitrary_nonempty_hand_can_locate(self) -> None:
+        """按 V3 要求，八张非空手牌也能定位，不再要求十七或二十张。"""
         analyzer = AutoLayoutAnalyzer()
         for _ in range(6):
             observation = analyzer.observe(self.cards[:8] + self.cards[-3:], (1000, 800), 3)
-        self.assertFalse(analyzer.ready)
-        self.assertIsNone(observation.initial)
+        self.assertTrue(analyzer.ready)
+        self.assertEqual(len(observation.regions["player_hand"]), 8)
 
     def test_twenty_cards_and_two_row_hand_can_calibrate(self) -> None:
         """地主二十张手牌，以及初始手牌本身换行的情况可校准。"""

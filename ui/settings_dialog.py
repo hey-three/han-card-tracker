@@ -361,11 +361,11 @@ class SettingsDialog(QDialog):
 
         self.combo_reset_time = self._add_combo_row(
             advanced_layout,
-            "无牌结束时长：",
+            "底牌消失结束时长：",
             "ResetTimeCombo",
             ["1.0秒", "1.5秒", "2.0秒", "2.5秒", "3.0秒", "3.5秒", "4.0秒", "4.5秒", "5.0秒"],
             self._on_reset_time_changed,
-            tooltip="全图持续无牌达到此时长，且连续至少 max(3, 帧长度) 帧，才结束本局；保留旧显示，等新完整手牌稳定后刷新。截图失败和暂停不计入。",
+            tooltip="底牌区持续无牌达到此时长且至少 max(3, 帧长度) 帧才结束；底牌消失期间暂停记录，保留旧显示至下次底牌出现开局。截图失败和暂停不计入。",
         )
 
         self.combo_frame_length = self._add_combo_row(
@@ -388,11 +388,11 @@ class SettingsDialog(QDialog):
 
         self.combo_show_current_screenshot = self._add_combo_row(
             advanced_layout,
-            "实时显示截图：",
+            "实时显示 YOLO 输入：",
             "ShowCurrentScreenshotCombo",
             ["否", "是"],
             self._on_show_current_screenshot_changed,
-            tooltip="开启后在独立窗口实时显示当前捕获的游戏画面",
+            tooltip="显示本轮实际传给 YOLO 的原图或拼图；补查回退时显示最后使用的原图，不叠加原图牌区框。",
         )
 
         self.combo_show_timing = self._add_combo_row(
@@ -404,9 +404,9 @@ class SettingsDialog(QDialog):
             tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
-        self.label_inference_route = QLabel("识别路线由布局决定：自动布局使用整图，手动布局使用五区保护拼图。")
+        self.label_inference_route = QLabel("识别路线由布局决定：自动布局使用整图；手动布局未扣手牌时拼底牌与手牌，扣牌后拼三家出牌与底牌。")
         self.label_inference_route.setWordWrap(True)
-        self.label_inference_route.setToolTip("五区完整保留；拼图为空、切边不完整或结果冲突时复查同一原图。静态模型仍使用原导出输入尺寸。")
+        self.label_inference_route.setToolTip("按实测单牌尺寸缩放为768×480，底牌稍大。当前阶段选区完整保留；底牌缺失、切边不完整或结果冲突时复查原图。静态模型使用原导出尺寸。")
         advanced_layout.addWidget(self.label_inference_route)
         advanced_layout.addStretch()
 

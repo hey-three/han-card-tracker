@@ -1,0 +1,532 @@
+{
+  "opening-768x480": {
+    "regions": [
+      "landlord_cards",
+      "player_hand"
+    ],
+    "scales": [
+      1.6521095806618658,
+      0.703957984625099
+    ],
+    "metrics": {
+      "source_coverage": 0.19751999349049146,
+      "source_with_overlap": 0.24587634258613475,
+      "padding_fraction": 0.22694227430555558,
+      "tile_count": 5.0,
+      "canvas_width": 768.0,
+      "canvas_height": 480.0,
+      "source_scale": 0.9625
+    },
+    "tiles": [
+      {
+        "source": [
+          290,
+          553,
+          694,
+          713
+        ],
+        "destination": [
+          4,
+          4,
+          393,
+          158
+        ]
+      },
+      {
+        "source": [
+          590,
+          553,
+          994,
+          713
+        ],
+        "destination": [
+          4,
+          162,
+          393,
+          316
+        ]
+      },
+      {
+        "source": [
+          42,
+          553,
+          394,
+          713
+        ],
+        "destination": [
+          4,
+          320,
+          343,
+          474
+        ]
+      },
+      {
+        "source": [
+          890,
+          553,
+          1242,
+          713
+        ],
+        "destination": [
+          347,
+          320,
+          686,
+          474
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          397,
+          4,
+          729,
+          187
+        ]
+      }
+    ]
+  },
+  "opening-608x608": {
+    "regions": [
+      "landlord_cards",
+      "player_hand"
+    ],
+    "scales": [
+      1.6521095806618658,
+      0.703957984625099
+    ],
+    "metrics": {
+      "source_coverage": 0.19751999349049146,
+      "source_with_overlap": 0.21363877652237256,
+      "padding_fraction": 0.36902159799168976,
+      "tile_count": 3.0,
+      "canvas_width": 608.0,
+      "canvas_height": 608.0,
+      "source_scale": 0.9202453987730062
+    },
+    "tiles": [
+      {
+        "source": [
+          42,
+          553,
+          694,
+          713
+        ],
+        "destination": [
+          4,
+          4,
+          604,
+          152
+        ]
+      },
+      {
+        "source": [
+          590,
+          553,
+          1242,
+          713
+        ],
+        "destination": [
+          4,
+          156,
+          604,
+          304
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          4,
+          308,
+          322,
+          483
+        ]
+      }
+    ]
+  },
+  "opening-640x640": {
+    "regions": [
+      "landlord_cards",
+      "player_hand"
+    ],
+    "scales": [
+      1.6521095806618658,
+      0.703957984625099
+    ],
+    "metrics": {
+      "source_coverage": 0.19751999349049146,
+      "source_with_overlap": 0.21363877652237256,
+      "padding_fraction": 0.36728759765624996,
+      "tile_count": 3.0,
+      "canvas_width": 640.0,
+      "canvas_height": 640.0,
+      "source_scale": 0.9693251533742331
+    },
+    "tiles": [
+      {
+        "source": [
+          42,
+          553,
+          694,
+          713
+        ],
+        "destination": [
+          4,
+          4,
+          636,
+          160
+        ]
+      },
+      {
+        "source": [
+          590,
+          553,
+          1242,
+          713
+        ],
+        "destination": [
+          4,
+          164,
+          636,
+          320
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          4,
+          324,
+          339,
+          509
+        ]
+      }
+    ]
+  },
+  "recording-768x480": {
+    "regions": [
+      "landlord_cards",
+      "opponent_left",
+      "opponent_right",
+      "player_played"
+    ],
+    "scales": [
+      1.6521095806618658,
+      1.0002116330117434,
+      1.002384954489233,
+      0.8360449867971805
+    ],
+    "metrics": {
+      "source_coverage": 0.2515237287084825,
+      "source_with_overlap": 0.3102323274592768,
+      "padding_fraction": 0.19844021267361112,
+      "tile_count": 7.0,
+      "canvas_width": 768.0,
+      "canvas_height": 480.0,
+      "source_scale": 0.8409090909090909
+    },
+    "tiles": [
+      {
+        "source": [
+          581,
+          248,
+          1037,
+          423
+        ],
+        "destination": [
+          4,
+          4,
+          464,
+          181
+        ]
+      },
+      {
+        "source": [
+          247,
+          248,
+          594,
+          423
+        ],
+        "destination": [
+          4,
+          185,
+          353,
+          361
+        ]
+      },
+      {
+        "source": [
+          290,
+          393,
+          694,
+          504
+        ],
+        "destination": [
+          4,
+          365,
+          344,
+          459
+        ]
+      },
+      {
+        "source": [
+          590,
+          393,
+          994,
+          504
+        ],
+        "destination": [
+          348,
+          365,
+          688,
+          459
+        ]
+      },
+      {
+        "source": [
+          42,
+          393,
+          394,
+          504
+        ],
+        "destination": [
+          468,
+          4,
+          764,
+          98
+        ]
+      },
+      {
+        "source": [
+          890,
+          393,
+          1242,
+          504
+        ],
+        "destination": [
+          468,
+          102,
+          764,
+          196
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          357,
+          200,
+          602,
+          335
+        ]
+      }
+    ]
+  },
+  "recording-608x608": {
+    "regions": [
+      "landlord_cards",
+      "opponent_left",
+      "opponent_right",
+      "player_played"
+    ],
+    "scales": [
+      1.6521095806618658,
+      1.0002116330117434,
+      1.002384954489233,
+      0.8360449867971805
+    ],
+    "metrics": {
+      "source_coverage": 0.2515237287084825,
+      "source_with_overlap": 0.2878675160025418,
+      "padding_fraction": 0.2415382617728532,
+      "tile_count": 5.0,
+      "canvas_width": 608.0,
+      "canvas_height": 608.0,
+      "source_scale": 0.843558282208589
+    },
+    "tiles": [
+      {
+        "source": [
+          42,
+          393,
+          694,
+          504
+        ],
+        "destination": [
+          4,
+          4,
+          554,
+          98
+        ]
+      },
+      {
+        "source": [
+          590,
+          393,
+          1242,
+          504
+        ],
+        "destination": [
+          4,
+          102,
+          554,
+          196
+        ]
+      },
+      {
+        "source": [
+          581,
+          248,
+          1037,
+          423
+        ],
+        "destination": [
+          4,
+          200,
+          466,
+          377
+        ]
+      },
+      {
+        "source": [
+          247,
+          248,
+          594,
+          423
+        ],
+        "destination": [
+          4,
+          381,
+          355,
+          558
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          359,
+          381,
+          604,
+          516
+        ]
+      }
+    ]
+  },
+  "recording-640x640": {
+    "regions": [
+      "landlord_cards",
+      "opponent_left",
+      "opponent_right",
+      "player_played"
+    ],
+    "scales": [
+      1.6521095806618658,
+      1.0002116330117434,
+      1.002384954489233,
+      0.8360449867971805
+    ],
+    "metrics": {
+      "source_coverage": 0.2515237287084825,
+      "source_with_overlap": 0.2878675160025418,
+      "padding_fraction": 0.23886230468750003,
+      "tile_count": 5.0,
+      "canvas_width": 640.0,
+      "canvas_height": 640.0,
+      "source_scale": 0.8895705521472392
+    },
+    "tiles": [
+      {
+        "source": [
+          42,
+          393,
+          694,
+          504
+        ],
+        "destination": [
+          4,
+          4,
+          584,
+          103
+        ]
+      },
+      {
+        "source": [
+          590,
+          393,
+          1242,
+          504
+        ],
+        "destination": [
+          4,
+          107,
+          584,
+          206
+        ]
+      },
+      {
+        "source": [
+          581,
+          248,
+          1037,
+          423
+        ],
+        "destination": [
+          4,
+          210,
+          490,
+          397
+        ]
+      },
+      {
+        "source": [
+          247,
+          248,
+          594,
+          423
+        ],
+        "destination": [
+          4,
+          401,
+          373,
+          588
+        ]
+      },
+      {
+        "source": [
+          440,
+          55,
+          587,
+          136
+        ],
+        "destination": [
+          377,
+          401,
+          636,
+          544
+        ]
+      }
+    ]
+  }
+}

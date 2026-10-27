@@ -1,11 +1,16 @@
 """真实 Qt 控件与推理服务之间的交互回归。"""
 
 import os
+from copy import deepcopy
+from pathlib import Path
+import shutil
 import unittest
 from unittest.mock import patch
+from uuid import uuid4
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
+from PySide6.QtCore import QCoreApplication, QEvent
 from PySide6.QtWidgets import QApplication
 
 from config import settings
@@ -24,13 +29,31 @@ class UITests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self) -> None:
-        """创建真实界面，并拦截自动启动和弹窗。"""
+        """隔离个人配置并创建真实界面，清理时主动销毁 Qt 对象与子定时器。"""
+        directory = Path(__file__).parent / '.tmp' / uuid4().hex
+        directory.mkdir(parents=True)
+        self.addCleanup(shutil.rmtree, directory)
+        config_path = directory / 'config.yaml'
+        config_path.write_text('custom_key: retained\n', encoding='utf-8')
+        self.addCleanup(settings.apply_runtime_settings, settings.runtime_snapshot())
+        self.addCleanup(setattr, settings, 'config', deepcopy(settings.config))
+        self.enterContext(patch.object(settings, 'CONFIG_PATH', str(config_path)))
         with patch.object(InferenceWorker, "start"):
             self.window = CardUI()
         self.warning = patch("ui.main_window.QMessageBox.warning")
         self.warning.start()
         self.addCleanup(self.warning.stop)
-        self.addCleanup(self.window.close)
+        self.addCleanup(self.dispose_window, self.window)
+
+    def dispose_window(self, window: CardUI) -> None:
+        """关闭并销毁测试窗口，避免待处理 Qt 事件进入下个测试。
+
+        Args:
+            window: 当前测试创建的主窗口。
+        """
+        window.close()
+        window.deleteLater()
+        QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
     def test_rejected_detection_does_not_latch_busy(self) -> None:
         """服务拒绝请求时 UI 不会永远 busy。"""
@@ -65,7 +88,8 @@ class UITests(unittest.TestCase):
         """路线随布局选择，不再展示可覆盖布局语义的开关。"""
         dialog = SettingsDialog(self.window)
         self.assertIn("自动布局使用整图", dialog.label_inference_route.text())
-        self.assertIn("手动布局使用五区保护拼图", dialog.label_inference_route.text())
+        self.assertIn("手动布局未扣手牌时拼底牌与手牌", dialog.label_inference_route.text())
+        self.assertIn("扣牌后拼三家出牌与底牌", dialog.label_inference_route.text())
         self.assertFalse(hasattr(dialog, "combo_packed_inference"))
         dialog.close()
 
@@ -91,7 +115,7 @@ class UITests(unittest.TestCase):
         """构造时同步启动失败也能显示恢复按钮。"""
         with patch.object(InferenceWorker, "start", autospec=True, side_effect=lambda worker: worker.fail("startup")):
             window = CardUI()
-        self.addCleanup(window.close)
+        self.addCleanup(self.dispose_window, window)
         self.assertFalse(window.btn_retry.isHidden())
         self.assertIn("startup", window.statusBar().currentMessage())
 

@@ -50,7 +50,7 @@
 - `switch_layout` 携带 `{"name": 布局名, "config": 完整布局}`，含窗口标题和全部区域坐标；不能只传名称。
 - `switch_model` / `switch_device` / `switch_game` 携带名称；`update_settings` 携带受白名单限制的属性字典。
 - 回执为 `Response`：`ready` 为启动成功，`fatal` 为启动失败，`ok` / `error` 为指定请求的执行结果。
-- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；实时截图预览启用时还包含 `screenshot_jpeg` 与自动布局确认的 `screenshot_regions`；控制命令也必须回执。
+- 检测结果字段为 `remain_cards`、`zone_cards` 和 `yolo_ms`；YOLO输入预览启用时还包含 `screenshot_jpeg`，`screenshot_regions` 当前为空且保留协议兼容；控制命令也必须回执。
 - `finished` 仅用于检测结束或进程故障，不用设置命令的回执解锁其他检测请求。
 - 回传的牌数和出牌记录在入队前复制，避免队列延迟序列化时被后续命令修改。
 
@@ -59,7 +59,7 @@
 `GameController.detect()` 执行以下五步：
 
 1. **截图**：`ScreenCapture.capture_window()` → `PIL.Image | None`
-2. **YOLO 纯视觉推理**：自动布局始终整图 `YoloInferencer.detect(img)`；手动布局由 `PackedPipeline` 将全部五区交给 `make_square_plan()`，恢复原图坐标，不确定或空结果复查同一原图 → `(raw_result, yolo_ms)`
+2. **YOLO 纯视觉推理**：自动布局始终整图 `YoloInferencer.detect(img)`；手动布局由 `PackedPipeline` 按状态选二区或四区，交给实测权重 `make_rect_plan()`，恢复原图坐标，不确定或空结果复查同一原图 → `(raw_result, yolo_ms)`
 3. **几何分区 + 二维排序**：`LayoutAnalyzer.parse_and_sort(raw_result, img.size)` → `dict[str, list[dict]]`
 4. **业务映射**：`Tracker.translate_boxes_to_cards(region_boxes)` → `dict[str, list[str]]`
 5. **状态机更新**：`Tracker.get_cards_number(frame_data, yolo_ms)` → `(remain_cards, show_cards, yolo_ms)`
@@ -72,9 +72,9 @@
 - 自动布局 `mode: auto` 时，第 3 步改为 `core/auto_layout.py` 的 `read_yolo_boxes()` + `AutoLayoutAnalyzer.observe()`；只需窗口标题和空 `layout: {}`，不使用手工矩形。旧配置缺省 `mode: manual`，完全保留手动方式。
 - 自动模式按行组成牌组、合并相邻行，再对完整牌组确定归属；左右家使用对应边缘、本家使用中心和第一行顶边锚点，支持单张、长牌组和两行出牌。多重集排序避免同牌换行重复扣减。
 - 短末行不能因初始位置评分落在本家就被拆走：相邻行同侧、同列对齐且牌框尺度一致时，先合并再按完整牌组归属；近期手牌减少或此前单独稳定的本家出牌可阻止误合并。实测框回归位于 `tests/fixtures/right_wrapped_play.json` 与 `tests/test_wrapped_ownership.py`。
-- 校准需要尚无出牌、合法完整的 17/20 张手牌连续 `max(3, FRAME_LENGTH)` 帧稳定；底牌可缺失、只检出一两张或闪烁。上方中央一至三张小牌组仅作为可选底牌候选排除，不参与手牌连续稳定签名；其他牌组阻止初始化。`DoudizhuTracker.initialize_from_layout()` 只发布一次初始扣牌。当前支持本家在下、两家在左右的常见界面，不宣称覆盖所有软件；没有按游戏名查表的区域模板。
+- 自动模式先发布上方中央底牌存在性，任意一张即可进入 HAS_STARTED；不等待完整 17/20 张。手牌任意非空、合法且按 FRAME_LENGTH 稳定后扣一次。几何独立从非空手牌学习，未定位的出牌区保持未知；初始快照 initial 不再由 Controller 直接初始化扣牌。上方底牌判定排除画面中央翻牌；仅支持常见本家在下、两家在左右，不承诺中途恢复历史。
 - `LayoutObservation.regions` 缺失键代表未知，有键空列表才表示空区。自动模式传入 `known_regions`，未知区域清确认缓存但保留出牌/空帧历史；不得把未知补成空列表。校准后底牌隐藏可继续跟踪。
-- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。显式重置、模型/布局切换清除参照；长宽比变化超过 5% 只重新校准几何，保留当前牌局历史，不据此判定换局。底牌牌面变化不触发换局。两种布局均不用普通超时清屏，只按连续有效全图无牌的帧数和时长结束。详见 `docs/自动布局设计说明.md`。
+- 布局状态通过 `Response.layout_status` → `InferenceWorker.layout_status_changed` 显示在状态栏。显式重置、模型/布局切换清除参照；长宽比变化超过 5% 只重新校准几何，保留当前牌局历史，不据此判定换局。底牌牌面变化不触发换局。两种布局均不用普通超时清屏，只按连续有效底牌区无牌的帧数和时长结束。详见 `docs/自动布局设计说明.md`。
 
 ### 游戏边界与现有分层
 
@@ -84,36 +84,20 @@
 - 工厂函数 `create_tracker()` 根据 `TRACKER_REGISTRY` 动态创建
 - 注册表只启用 `doudizhu`；当前 UI 不支持切换到其他游戏，不能仅添加 YAML 就视为完成新游戏支持。
 
-## 3) 状态机约定（核心业务规则）
+## 3) V3 三阶段业务与本次用户修正
 
-### 当前斗地主生命周期
+`WAIT_BEGIN → HAS_STARTED → STARTED_RECORD_CARD → WAIT_BEGIN（保留旧显示）`。
 
-`WAIT_BEGIN → STARTED_RECORD_CARD → WAIT_BEGIN（保留显示）`。两种布局均需尚无出牌、合法完整的 17/20 张手牌连续 `max(3, FRAME_LENGTH)` 帧确认；底牌非必要。自动模式从布局稳定快照初始化，手动模式由 Tracker 的独立手牌候选确认。`initialize_from_layout()` 只扣一次初始手牌。
+已核对原始 `origin/han_card_tracker_v3.0`（b1e4bd9）：底牌稳定后开局，手牌稳定后扣一次，无 17/20 张门槛。本次明确放宽为：底牌区任意一张出现的当前帧立即进入 HAS_STARTED；非空合法手牌按 FRAME_LENGTH 连续一致后首次扣除。不限制张数，也不再对后来 17→20 自动补扣。修复 V3 空手牌可稳定通过而漏扣的缺陷。
 
-基类 `BaseCardTracker` 仍保留 `WAIT_BEGIN → HAS_STARTED → STARTED_RECORD_CARD` 和抽象回调兼容机制；当前斗地主覆盖 `get_cards_number()`，不经过旧手动底牌门禁或超时 `reset()`。直接调用基类机制不是当前正式业务入口。
-
-### 已知区域与帧有效性
-
-- 两种布局均显式提供 `known_regions`；手动有效结果为配置的五区，无效截图/结果为空集合；自动缺失区域仍表示未知。缺失键不能补成稳定空区。
-- `_get_validity_region()` 为 `player_hand`，不再依赖底牌。基类门禁只是兼容入口；斗地主正式链路仅推进已知区域。
-- `GameController` 每张截图只通知一次 `observe_frame_presence()`：有效非空结果表示有牌；截图/结果缺失或 boxes 缺失表示未知。手动空拼图必须先整图复查，才能作为全图无牌。
-- 未知帧、暂停恢复和设置关闭通过 `interrupt_observation()` 打断未确认缓存和无牌连续性，保留历史及已学几何。
-
-### 连续确认与扣牌
-
-- 出牌确认由 `FRAME_LENGTH` 决定：缓存保留最新 N 帧且完全一致才记录；阈值热改继续沿用原处理。
-- 本家初始手牌只扣一次；本家出牌只记历史，对手确认出牌才扣牌。`remain_cards` 排除本家初始手牌和已确认的对手出牌。
-- `has_found_empty` 处理稳定空区过渡，允许连续两手相同牌；全图未知或全图无牌不伪造各家的空区过渡。
-- 发牌阶段未观察任何出牌且无历史，17→20 完整包含原十七张时只补扣新增三张；已有出牌不得改写开局。
-
-### 唯一自动结束条件与显示
-
-- 仅当连续至少 `max(3, FRAME_LENGTH)` 个成功检测结果全图无任何牌，且从序列首帧起持续至少 `RESET_TIME` 秒才结束。某家累计出完、底牌变化和普通超时均不结束；`remaining_by_player` 及其地主分配推算已移除。
-- `RESET_TIME` 是高级设置“无牌结束时长”，当前个人配置为 3 秒；代码缺省 3.5 秒。拼图补查和原图是同一张截图，不累计成两帧；有牌或未知帧中断累计，暂停时间不计入。
-- `begin_waiting()` 清确认缓存但保留 `remain_cards/show_cards`；自动模式另清几何。新完整合法手牌稳定后才一次性替换显示。已确认全图无牌后允许下一局恰好同手牌。
-- 用户显式重置仍立即清空。宽高比变化仅重新校准自动几何，不能清历史或当成换局。若画面仍有可检出的底牌等目标，此规则不会凭牌数猜测结束。
-- 基类抽象方法仍为 `_get_validity_region / should_start_game / should_start_recording / on_game_started / on_start_recording / process_played_cards`。
-- 统计公式与验证边界见 [`docs/斗地主记牌设计说明.md`](docs/斗地主记牌设计说明.md)。
+- 正式流程由 DoudizhuTracker.get_cards_number 调用 BaseCardTracker.run_game，恢复三阶段；Controller 不再凭自动布局 initial 直接扣牌。initialize_from_layout 只保留已稳定快照的兼容入口，不在正式逐帧链路使用。
+- 有底牌才推进帧缓存、确认和记录出牌；底牌缺失立即暂停并清未确认缓存，其他区有牌也不能继续扣牌。原图、区域或 boxes 未知是未知帧，不能当作底牌消失。
+- 底牌区连续至少 max(3, FRAME_LENGTH) 帧已知为空且持续 RESET_TIME 秒才内部结束，包括 HAS_STARTED 尚等手牌阶段。暂停恢复/未知帧打断累计；拼图+原图补查同一截图只计一次。当前个人设置 3 秒，代码缺省 3.5 秒。
+- begin_waiting 保留 remain_cards/show_cards；下一次底牌出现时 on_game_started 刷新成新局 54 张并清历史，稳定非空手牌后再扣实际识别张数。显式重置仍立即清空。
+- 本家初始手牌仅扣一次，本家出牌仅记历史，上下家稳定出牌才扣剩余；has_found_empty 保留相同牌连续两手的空区过渡。按玩家零张和全图无牌都不再作为结束判断。
+- 两种布局均显式提供 known_regions。手动只传当前阶段选中的二区/四区，自动缺失键仍为未知；不能把跳过的手牌/出牌补为空区。
+- V3 放宽数量不等于允许伪造完整手牌：稳定漏检可能使初始扣牌偏少；不能暗中恢复用户取消的 17/20 条件。
+- 详细 V3 对照、实际测量和验证见 [docs/V4.3.1设计与验证.md](docs/V4.3.1设计与验证.md)。
 
 ## 4) 配置与持久化模式
 
@@ -131,7 +115,7 @@
 - `config/store.py` 统一使用同目录唯一临时文件 + `os.replace` 原子保存；保存成功后才更新主进程内存。
 - 已有 YAML 损坏或读取失败时必须报错，不得以空字典覆盖；保存失败向调用者传播，编辑器不能误报成功。
 - `SettingsController` 等待后端成功回执后保存设置并刷新 UI；后端切换失败保留旧配置和组件。后端已成功但保存失败时停止检测，提示用户检查后重启。
-- 实时预览属于主界面偏好：先保存 `show_current_screenshot` 并更新窗口，再同步子进程的截图传输开关；因此关闭预览后，即使进程故障或立即退出，也不会丢失关闭选择。
+- YOLO 输入预览属于主界面偏好：先保存 `show_current_screenshot` 并更新窗口，再同步子进程的截图传输开关；因此关闭预览后，即使进程故障或立即退出，也不会丢失关闭选择。
 - 服务故障时允许在设置界面修正持久化配置，点击“重启识别”后由新进程使用最新快照。
 - 可视化编辑先保存布局内容（不切换 current_layout）；主窗口在布局切换确认后保存当前布局名。
 - 删除当前布局时先等待替代布局切换成功，再删除持久化记录；切换失败保留原布局。
@@ -216,8 +200,8 @@ python main.py
 - 单局最多 `1000` 张；达到上限后该局后续帧不保存，并且仅打印一次提示
 - 全局只保留最近 `3` 局；新局创建后会清理更旧目录
 - **保存图片与调试模式分开控制**：`SAVE_DEBUG_IMAGES` 控制是否保存游戏图片，`DEBUG_MODE` 仅控制终端日志输出
-- `SHOW_CURRENT_SCREENSHOT` 独立控制实时截图预览；开启时子进程压缩当前截图，并将自动布局当前确认的各牌组整体边界随检测回执发送，主进程叠加绘制区域框与名称；校准或归属不确定的区域不画框，关闭时不传截图数据
-- “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示截图”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
+- SHOW_CURRENT_SCREENSHOT / show_current_screenshot 保留键名兼容，现为“实时显示 YOLO 输入”。Controller 在路线确定后编码最后一次模型调用的 PIL 原图或拼图；回退显示原图，关闭不编码/传图，无效帧不重发旧图。screenshot_regions 当前为空，不把原图坐标框叠在拼图上。预览不等于内部 NCHW 张量；debug 成对原图/原坐标标注保存不变。
+- “高级设置”分别提供“输出调试日志”“保存游戏截图”“实时显示 YOLO 输入”，三者互不依赖。实时预览初始宽度与主窗口一致，等比例缩放图片；点叉或 Esc 会保存关闭偏好并同步设置项，不因后续截图重新弹出。退出主程序只隐藏预览，不修改该偏好。
 - `ImageSaver` 由 `GameController` 统一管理，传入 `YoloInferencer` 和 `Tracker` 子类
 - V4.3 的模型 detect 不自行保存中间拼图；`GameController` 在最终结果还原后调用 `YoloInferencer.save_frame()`，仍由 `ImageSaver` 保存同尺寸原图/标注图。
 - 运行时热切换：`GameController.update_settings()` 中通过 `set_enabled()` 切换保存开关，不需要重建 `ImageSaver` 实例
@@ -242,18 +226,21 @@ python main.py
   - CPU（`device_choice == "cpu"`）：ONNX Runtime > PyTorch CPU
   - ONNX / TensorRT 引擎在首次使用时自动从 `best.pt` 导出
 - 关键三方：`ultralytics`、`torch`、`PySide6`、`opencv-python`、`PyYAML`、`pillow`
-- 回归测试位于 `tests/`，运行 `python -B -m unittest discover -s tests -v`。配置测试仅使用 `tests/.tmp/` 下的独立临时文件；Qt 测试使用 offscreen 平台。
+- 回归测试位于 `tests/`，运行 `python -B -m unittest discover -s tests -v`。配置测试仅使用 `tests/.tmp/` 下的独立临时文件；Qt 测试使用 offscreen 平台；UITests 隔离临时配置，关闭后处理 DeferredDelete，主动销毁窗口和子定时器，防止遗留事件进入后续窗口测试。
 - 自动测试覆盖斗地主扣牌、帧阈值、配置原子保存、布局同步、切换回退、请求隔离、故障恢复及真实 spawn 启动错误回传，不加载真实 YOLO 模型。
 - 实际游戏截图、CUDA/ONNX/TensorRT 推理及打包版本仍需在具备模型依赖的环境中回归。
 
-## 10) 性能优化与当前拼图契约
+## 10) V4.3.1 当前拼图、模型与训练契约
 
-- 先在本 Windows 工程验证算法，再移植 Android。当前用户要求：**自动布局全程整图；手动五区使用固定方形拼图**。不再对自动布局桌面带拼图。设计、示意及训练约定见 [`docs/模型训练与拼图约定.md`](docs/模型训练与拼图约定.md)，当前发布行为见 [`docs/V4.3更新说明.md`](docs/V4.3更新说明.md)。
-- `core/square_packing.py::make_square_plan()` 独立实现一至六块长条候选、最多 64 套切分筛选、四种排序、统一缩放二分和 MaxRects 装箱。五区全部覆盖，不旋转、不逐块拉伸；四周基础保护为短边 1%，下沿另按区域高 25% / 原图高 3.5% 中较小值补足。切口单侧保护默认原图宽 4%，受核心段半宽限制，新增切口副本面积不超过原始裁片总面积的 30%。
-- 固定 `PACKED_CANVAS_SIZE=(640,640)`，外边和图块间隔 4 目标像素，灰色 RGB(114,114,114)。按窗口尺寸、完整框及保护参数缓存规划并复用画布，逐帧重新截图和推理。不缓存识别结果。
-- `core/frame_packing.py` 保留 Tile/Detection/PackingPlan 几何和恢复；旧 `make_plan()` 仅用于历史对照，不进入正式流水线。`Tile.project/unproject` 使用整数绘制尺寸恢复原图坐标；跨块按原位置/类别去重，不按牌点去重。跨边残片先截到唯一归属块，只有其自身至少 85% 被完整副本覆盖才丢弃；不能用较小框作分母丢掉大残片。完整框冲突、无唯一归属、无完整副本和空拼图复查同一原图。
-- 手动原框原先只约束中心点，现加入外围和下沿上下文；模型识别质量仍需验证，不能宣称几何覆盖等于零漏牌。动态/PyTorch 拼图使用 640，静态 ONNX/TensorRT 保留导出尺寸；回退恢复原输入，不自动训练、重导出或换权重。
-- `packed_inference / PACKED_INFERENCE` 保留配置读写及旧命令兼容，不再选择路线。高级设置移除独立开关，展示布局决定路线的说明。阶段指标另含规划耗时、源并集/含重叠面积、留白及块数，可在设置按钮提示查看。
-- `python -B -m utils.preview_packing` 用正式规划和渲染器生成合成五区图及 `docs/assets/packing-metrics.json`。1284×804 两套手动框示例：保护后源覆盖 48.66% / 43.75%，含重叠裁片 59.48% / 53.96%，画布留白 16.18% / 15.52%，均为 11 裁片。数字只对应这些框和分辨率，不等于速度/精度。
-- 旧自动桌面带示意只裁掉 13.93% 原图且灰边 35.38% 的审计作为历史保留，旧路线已退出运行，不能继续描述为当前自动模式。建议候选 YOLO11n / 640 方形，尚未训练，不承诺 200 ms。
-- 本次用户此前已授权提交、推送 GitHub `V4.3` 并合并 `main`，要求详细说明；个人 `config/config.yaml` 改动、私有图片与临时模型输出不提交。相关讨论持续维护于 [`docs/Windows性能优化讨论记录.md`](docs/Windows性能优化讨论记录.md)。
+- 自动布局全程整图。手动模式 WAIT_BEGIN/HAS_STARTED 只取 landlord_cards + player_hand；STARTED_RECORD_CARD 后取 landlord_cards + opponent_left + opponent_right + player_played，不再检测手牌。不是看到底牌就先删手牌，必须等首次扣牌完成。
+- `config/packing_profile.py` 是当前唯一尺寸/尺度入口：PACKED_INPUT_SIZE=(768,480)，顺序宽高；模型 imgsz=(480,768)。普通单牌中位高与系数来自 tmp 三张 1284×804 图的真实 YOLO 框，不按用户区域框大小缩放。系数：底牌1.652110，上家1.000212，下家1.002385，本家出牌0.836045，手牌0.703958。底牌目标普通牌角高度比参考出牌高12%；大小王长竖框单列，不能声称所有检测框都完全等高。
+- `core/square_packing.make_rect_plan` 按实测权重×共同倍率、保护切分、最多64套候选/四种排序和 MaxRects 装箱；每片内部等比，不旋转。完整覆盖所选区域；外边/间隔4像素，填114灰。源保护为短边1%，下沿额外按区域高25%/原图高3.5%的较小值保留。切口单侧4%原图宽受核心段半宽限制，新增副本源面积不超过30%。
+- 旧 make_square_plan / PACKED_CANVAS_SIZE=(640,640) 只保留历史/对照和兼容入口，正式 Controller 显式传矩形尺寸与实测权重。相同阶段缓存规划并复用画布，每帧重新识别。
+- Tile 按每片实际整数绘制尺寸还原，不能再假设所有区域共享同一个倍率。跨块按原位置/类别去重；切口残片本身至少85%被完整副本覆盖才可舍弃，完整副本优先。缺副本/冲突/歧义补查同一原图。
+- 手动拼图底牌区无可靠牌时，即使其他区有牌也复查当前原图，防止误结束；补查后的结果才交状态机。解析只使用当前区域键，跳过手牌框不能抢走出牌归属。
+- 动态/PT 整图和拼图都实际请求480×768，原图保比例。既有静态 ONNX/TensorRT 继续使用导出尺寸，本次不自动重导出或换权重。需要矩形算力收益应另导出相应尺寸，不能用预览尺寸冒充静态张量。
+- 旧 packed_inference / PACKED_INFERENCE 仅保留配置兼容，路线由布局决定。设置提示显示参与区数、裁片数、覆盖、灰边、模型调用和阶段耗时。
+- 实测两阶段矩形源并集19.75%/25.15%，含保护重复24.59%/31.02%，留白22.69%/19.84%；对应这三图的含控件手动框，不能推为通用速度。
+- `utils.measure_packing_scales` 可复测单牌统计；`utils.preview_staged_packing` 默认生成安全合成图，真实参考图衍生图只写 tests/.tmp。关键文档 [docs/V4.3.1设计与验证.md](docs/V4.3.1设计与验证.md) 保存模型哈希、公式、矩形/方形对照与训练注意事项。
+- 推荐先试宽高8:5、768×480的一个模型，混合原图/两阶段图，先按牌局划分再变换标注。普通训练 imgsz 为单整数，rect=True 的真实批次形状需核查；推理/导出才明确(H,W)。未训练或替换权重，不承诺200ms、手机或实战验收。
+- 用户授权三个任务完成后推送 GitHub 新分支 V4.3.1 并合并 main，详细记录变更。个人 config/config.yaml、tmp参考图、tests/.tmp 中间产物、既有权重不提交；README 训练仓库链接一并发布。

@@ -1,4 +1,4 @@
-"""实时截图预览窗口。"""
+"""YOLO 实际输入预览窗口，兼容旧区域标注接口。"""
 
 from collections.abc import Mapping
 
@@ -8,7 +8,7 @@ from PySide6.QtWidgets import QDialog, QLabel, QSizePolicy, QVBoxLayout, QWidget
 
 
 class ScreenshotPreviewLabel(QLabel):
-    """在当前截图上绘制自动布局区域框，并按窗口大小等比例显示。
+    """等比例呈现当前 YOLO 输入图，保留旧区域标注参数的兼容能力。
 
     Attributes:
         REGION_COLORS: 区域键到稳定标注颜色的映射。
@@ -29,7 +29,7 @@ class ScreenshotPreviewLabel(QLabel):
         self.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.setMinimumSize(320, 180)
         self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
-        self.setText("等待截图…")
+        self.setText("等待 YOLO 输入…")
 
     def set_image(
         self,
@@ -100,7 +100,7 @@ class ScreenshotPreviewLabel(QLabel):
 
 
 class ScreenshotPreviewDialog(QDialog):
-    """持续展示记牌器当前采集到的游戏窗口截图。"""
+    """持续展示本轮最后一次 YOLO 调用的原图或拼图输入。"""
 
     def __init__(self, parent: QWidget | None = None) -> None:
         """创建可调整大小的截图预览窗口。
@@ -109,7 +109,7 @@ class ScreenshotPreviewDialog(QDialog):
             parent: 可选的 Qt 父窗口。
         """
         super().__init__(parent)
-        self.setWindowTitle("当前截图预览")
+        self.setWindowTitle("YOLO 输入预览")
         width = parent.width() if parent is not None else 550
         self.resize(width, round(width * 9 / 16) + 22)
         self.image_label = ScreenshotPreviewLabel(self)
