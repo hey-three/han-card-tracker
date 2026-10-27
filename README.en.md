@@ -42,7 +42,7 @@ Weights are stored in `yolo/weights/<model-name>/best.pt`. Custom models must pr
 3. For a manual layout, choose packed or original inference in advanced settings. This preference applies to all manual layouts.
 4. Start before the round begins and inspect the actual YOLO input preview.
 
-Any detected bottom card opens a round. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays normally add history only; confirmed own plays can repair a provable undercount in the initial hand.
+Any detected bottom card opens a round. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays only add history and never trigger another deduction or retroactive initial-hand correction.
 
 Missing bottom cards pause updates. A consecutive-frame and elapsed-time threshold ends the round internally while preserving the displayed history until the next round starts. See the [counting contract](docs/斗地主记牌设计说明.md).
 

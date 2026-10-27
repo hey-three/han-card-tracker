@@ -152,9 +152,7 @@ class GameController:
             if before_light != after_light:
                 recorder.daily.write('state_changed', frame_id=recorder.frame_id, state=self.tracker.state,
                                      remaining=self.tracker.remain_cards, played=self.tracker.show_cards,
-                                     initial_hand=list(getattr(self.tracker, '_initial_hand', [])),
-                                     initial_hand_corrections=dict(getattr(self.tracker, 'initial_hand_corrections', {})),
-                                     counting_conflicts=dict(getattr(self.tracker, 'counting_conflicts', {})))
+                                     initial_hand=list(getattr(self.tracker, '_initial_hand', [])))
         if trace and not trace.cancelled:
             started = time.perf_counter()
             try:

@@ -159,7 +159,7 @@
       ]
     }
   ],
-  "expected_remaining": {
+  "reference_remaining_if_initial_hand_complete": {
     "3": 0,
     "4": 0,
     "5": 0,
@@ -176,7 +176,7 @@
     "小": 0,
     "大": 0
   },
-  "observed_remaining_before_fix": {
+  "observed_remaining": {
     "3": 0,
     "4": 0,
     "5": 0,
@@ -192,5 +192,6 @@
     "2": 0,
     "小": 0,
     "大": 0
-  }
+  },
+  "status": "首扣缺张原因待调查；完整手牌参照不用于根据本家出牌自动补扣。"
 }
