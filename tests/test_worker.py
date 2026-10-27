@@ -43,6 +43,19 @@ class WorkerTests(unittest.TestCase):
             self.worker._process.is_alive.return_value = False
         self.worker.stop()
 
+    def test_diagnostic_notification_never_completes_pending_detection(self) -> None:
+        """异步保存故障只报告状态，不能提前解锁识别请求。"""
+        diagnostics = Mock()
+        self.worker.diagnostic_status_changed.connect(diagnostics)
+        self.assertTrue(self.worker.request_detect())
+        command = self.worker._cmd_queue.get_nowait()
+        self.worker._result_queue.put(Response('diagnostic', diagnostic_status={'state': 'paused', 'reason': 'disk full'}))
+        self.worker._poll_result()
+        diagnostics.assert_called_once_with({'state': 'paused', 'reason': 'disk full'})
+        self.finished.assert_not_called()
+        self.assertIn(command.request_id, self.worker._pending)
+        self.assertEqual(self.worker.state, 'ready')
+
     def test_crash_stops_new_detection(self) -> None:
         """子进程崩溃后不会再发出永远等不到结果的请求。"""
         self.worker._process.is_alive.return_value = False

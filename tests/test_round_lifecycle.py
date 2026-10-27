@@ -109,6 +109,32 @@ class RoundLifecycleTests(unittest.TestCase):
             self.manual_plans[recording] = make_rect_plan(self.image.size, regions, scales, PACKED_INPUT_SIZE)
         self.feed(self.hand)
 
+    def test_complete_diagnostics_records_real_controller_state_and_request(self) -> None:
+        """真实流水线输出可序列化的前后状态、模型调用和请求标识。"""
+        import json
+        import tempfile
+        from pathlib import Path
+        from core.diagnostics import DiagnosticRecorder
+        directory = tempfile.TemporaryDirectory(dir='tests/.tmp')
+        self.addCleanup(directory.cleanup)
+        recorder = DiagnosticRecorder(directory.name)
+        self.addCleanup(recorder.close)
+        self.enterContext(patch.object(settings, 'FULL_DIAGNOSTICS', True))
+        self.enterContext(patch.object(settings, 'YOLO_MODEL_PATH', 'missing-model.pt'))
+        self.controller.reset()
+        self.controller.attach_diagnostics(recorder)
+        self.controller.request_context = (42, 4)
+        self.feed(self.hand, count=3)
+        self.assertTrue(recorder.stop(3))
+        self.assertEqual(recorder.status()['saved_frames'], 3)
+        frames = sorted(Path(directory.name).glob('diagnostics/session_*/frames/*/frame.json'))
+        data = [json.loads(p.read_text(encoding='utf-8')) for p in frames]
+        self.assertEqual(data[0]['context']['request_id'], 42)
+        self.assertEqual(data[0]['context']['generation'], 4)
+        self.assertTrue(all(p['before'] and p['after'] and p['calls'] and p['region_boxes'] for p in data))
+        self.assertTrue(any(r['code']=='initial_hand_deducted' for p in data for r in p['reasons']))
+        self.assertEqual(data[-1]['after']['remain_cards'], self.controller.tracker.remain_cards)
+
     def test_one_bottom_card_starts_immediately_before_hand_confirmation(self) -> None:
         """第一帧底牌进入已开局，手牌另等稳定，空手牌不能漏扣初始牌。"""
         for manual in (False, True):

@@ -5,8 +5,13 @@ from __future__ import annotations
 from collections.abc import Mapping
 from copy import deepcopy
 from io import BytesIO
+from pathlib import Path
 from typing import TYPE_CHECKING, cast
 import time
+import traceback
+
+from core.diagnostics import DiagnosticRecorder, DiagnosticFrame, boxes_json
+from core.diagnostic_state import tracker_snapshot, decision_reasons
 
 import config.settings as settings
 from config.packing_profile import PACKED_INPUT_SIZE, stage_selection
@@ -82,9 +87,102 @@ class GameController:
         self.last_screenshot_regions: dict[str, tuple[float, float, float, float]] = {}
         self.packed_pipeline = PackedPipeline()
         self.last_performance: dict[str, float] = {}
+        self.diagnostics: DiagnosticRecorder | None = None
+        self.request_context = (0, 0)
+        self._diagnostic_round = 0
+
+    def attach_diagnostics(self, recorder: DiagnosticRecorder) -> None:
+        """由进程入口注入诊断服务，独立控制器测试不向真实目录写日志。
+
+        Args:
+            recorder: 当前推理进程唯一的诊断服务。
+        """
+        self.diagnostics = recorder
+        recorder.set_enabled(settings.FULL_DIAGNOSTICS)
+
+    def _diagnostic_context(self) -> dict[str, object]:
+        """冻结当前选中布局和参数，不复制整个用户配置。
+
+        Returns:
+            请求标识、模型与布局的可序列化上下文。
+        """
+        model = getattr(self.yolo_inferencer, 'model', None)
+        artifact = getattr(model, 'model', None)
+        if not isinstance(artifact, (str, Path)):
+            artifact = getattr(model, 'ckpt_path', None)
+        return {'request_id': self.request_context[0], 'generation': self.request_context[1],
+                'game': self.game_name, 'layout_name': self.layout_name, 'layout': deepcopy(self.layout_config),
+                'weight_path': settings.YOLO_MODEL_PATH, 'model': settings.YOLO_MODEL_NAME,
+                'artifact_path': str(artifact) if isinstance(artifact, (str, Path)) else None,
+                'device': settings.DEVICE_CHOICE, 'frame_length': settings.FRAME_LENGTH,
+                'reset_time': settings.RESET_TIME, 'confidence': settings.YOLO_CONFIDENCE_THRESHOLD,
+                'iou': settings.YOLO_IOU_THRESHOLD, 'packed_inference': settings.PACKED_INFERENCE,
+                'class_mapping': dict(settings.YOLO_TO_CARD_MAPPING)}
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
+        """执行检测并只读记录证据；诊断错误不能改变记牌结果。
+
+        Returns:
+            剩余牌、历史与模型调用毫秒。
+        Raises:
+            Exception: 原始截图、模型或业务错误仍按原协议回传。
+        """
+        controller_started = time.perf_counter()
+        recorder = getattr(self, 'diagnostics', None)
+        trace = recorder.begin_frame({}) if recorder else None
+        started = time.perf_counter()
+        before_light = (self.tracker.state, dict(self.tracker.remain_cards),
+                        {key: len(value) for key, value in self.tracker.show_cards.items()}) if recorder else None
+        if trace:
+            try:
+                trace.payload['context'] = self._diagnostic_context()
+                trace.payload['before'] = tracker_snapshot(self.tracker)
+            except Exception as exc:
+                trace.owner.pause('state_snapshot_failed: '+str(exc), cast(int, trace.payload['frame_id']))
+                trace.cancel()
+        preparation_ms = (time.perf_counter()-started)*1000
+        try:
+            result = self._detect_frame(trace)
+        except Exception:
+            error = traceback.format_exc()
+            if recorder:
+                recorder.daily.write('detect_failed', frame_id=recorder.frame_id, error=error)
+            if trace:
+                try:
+                    trace.finish({'error': error, 'after': tracker_snapshot(self.tracker)})
+                except Exception as exc:
+                    trace.owner.pause('state_snapshot_failed: '+str(exc), cast(int, trace.payload['frame_id']))
+                    trace.cancel()
+            raise
+        if recorder:
+            after_light = (self.tracker.state, dict(self.tracker.remain_cards),
+                           {key: len(value) for key, value in self.tracker.show_cards.items()})
+            if before_light is not None and before_light[0] == settings.WAIT_BEGIN and after_light[0] != settings.WAIT_BEGIN:
+                self._diagnostic_round = getattr(self, '_diagnostic_round', 0)+1
+            if before_light != after_light:
+                recorder.daily.write('state_changed', frame_id=recorder.frame_id, state=self.tracker.state,
+                                     remaining=self.tracker.remain_cards, played=self.tracker.show_cards)
+        if trace and not trace.cancelled:
+            started = time.perf_counter()
+            try:
+                after = tracker_snapshot(self.tracker)
+                before = cast(dict[str, object], trace.payload['before'])
+                reasons = decision_reasons(before, after, cast(dict[str, list[str]], trace.payload['frame_data']),
+                                           cast(list[str], trace.payload['known_regions']),
+                                           bool(trace.payload['valid_frame']), settings.FRAME_LENGTH)
+                trace.finish({'after': after, 'round_id': getattr(self, '_diagnostic_round', 0), 'reasons': reasons, 'performance': dict(self.last_performance), 'error': ''})
+            except Exception as exc:
+                trace.owner.pause('state_snapshot_failed: '+str(exc), cast(int, trace.payload['frame_id']))
+                trace.cancel()
+            self.last_performance['diagnostic_snapshot_ms'] = preparation_ms+trace.capture_ms+(time.perf_counter()-started)*1000
+        self.last_performance["controller_ms"] = (time.perf_counter()-controller_started)*1000
+        return result
+
+    def _detect_frame(self, trace: DiagnosticFrame | None = None) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行一次完整检测：截图→识别→解析排版→映射→状态更新→格式化输出。
+
+        Args:
+            trace: 可选的诊断帧，关闭时为None，不复制诊断图片。
 
         Returns:
             tuple: 包含三个元素：
@@ -100,6 +198,8 @@ class GameController:
         started = time.perf_counter()
         img = self.screen_capture.capture_window()
         captured = time.perf_counter()
+        if trace:
+            trace.image("original", img)
         self.last_screenshot_jpeg = None
         self.last_screenshot_regions = {}
         raw_result: object | None
@@ -121,7 +221,7 @@ class GameController:
                                                        presence_region=bottom_region, scales=scales,
                                                        canvas_size=PACKED_INPUT_SIZE, region_names=names or None,
                                                        allow_full_fallback=self.tracker.state == settings.STARTED_RECORD_CARD,
-                                                       full_label='自动布局整图' if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else '手动布局原图')
+                                                       full_label='自动布局整图' if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else '手动布局原图', trace=trace)
         detected = time.perf_counter()
         preview_started = time.perf_counter()
         if settings.SHOW_CURRENT_SCREENSHOT and self.packed_pipeline.last_input is not None:
@@ -168,6 +268,16 @@ class GameController:
                                      layout_save_ms=(finished-detected)*1000-preview_ms, pipeline_ms=(finished-started)*1000)
         if settings.DEBUG_MODE:
             print(f"[V4.3] {self.packed_pipeline.route} {self.last_performance}")
+        if trace and not trace.cancelled:
+            try:
+                trace.payload.update(region_boxes=deepcopy(region_boxes), selected_regions=list(names),
+                                     source_size=list(img.size) if img else None,
+                                     frame_data=deepcopy(frame_data), known_regions=sorted(known_regions or []),
+                                     valid_frame=valid_frame, final_boxes=boxes_json(raw_result),
+                                     route=self.packed_pipeline.route, layout_status=self.layout_status)
+            except Exception as exc:
+                trace.owner.pause('result_snapshot_failed: '+str(exc), cast(int, trace.payload['frame_id']))
+                trace.cancel()
         return remain_cards, zone_cards, yolo_ms
 
     def reset(self) -> None:
@@ -325,11 +435,21 @@ class GameController:
         """
         allowed = {
             "DEBUG_MODE", "SAVE_DEBUG_IMAGES", "SHOW_CURRENT_SCREENSHOT", "RESET_TIME", "FRAME_LENGTH", "PACKED_INFERENCE",
-            "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD",
+            "YOLO_CONFIDENCE_THRESHOLD", "YOLO_IOU_THRESHOLD", "FULL_DIAGNOSTICS",
         }
         if not set(updates).issubset(allowed):
             raise ValueError("存在不能直接热更新的属性")
+        previous = settings.runtime_snapshot()
         settings.apply_runtime_settings(updates)
+        if 'FULL_DIAGNOSTICS' in updates:
+            try:
+                recorder = getattr(self, 'diagnostics', None)
+                if recorder is None:
+                    raise RuntimeError('诊断服务尚未初始化')
+                recorder.set_enabled(settings.FULL_DIAGNOSTICS)
+            except Exception:
+                settings.apply_runtime_settings(previous)
+                raise
         if "PACKED_INFERENCE" in updates:
             self.packed_pipeline = PackedPipeline()
         self.yolo_inferencer.yolo_conf = settings.YOLO_CONFIDENCE_THRESHOLD

@@ -50,7 +50,7 @@ Missing bottom cards pause updates. A consecutive-frame and elapsed-time thresho
 
 As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-tracker/releases) contains a historical `v2.3` archive. It is not a packaged build of the current V4.3.1 source. See [CHANGELOG](CHANGELOG.md).
 
-The latest functional verification recorded 162 unit tests and 42 model calls on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Full per-frame state capture and replay are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
+The diagnostic update passed 180 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) now records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
 
 ## Contributing and license
 

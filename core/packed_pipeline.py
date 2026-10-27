@@ -4,14 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from time import perf_counter
-from typing import Protocol, cast
+import traceback
+from typing import TYPE_CHECKING, Protocol, cast
 
 from PIL import Image
 
 from core.auto_layout import Box, YoloResult
-from core.frame_packing import Detection, PackingPlan
+from core.frame_packing import Detection, PackingPlan, read_detections
 from core.square_packing import make_square_plan, make_rect_plan, plan_metrics
 from core.packing_scales import AdaptivePackingScales
+
+if TYPE_CHECKING:
+    from core.diagnostics import DiagnosticFrame
 
 
 class Detector(Protocol):
@@ -50,30 +54,6 @@ class Detector(Protocol):
         ...
 
 
-def read_detections(raw: object | None) -> list[Detection]:
-    """读取模型画布坐标和置信度。
-
-    Args:
-        raw: 当前帧 YOLO 兼容结果，None 表示未取得结果。
-
-    Returns:
-        已校验检测；无结果时为空。
-    Raises:
-        ValueError: 模型框、类别及置信度数量不一致，或检测数值无效。
-    """
-    if raw is None:
-        return []
-    result = cast(YoloResult, raw)
-    if result.boxes is None:
-        return []
-    boxes = result.boxes.xyxy.cpu().tolist()
-    classes = result.boxes.cls.cpu().tolist()
-    confidence_tensor = getattr(result.boxes, "conf", None)
-    scores = confidence_tensor.cpu().tolist() if confidence_tensor is not None else [1.] * len(boxes)
-    if not len(boxes) == len(classes) == len(scores):
-        raise ValueError("检测输出长度不一致")
-    return [Detection(result.names[int(class_id)], cast(Box, tuple(box)), score)
-            for box, class_id, score in zip(boxes, classes, scores)]
 
 
 class PackedPipeline:
@@ -147,11 +127,56 @@ class PackedPipeline:
             self._canvas.paste(crop, (tile.x, tile.y))
         return self._canvas
 
+    def _model_call(self, detector: Detector, image: Image.Image | None, packed: bool,
+                    trace: DiagnosticFrame | None, plan: PackingPlan | None = None) -> tuple[object | None, float]:
+        """在每次模型调用边界冻结证据，包含异常与回退前的调用。
+
+        Args:
+            detector: 当前模型。
+            image: 本次实际输入。
+            packed: 是否拼图。
+            trace: 完整诊断关闭时为None，不复制图片。
+            plan: 本次拼图坐标映射。
+        Returns:
+            未被诊断修改的模型结果和耗时。
+        Raises:
+            Exception: 原始模型调用失败时原样传播。
+        """
+        index = trace.begin_call('packed' if packed else 'full', image, plan) if trace else -1
+        started = perf_counter()
+        try:
+            raw, elapsed = detector.detect_packed(image) if packed and image is not None else detector.detect(image)
+        except Exception:
+            if trace:
+                try:
+                    trace.end_call(index, None, (perf_counter()-started)*1000, traceback.format_exc())
+                except Exception as exc:
+                    trace.owner.pause('call_result_snapshot_failed: '+str(exc))
+                    trace.cancel()
+            raise
+        if trace:
+            try:
+                trace.end_call(index, raw, elapsed)
+                predictor = getattr(getattr(detector, 'model', None), 'predictor', None)
+                shape = getattr(getattr(predictor, 'args', None), 'imgsz', None)
+                if not trace.cancelled:
+                    backend = getattr(predictor, 'model', None)
+                    flags = {key: value for key in ('pt', 'onnx', 'engine', 'dnn', 'fp16', 'dynamic')
+                             if type(value := getattr(backend, key, None)) is bool}
+                    trace.calls[index]['backend'] = {'type': type(backend).__name__, 'flags': flags,
+                                                    'device': str(getattr(backend, 'device', 'unknown'))}
+                if not trace.cancelled and type(shape) in (int, list, tuple):
+                    trace.calls[index]['requested_tensor_shape'] = shape
+            except Exception as exc:
+                trace.owner.pause('call_result_snapshot_failed: '+str(exc))
+                trace.cancel()
+        return raw, elapsed
+
     def detect(self, image: Image.Image | None, detector: Detector, regions: Sequence[Box] | None,
                guard: float = .04, presence_region: Box | None = None,
                scales: Sequence[float] | None = None, canvas_size: tuple[int, int] = (768, 480),
                region_names: Sequence[str] | None = None, allow_full_fallback: bool = True,
-               full_label: str = '自动布局整图') -> tuple[object | None, float]:
+               full_label: str = '自动布局整图', trace: DiagnosticFrame | None = None) -> tuple[object | None, float]:
         """开局只推理选区、不可靠时等待；记牌阶段允许同帧整图复查。
 
         Args:
@@ -165,6 +190,7 @@ class PackedPipeline:
             region_names: 启用真实单牌自适应测量的当前区域名。
             allow_full_fallback: 开局二区为False，禁止因无底牌而推理整张原图。
             full_label: 主动选择整图时显示的路线名称。
+            trace: 可选的单帧证据接收器；关闭时没有图像复制。
         Returns:
             原图坐标的模型结果、包含可能补查的模型调用总毫秒。
         Raises:
@@ -198,7 +224,7 @@ class PackedPipeline:
                 self.timings["model_calls"] += 1
                 call_started, call_pending = perf_counter(), True
                 self.last_input = canvas
-                raw, elapsed = detector.detect_packed(canvas)
+                raw, elapsed = self._model_call(detector, canvas, True, trace, plan)
                 call_pending = False
                 inference_ms += elapsed
                 restore_start = perf_counter()
@@ -231,7 +257,7 @@ class PackedPipeline:
         if self.timings["prepare_ms"] == 0.:
             self.timings["prepare_ms"] = (perf_counter()-start)*1000
         self.last_input = image
-        result, elapsed = detector.detect(image)
+        result, elapsed = self._model_call(detector, image, False, trace)
         inference_ms += elapsed
         self.timings["model_calls"] += 1
         if (result is not None and getattr(result, 'boxes', None) is not None

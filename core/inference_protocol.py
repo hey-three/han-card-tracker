@@ -26,7 +26,7 @@ class Response:
     """启动、检测、控制命令共用的执行回执。
 
     Attributes:
-        status: ready 表示启动成功，ok/error 表示命令结果，fatal 表示启动失败。
+        status: ready 表示启动成功，ok/error 表示命令结果，fatal 表示启动失败；diagnostic仅通知后台状态，不是命令回执。
         request_id: 对应的命令编号，启动消息为零。
         generation: 对应的牌局代次。
         remain_cards: 检测得到的剩余牌数。
@@ -37,9 +37,10 @@ class Response:
         screenshot_jpeg: 可选的实时预览截图 JPEG 数据。
         screenshot_regions: 自动布局当前确认的牌区边界，使用归一化坐标。
         performance: 当前子进程分阶段耗时和调用次数，不包含图片或物理显示时刻。
+        diagnostic_status: 独立的保存状态与积压/失败信息，不驱动牌局。
     """
 
-    status: Literal["ready", "ok", "error", "fatal"]
+    status: Literal["ready", "ok", "error", "fatal", "diagnostic"]
     request_id: int = 0
     generation: int = 0
     remain_cards: dict[str, int] | None = None
@@ -50,3 +51,4 @@ class Response:
     screenshot_jpeg: bytes | None = None
     screenshot_regions: dict[str, tuple[float, float, float, float]] | None = None
     performance: dict[str, float] | None = None
+    diagnostic_status: dict[str, object] | None = None
