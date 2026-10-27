@@ -907,6 +907,8 @@ class CardUI(QMainWindow):
                 lines.append(f"{label}：{performance[key]:.1%}")
         if "tile_count" in performance:
             lines.append(f"拼图块数：{int(performance['tile_count'])}")
+        if "region_count" in performance:
+            lines.append(f"参与区域：{int(performance['region_count'])}")
         self.btn_settings.setToolTip("\n".join(lines))
 
     def _apply_setting(

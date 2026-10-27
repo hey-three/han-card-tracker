@@ -132,21 +132,25 @@ def _split_free(free: Sequence[Rect], used: Rect) -> list[Rect]:
         for j, s in enumerate(unique))]
 
 
-def _place(pieces: Sequence[Rect], scale: float, side: int) -> list[Tile] | None:
+def _place(pieces: Sequence[Rect], scale: float, side: int | tuple[int, int],
+           weights: Sequence[float] | None = None) -> list[Tile] | None:
     """用短边优先装箱，保持朝向及统一缩放，图块之间留四像素间隔。
 
     Args:
         pieces: 已按某种策略排序的源图块。
         scale: 所有图块共同使用的正比例；像素尺寸向上取整。
-        side: 固定方形画布边长。
+        side: 画布边长或宽高二元组。
+        weights: 每块的等比例权重；None 为统一尺度。
     Returns:
         完整放下的图块，或 None；不会返回放不下时的部分结果。
     """
-    free: list[Rect] = [(4, 4, side, side)]
+    width_limit, height_limit = (side, side) if isinstance(side, int) else side
+    free: list[Rect] = [(4, 4, width_limit, height_limit)]
     tiles: list[Tile] = []
-    for piece in pieces:
-        width = max(1, ceil((piece[2]-piece[0]) * scale))
-        height = max(1, ceil((piece[3]-piece[1]) * scale))
+    for index, piece in enumerate(pieces):
+        factor = scale * (weights[index] if weights is not None else 1.)
+        width = max(1, ceil((piece[2]-piece[0]) * factor))
+        height = max(1, ceil((piece[3]-piece[1]) * factor))
         padded_w, padded_h = width+4, height+4
         candidates = [(min(r[2]-r[0]-padded_w, r[3]-r[1]-padded_h),
                        max(r[2]-r[0]-padded_w, r[3]-r[1]-padded_h), r[1], r[0], r)
@@ -232,6 +236,78 @@ def make_square_plan(size: tuple[int, int], regions: Sequence[Box], guard: float
                     best, best_score = fitted, score
     if best is None:
         raise ValueError("固定画布无法容纳全部区域及保护间隔")
+    return PackingPlan(size, best, canvas_size)
+
+
+def make_rect_plan(size: tuple[int, int], regions: Sequence[Box], scales: Sequence[float],
+                   canvas_size: tuple[int, int] = (768, 480), guard: float = .04) -> PackingPlan:
+    """按实测单牌尺度加权装箱，完整保留裁片并保持每片内部比例。
+
+    Args:
+        size: 原图宽高。
+        regions: 当前阶段的一至五个归一化业务区域。
+        scales: 与区域一一对应的正缩放权重，来自单牌检测框测量。
+        canvas_size: 固定目标宽高；允许矩形或用于对照的方形。
+        guard: 源切口单侧保护宽度比例。
+    Returns:
+        可双向恢复坐标的完整规划；不旋转或拉伸。
+    Raises:
+        TypeError: 尺寸、权重或保护参数类型错误。
+        ValueError: 参数非正、长度不一致、坐标非法或全部裁片无法放下。
+    """
+    rects = _source_rects(size, regions)
+    if (not isinstance(canvas_size, tuple) or len(canvas_size) != 2
+            or any(type(v) is not int for v in canvas_size)):
+        raise TypeError("画布必须是整数宽高二元组")
+    if min(canvas_size) < 32:
+        raise ValueError("画布边长至少 32")
+    if len(scales) != len(regions):
+        raise ValueError("缩放权重必须与区域一一对应")
+    if any(type(v) not in (int, float) for v in scales) or type(guard) not in (int, float):
+        raise TypeError("缩放权重和保护比例必须是数字")
+    if any(not isfinite(v) or v <= 0 for v in scales) or not isfinite(guard) or not 0 < guard < .25:
+        raise ValueError("权重必须有限且为正，保护比例须在 (0,.25)")
+    width, height = canvas_size
+    options = [_split_options(r, max(2, ceil(size[0]*guard))) for r in rects]
+    total = sum(_area(r) for r in rects)
+    candidates: list[tuple[float, float, tuple[tuple[Rect, float], ...]]] = []
+    for groups in product(*options):
+        pieces = tuple((r, float(weight)) for group, weight in zip(groups, scales) for r in group)
+        if sum(_area(r) for r, _ in pieces) > total*1.3:
+            continue
+        area = sum(_area(r)*weight*weight for r, weight in pieces)
+        bound = max(sqrt(area/(width*height)), max(max((r[2]-r[0])*w/(width-8),
+                                                      (r[3]-r[1])*w/(height-8)) for r, w in pieces))
+        candidates.append((bound, area, pieces))
+    chosen = [v[2] for v in sorted(candidates)[:64]]
+    uncut = tuple((r, float(w)) for r, w in zip(rects, scales))
+    if uncut not in chosen:
+        chosen.append(uncut)
+    best: list[Tile] | None = None
+    score = (0., 0., 0)
+    for pieces in chosen:
+        orders = {
+            tuple(sorted(pieces, key=lambda v: (-_area(v[0])*v[1]**2, v))),
+            tuple(sorted(pieces, key=lambda v: (-max(v[0][2]-v[0][0], v[0][3]-v[0][1])*v[1], v))),
+            tuple(sorted(pieces, key=lambda v: (-(v[0][2]-v[0][0])*v[1], v))),
+            tuple(sorted(pieces, key=lambda v: (-(v[0][3]-v[0][1])*v[1], v))),
+        }
+        for order in sorted(orders):
+            low = 0.
+            high = min(min((width-8)/((r[2]-r[0])*w), (height-8)/((r[3]-r[1])*w)) for r, w in order)
+            fitted: list[Tile] | None = None
+            for _ in range(12):
+                mid = (low+high)/2
+                placed = _place([r for r, _ in order], mid, canvas_size, [w for _, w in order])
+                if placed is None:
+                    high = mid
+                else:
+                    low, fitted = mid, placed
+            candidate_score = (low, -sum(_area(r)*w*w for r, w in order), -len(order))
+            if fitted is not None and candidate_score > score:
+                best, score = fitted, candidate_score
+    if best is None:
+        raise ValueError("目标画布不能完整容纳所有裁片")
     return PackingPlan(size, best, canvas_size)
 
 

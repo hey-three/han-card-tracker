@@ -235,7 +235,7 @@ YOLO_MODEL_NAME = config.get('yolo_model_name', '') or (_scan_model_dirs()[0] if
 YOLO_MODEL_PATH = _resolve_model_path(YOLO_MODEL_NAME)
 
 # ==================== 基本配置 ====================
-RESET_TIME = config.get('reset_time', 3.5)    # 全图连续无牌的结束时长；显示保留至新手牌确认
+RESET_TIME = config.get('reset_time', 3.5)    # 底牌区连续无牌结束时长；显示保留至下一次底牌出现开局
 DETECT_INTERVAL_SEC = config.get('detect_interval_sec', 0.2)  # 检测间隔秒数
 
 # 大小王玩家出牌显示字符

@@ -1,4 +1,4 @@
-"""按布局选择整图或手动五区拼图；只缓存几何与画布，不缓存识别结果。"""
+"""按布局选择整图或手动分阶段拼图；只缓存几何与画布，不缓存识别结果。"""
 
 from __future__ import annotations
 
@@ -10,7 +10,7 @@ from PIL import Image
 
 from core.auto_layout import Box, YoloResult
 from core.frame_packing import Detection, PackingPlan
-from core.square_packing import make_square_plan, plan_metrics
+from core.square_packing import make_square_plan, make_rect_plan, plan_metrics
 
 
 class Detector(Protocol):
@@ -81,12 +81,14 @@ class PackedPipeline:
     Attributes:
         route: str，当前路线及回退原因。
         timings: dict[str, float]，当前分阶段毫秒、画布尺寸和模型调用次数。
+        last_input: 当前帧最后一次模型调用的原图或拼图，供同步预览编码。
     """
 
     def __init__(self) -> None:
         """建立空会话，不申请模型或大型画布。"""
         self._canvas: Image.Image | None = None
-        self._plan_key: tuple[tuple[int, int], tuple[Box, ...], float] | None = None
+        self.last_input: Image.Image | None = None
+        self._plan_key: tuple[object, ...] | None = None
         self._plan: PackingPlan | None = None
         self._metrics: dict[str, float] = {}
         self.route = "整图"
@@ -95,12 +97,13 @@ class PackedPipeline:
     def reset(self) -> None:
         """清除几何和画布；不复用上个模型、布局或会话的规划。"""
         self._canvas = None
+        self.last_input = None
         self._plan_key = None
         self._plan = None
         self._metrics = {}
 
     def _render(self, image: Image.Image, plan: PackingPlan) -> Image.Image:
-        """复用固定画布，以统一比例缩放并粘贴原图裁片，空白填充 114 灰色。
+        """复用固定画布，按每片的实际等比渲染尺寸粘贴，空白填 114 灰色。
 
         Args:
             image: 当前原图。
@@ -121,7 +124,8 @@ class PackedPipeline:
         return self._canvas
 
     def detect(self, image: Image.Image | None, detector: Detector, regions: Sequence[Box] | None,
-               guard: float = .04) -> tuple[object | None, float]:
+               guard: float = .04, presence_region: Box | None = None,
+               scales: Sequence[float] | None = None, canvas_size: tuple[int, int] = (768, 480)) -> tuple[object | None, float]:
         """选择整图或拼图，所有不确定拼图只回退当前原图，不向 Tracker 发布部分结果。
 
         Args:
@@ -129,6 +133,9 @@ class PackedPipeline:
             detector: 当前单模型实例。
             regions: 全部手动区域；None 表示自动布局，始终整图推理。
             guard: 切口单侧保护宽度比例。
+            presence_region: 手动底牌门禁区域；该区无牌时即使其他区有牌也复查同一原图。
+            scales: 单牌检测框实测权重；None 保留旧统一缩放方图接口。
+            canvas_size: 加权阶段拼图的目标宽高。
         Returns:
             原图坐标的模型结果、包含可能补查的模型调用总毫秒。
         Raises:
@@ -136,15 +143,18 @@ class PackedPipeline:
         """
         start = perf_counter()
         self.timings = {"prepare_ms": 0., "restore_ms": 0., "model_calls": 0.}
+        self.last_input = None
         reason = ""
         inference_ms = 0.
         if regions is not None and image is not None:
             call_pending = False
             call_started = 0.
             try:
-                key = (image.size, tuple(cast(Box, tuple(r)) for r in regions), guard)
+                key = (image.size, tuple(cast(Box, tuple(r)) for r in regions), guard,
+                       tuple(scales) if scales is not None else None, canvas_size)
                 if self._plan_key != key or self._plan is None:
-                    self._plan = make_square_plan(image.size, regions, guard)
+                    self._plan = (make_square_plan(image.size, regions, guard) if scales is None else
+                                  make_rect_plan(image.size, regions, scales, canvas_size, guard))
                     self._plan_key = key
                     self._metrics = plan_metrics(self._plan)
                     self._canvas = None
@@ -153,19 +163,27 @@ class PackedPipeline:
                     self.timings["plan_ms"] = 0.
                 plan = self._plan
                 self.timings.update(self._metrics)
+                self.timings["region_count"] = float(len(regions))
                 canvas = self._render(image, plan)
                 self.timings["prepare_ms"] = (perf_counter()-start)*1000
                 self.timings["model_calls"] += 1
                 call_started, call_pending = perf_counter(), True
+                self.last_input = canvas
                 raw, elapsed = detector.detect_packed(canvas)
                 call_pending = False
                 inference_ms += elapsed
                 restore_start = perf_counter()
                 cards, reason = plan.restore(read_detections(raw))
+                if not reason and cards and presence_region is not None:
+                    a, b, c, d = presence_region
+                    width, height = image.size
+                    if not any(a <= (card.bbox[0]+card.bbox[2])/(2*width) <= c
+                               and b <= (card.bbox[1]+card.bbox[3])/(2*height) <= d for card in cards):
+                        reason = "拼图底牌区无牌，复查原图"
                 if not reason and raw is not None and cards:
                     result = detector.restore_result(raw, image, cards)
                     self.timings["restore_ms"] = (perf_counter()-restore_start)*1000
-                    self.route = "手动五区拼图"
+                    self.route = f"手动 {len(regions)} 区拼图 {plan.canvas_size[0]}×{plan.canvas_size[1]}"
                     return result, inference_ms
                 # 裁片为空不能证明全图无牌，必须用同一原图复查后才能判断结束。
                 reason = reason or "拼图无可靠牌面，复查全图"
@@ -176,6 +194,7 @@ class PackedPipeline:
                 reason = f"拼图回退：{exc}"
         if self.timings["prepare_ms"] == 0.:
             self.timings["prepare_ms"] = (perf_counter()-start)*1000
+        self.last_input = image
         result, elapsed = detector.detect(image)
         inference_ms += elapsed
         self.timings["model_calls"] += 1

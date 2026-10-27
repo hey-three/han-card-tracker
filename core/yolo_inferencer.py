@@ -14,7 +14,8 @@ from ultralytics import YOLO
 
 import config.settings as settings
 from core.image_saver import ImageSaver
-from core.frame_packing import Detection, PACKED_CANVAS_SIZE
+from core.frame_packing import Detection
+from config.packing_profile import PACKED_INPUT_SIZE
 
 if TYPE_CHECKING:
     from ultralytics.engine.results import Results
@@ -47,7 +48,7 @@ class YoloInferencer:
 
         self.model, self.device = self.__load_model()
         self.debug_manager: ImageSaver | None = debug_manager
-        self._full_input_size: int | list[int] | None = None
+        self._full_input_size: int | list[int] | tuple[int, int] | None = None
 
     def __load_model(self) -> Tuple[YOLO, str]:
         """按现有设备设置加载本地模型。
@@ -160,10 +161,14 @@ class YoloInferencer:
         if img is None:
             return None, 0.0
 
-        return self._run(img)
+        backend = getattr(getattr(self.model, "predictor", None), "model", None)
+        flexible = (bool(getattr(backend, "pt", False) or getattr(backend, "dynamic", False)) if backend is not None
+                    else str(self.model.overrides.get("model", "")).lower().endswith(".pt"))
+        width, height = PACKED_INPUT_SIZE
+        return self._run(img, (height, width) if flexible else None)
 
     def detect_packed(self, img: Image.Image) -> tuple[object | None, float]:
-        """对拼图尝试 640 输入，静态引擎沿用自己的固定尺寸。
+        """按画布宽高执行矩形推理，静态引擎保留其固定输入。
 
         Args:
             img: 当前线程同步消费的 RGB 拼图画布。
@@ -171,28 +176,34 @@ class YoloInferencer:
             原始画布结果与模型调用耗时；不为静态模型自动重新导出。
         """
         backend = getattr(getattr(self.model, "predictor", None), "model", None)
-        flexible = backend is not None and (getattr(backend, "pt", False) or getattr(backend, "dynamic", False))
-        return self._run(img, PACKED_CANVAS_SIZE[0] if flexible else None, packed=True)
+        flexible = (bool(getattr(backend, "pt", False) or getattr(backend, "dynamic", False)) if backend is not None
+                    else str(self.model.overrides.get("model", "")).lower().endswith(".pt"))
+        size: int | tuple[int, int] = img.width if img.width == img.height else (img.height, img.width)
+        return self._run(img, size if flexible else None, packed=True)
 
-    def _run(self, img: Image.Image, input_size: int | None = None, *, packed: bool = False) -> tuple[object | None, float]:
+    def _run(self, img: Image.Image, input_size: int | tuple[int, int] | None = None, *, packed: bool = False) -> tuple[object | None, float]:
         """运行单模型并同步 GPU 计时。
 
         Args:
             img: 当前输入图。
             input_size: 可变模型的候选尺寸；None 恢复整图原始尺寸。
-            packed: 是否拼图调用；拼图使用固定方形填充，整图恢复原矩形策略。
+            packed: 是否拼图调用；严格使用画布形状，整图恢复原矩形策略。
 
         Returns:
             单帧结果及整个 Ultralytics 调用毫秒，包含其内部预处理和后处理。
         Raises:
+            ValueError: 模型默认输入尺寸元数据不是整数或尺寸序列。
             Exception: 推理或设备同步失败时向控制器传播。
         """
-        selected_size = input_size if input_size is not None else self._full_input_size
-        if selected_size is None:
+        if self._full_input_size is None:
             configured = self.model.overrides.get("imgsz", 640)
-            if not isinstance(configured, (int, list)):
+            if not isinstance(configured, (int, list, tuple)):
                 raise ValueError("模型输入尺寸元数据无效")
-            selected_size = configured
+            self._full_input_size = configured.copy() if isinstance(configured, list) else configured
+        selected_size = input_size if input_size is not None else self._full_input_size
+        fixed_size = self._static_input_size()
+        if fixed_size is not None:
+            selected_size = fixed_size
         if self.device == "cuda":
             torch.cuda.synchronize()
         t0 = time.perf_counter()
@@ -209,14 +220,35 @@ class YoloInferencer:
         if self.device == "cuda":
             torch.cuda.synchronize()
         yolo_ms = (time.perf_counter() - t0) * 1000
-        if not packed and self._full_input_size is None:
+        # 首次 packed 调用也可能刚刚建立静态后端，立即记住其元数据形状。
+        fixed_size = self._static_input_size()
+        if fixed_size is not None:
+            self._full_input_size = fixed_size
+            self._full_size_confirmed = True
+        if not packed and not getattr(self, "_full_size_confirmed", False):
             predictor = self.model.predictor
             if predictor is None:
                 raise RuntimeError("模型未建立推理器")
             size = predictor.args.imgsz
             self._full_input_size = size.copy() if isinstance(size, list) else size
+            self._full_size_confirmed = True
 
         return (results[0] if results else None), yolo_ms
+
+    def _static_input_size(self) -> tuple[int, int] | None:
+        """读取已加载静态后端的导出高宽，防止首帧拼图后被原默认尺寸覆盖。
+
+        Returns:
+            可信的固定 (height,width)；动态后端或没有二元尺寸元数据时为 None。
+        """
+        backend = getattr(getattr(self.model, "predictor", None), "model", None)
+        if backend is None or getattr(backend, "pt", False) or getattr(backend, "dynamic", False):
+            return None
+        size = getattr(backend, "imgsz", None)
+        if (isinstance(size, (list, tuple)) and len(size) == 2
+                and all(type(v) is int and v > 0 for v in size)):
+            return size[0], size[1]
+        return None
 
     @staticmethod
     def restore_result(raw: object, img: Image.Image, cards: Sequence[Detection]) -> object:

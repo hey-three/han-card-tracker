@@ -127,14 +127,12 @@ class LayoutObservation:
         message: 给用户的校准或归属状态。
         initial: 连续真实观测确认的开局快照，仅校准成功时发布一次。
         reset_required: 比例变化导致几何参照失效，不代表旧牌局已经结束。
-        initial_hand_update: 发牌阶段稳定的 17→20 张增补，不代表新一局。
     """
 
     regions: dict[str, list[CardBox]] = field(default_factory=dict)
-    message: str = "自动布局：等待完整的 17/20 张开局手牌"
+    message: str = "自动布局：等待上方底牌区出现扑克牌"
     initial: dict[str, list[CardBox]] | None = None
     reset_required: bool = False
-    initial_hand_update: list[CardBox] | None = None
 
     def as_boxes(self) -> dict[str, list[dict[str, object]]]:
         """转换成 Tracker 已使用的检测对象格式，保持稳定的牌面顺序。"""
@@ -268,7 +266,7 @@ class AutoLayoutAnalyzer:
     """针对本家在下、两家在左右的三人斗地主自动布局。
 
     Attributes:
-        ready: 是否已从完整开局确认手牌参照，底牌可缺失。
+        ready: 是否已从非空手牌及上方底牌确认几何参照。
         last_observation: 最近一次观测，供进程回传状态提示。
         _anchors: 已稳定确认的出牌锚点；左家用左边、右家用右边、本家用中心。
         _last_visible: 上一有效观测中的完整出牌组，防止动画跨区域换身份。
@@ -292,21 +290,18 @@ class AutoLayoutAnalyzer:
         self._anchors: dict[str, tuple[float, float]] = {}
         self._candidate: tuple[str, ...] | None = None
         self._candidate_bounds: Box | None = None
+        self._candidate_bottom_top: float | None = None
         self._stable = 0
         self._aspect: float | None = None
         self._play_candidates: dict[str, tuple[tuple[str, ...], int, Box]] = {}
         self._waiting_reason = ""
-        self._plays_seen = False
-        self._upgrade_candidate: tuple[str, ...] = ()
-        self._upgrade_bounds: Box | None = None
-        self._upgrade_frames = 0
         self._last_visible: dict[str, CardGroup] = {}
         self._previous_hand: tuple[str, ...] = ()
         self._self_evidence: tuple[str, ...] = ()
         self._evidence_ttl = 0
 
     def wait_for_next_round(self, reason: str) -> None:
-        """在已确认全图连续无牌的局间边界清除几何，允许下局恰好同手牌。
+        """在已确认底牌持续消失的局间边界清除几何，等待下次底牌出现。
 
         Args:
             reason: 本局结束原因，用于等待提示；旧牌数和历史由 Tracker 保留。
@@ -324,7 +319,6 @@ class AutoLayoutAnalyzer:
     def interrupt_observation(self) -> None:
         """打断未确认序列但保留已学习几何，暂停时间不能连接两段连续确认。"""
         self._stable = 0
-        self._upgrade_frames = 0
         self._play_candidates.clear()
 
     def observe(self, cards: Sequence[CardBox], size: tuple[int, int], confirm_frames: int) -> LayoutObservation:
@@ -333,7 +327,7 @@ class AutoLayoutAnalyzer:
         Args:
             cards: 已归一化的单张牌检测。
             size: 截图宽高；等比例缩放不触发重置。
-            confirm_frames: 校准和出牌锚点的连续帧阈值，至少取三帧。
+            confirm_frames: 几何和出牌锚点的连续帧阈值；开局不等待此阈值。
 
         Returns:
             已知区域、状态提示及必要的初始化/重置通知。
@@ -346,7 +340,7 @@ class AutoLayoutAnalyzer:
             raise TypeError("确认帧数必须是整数")
         if confirm_frames <= 0:
             raise ValueError("确认帧数必须为正数")
-        required = max(3, confirm_frames)
+        required = confirm_frames
         w, h = size
         changed = False
         if w > 0 and h > 0:
@@ -358,14 +352,13 @@ class AutoLayoutAnalyzer:
                 self._aspect = aspect
         if w <= 0 or h <= 0:
             self._stable = 0
-            self._upgrade_frames = 0
             self._play_candidates.clear()
             observation = LayoutObservation(message="自动布局：未取得有效画面，保留当前记录")
         elif not cards:
             self._stable = 0
-            self._upgrade_frames = 0
             self._play_candidates.clear()
-            observation = LayoutObservation(message="自动布局：未检测到牌，等待有效画面", reset_required=changed)
+            observation = LayoutObservation({"landlord_cards": []},
+                                            "自动布局：底牌区未检测到牌，等待有效画面", reset_required=changed)
         elif not self.ready:
             observation = self._calibrate(cards, required)
             observation.reset_required = changed
@@ -375,67 +368,67 @@ class AutoLayoutAnalyzer:
         return observation
 
     def _calibrate(self, cards: Sequence[CardBox], required: int) -> LayoutObservation:
-        """只在无出牌的完整开局校准，避免把中途剩余手牌当成初始手牌。
+        """先发布上方底牌存在性，再从任意非空手牌学习几何，不限定张数。
 
         Args:
-            cards: 当前检测。
-            required: 连续真实观测阈值。
-
+            cards: 当前有效整图检测。
+            required: 几何位置连续确认帧数，与当前 FRAME_LENGTH 一致。
         Returns:
-            等待状态或一次性开局快照。
+            底牌门禁、可知手牌以及几何确认状态；中部翻牌不会当成底牌。
         """
         groups = merge_rows(group_rows(cards))
-        hands = [g for g in groups if len(g.cards) in (17, 20) and g.bounds[1] > .5
-                 and g.bounds[2] - g.bounds[0] > .2]
-        if len(hands) != 1:
+        hands = [g for g in groups if g.cards and g.bounds[1] > .6]
+        hand = hands[0] if len(hands) == 1 else None
+        bottoms = [g for g in group_rows(cards) if self._is_bottom_group(g, hand)]
+        bottom_cards = [c for g in bottoms for c in g.cards]
+        regions: dict[str, list[CardBox]] = {"landlord_cards": bottom_cards}
+        if not bottom_cards:
             self._stable = 0
-            return LayoutObservation(message="自动布局：请在开局前启动，等待完整的 17/20 张手牌")
-        hand = hands[0]
-        others = [g for g in groups if g is not hand]
-        bottoms = [g for g in others if self._is_bottom_group(g, hand)]
-        if len(bottoms) != len(others) or sum(len(g.cards) for g in bottoms) > 3:
+            return LayoutObservation(regions, "自动布局：等待上方底牌区至少一张牌，暂不记录出牌")
+        if hand is None:
             self._stable = 0
-            return LayoutObservation(message="自动布局：发现其他牌组，等待尚未出牌的开局画面")
-        bottom = CardGroup([c for g in bottoms for c in g.cards]) if bottoms else None
-        if self._limits is not None and any(
-            count > self._limits.get(name, 0)
-            for name, count in Counter(hand.signature).items()
-        ):
+            return LayoutObservation(regions, "自动布局：底牌已出现，已开局，等待手牌定位")
+        if self._limits is not None and any(n > self._limits.get(k, 0) for k, n in Counter(hand.signature).items()):
             self._stable = 0
-            return LayoutObservation(message="自动布局：开局牌数不合法，等待识别稳定")
-        signature, bounds = hand.signature, hand.bounds
-        position_stable = self._candidate_bounds is not None and all(
-            abs(a - b) < .025 for a, b in zip(self._candidate_bounds, bounds)
-        )
-        self._stable = self._stable + 1 if signature == self._candidate and position_stable else 1
-        self._candidate, self._candidate_bounds = signature, bounds
+            return LayoutObservation(regions, "自动布局：手牌数量不合法，等待识别稳定")
+        regions["player_hand"] = hand.cards
+        bottom = CardGroup(bottom_cards)
+        stable = (self._candidate_bounds is not None and self._candidate_bottom_top is not None
+                  and hand.signature == self._candidate
+                  and all(abs(a-b) < .025 for a, b in zip(self._candidate_bounds, hand.bounds))
+                  and abs(bottom.bounds[1]-self._candidate_bottom_top) < .015 and self._stable > 0)
+        self._stable = self._stable+1 if stable else 1
+        if not stable:
+            self._candidate_bottom_top = bottom.bounds[1]
+        self._candidate, self._candidate_bounds = hand.signature, hand.bounds
         if self._stable < required:
-            prefix = "保留上一局，" if self._waiting_reason else ""
-            return LayoutObservation(message=f"自动布局：{prefix}正在确认开局 {self._stable}/{required}")
+            return LayoutObservation(regions, f"自动布局：已开局，正在定位手牌 {self._stable}/{required}")
         self._hand, self._bottom, self.ready = hand, bottom, True
         self._previous_hand = hand.signature
-        regions: dict[str, list[CardBox]] = {key: [] for key in REGIONS}
-        regions["player_hand"] = hand.cards
-        if bottom is not None:
-            regions["landlord_cards"] = bottom.cards
-        return LayoutObservation(regions, "自动布局：已定位，正在跟踪出牌", initial=regions)
+        observation = self._assign(cards, required)
+        observation.initial = dict(observation.regions)
+        return observation
 
     @staticmethod
-    def _is_bottom_group(group: CardGroup, hand: CardGroup) -> bool:
-        """筛选上方中央的可选底牌组，允许只识别一至三张。
+    def _is_bottom_group(group: CardGroup, hand: CardGroup | None) -> bool:
+        """按上方中央和牌框尺度排除中部翻牌，不以底牌张数判断开局。
 
         Args:
-            group: 手牌以外的完整牌组。
-            hand: 已找到的本家手牌，提供位置及牌框尺度。
-
+            group: 上方候选组。
+            hand: 可选手牌几何参照；未知时按窗口比例作保守上方定位。
         Returns:
-            是否属于保守的底牌候选；这只是相对几何先验，不是游戏模板。
+            是否位于支持的上方底牌位置；不是按具体游戏名称查表。
         """
         a, top, b, lower = group.bounds
+        if not group.cards or top >= .25 or lower >= .32:
+            return False
+        if hand is None:
+            return b-a <= .32 and group.height <= .08 and abs((a+b)/2-.5) <= .22
         left, hand_top, right, _ = hand.bounds
-        return (1 <= len(group.cards) <= 3 and top < min(.35, hand_top * .45)
-                and lower < hand_top - 2 * hand.height and group.height <= 1.15 * hand.height
-                and abs((a + b - left - right) / 2) <= max(.15, (right-left)*.3))
+        center = (left+right)/2 if right-left >= .5 else .5
+        return (top < hand_top*.35 and lower < hand_top*.45
+                and b-a <= max(.22, (right-left)*.4) and group.height <= 1.15*hand.height
+                and abs((a+b)/2-center) <= max(.22, (right-left)*.3))
 
     def _reference(self, role: str) -> tuple[float, float]:
         """返回已学习锚点，或由本家手牌和窗口边界推导的初始位置。
@@ -450,6 +443,8 @@ class AutoLayoutAnalyzer:
             return self._anchors[role]
         assert self._hand is not None
         left, top, right, _ = self._hand.bounds
+        if right-left < .2:
+            left, right = 0., 1.
         bottom = self._table_top
         gap = top - bottom
         if role == "opponent_left":
@@ -509,14 +504,15 @@ class AutoLayoutAnalyzer:
         bottom_cards = [c for g in top_groups if self._is_bottom_group(g, self._hand) for c in g.cards]
         if not hand_cards and len(cards) - len(bottom_cards) >= 8:
             self._play_candidates.clear()
-            self._upgrade_frames = 0
-            return LayoutObservation(message="自动布局：手牌参照丢失，暂停记录；请检查窗口或重新定位")
+            return LayoutObservation({"landlord_cards": bottom_cards},
+                                     "自动布局：手牌参照丢失，暂停记录；请检查窗口或重新定位")
         regions: dict[str, list[CardBox]] = {"player_hand": hand_cards}
-        if bottom_cards:
-            regions["landlord_cards"] = bottom_cards
+        regions["landlord_cards"] = bottom_cards
+        if not bottom_cards:
+            self._play_candidates.clear()
+            return LayoutObservation(regions, "自动布局：底牌区无牌，暂停记录并确认是否结束")
         remaining = [c for c in cards if c not in hand_cards and c not in bottom_cards]
         groups = merge_rows(group_rows(remaining), lambda first, second: self._compatible_rows(first, second, required))
-        self._plays_seen = self._plays_seen or bool(groups)
         assignments: dict[str, CardGroup] = {}
         ambiguous = False
         for group in groups:
@@ -539,7 +535,6 @@ class AutoLayoutAnalyzer:
                     ambiguous = True
         if ambiguous:
             self._play_candidates.clear()
-            self._upgrade_frames = 0
             return LayoutObservation(regions, "自动布局：牌组归属不确定，暂停更新出牌记录")
         # 单张、长牌组、双行整组都经过同一个归属入口。
         for role in PLAY_REGIONS:
@@ -561,36 +556,8 @@ class AutoLayoutAnalyzer:
         moving = any(role not in regions for role in PLAY_REGIONS)
         if not moving:
             self._last_visible = assignments
-        upgrade = self._confirm_hand_upgrade(hand_cards, required)
         message = "自动布局：出牌移动中，等待位置稳定" if moving else "自动布局：已定位，正在跟踪出牌"
-        return LayoutObservation(regions, message, initial_hand_update=upgrade)
-
-    def _confirm_hand_upgrade(self, cards: Sequence[CardBox], required: int) -> list[CardBox] | None:
-        """仅在尚未见出牌时确认 17 张完整手牌增至 20 张。
-
-        Args:
-            cards: 当前手牌区域的真实检测。
-            required: 连续稳定帧数。
-
-        Returns:
-            已确认的二十张手牌；其他情况不发布增补。
-        """
-        assert self._hand is not None
-        current = tuple(sorted(c.name for c in cards))
-        legal = self._limits is None or all(n <= self._limits.get(k, 0) for k, n in Counter(current).items())
-        if (self._plays_seen or len(self._hand.cards) != 17 or len(cards) != 20
-                or Counter(self._hand.signature) - Counter(current) or not legal):
-            self._upgrade_frames = 0
-            return None
-        group = CardGroup(list(cards))
-        stable = self._upgrade_bounds is not None and max(
-            abs(a-b) for a, b in zip(group.bounds, self._upgrade_bounds)) < .025
-        self._upgrade_frames = self._upgrade_frames + 1 if current == self._upgrade_candidate and stable else 1
-        self._upgrade_candidate, self._upgrade_bounds = current, group.bounds
-        if self._upgrade_frames < required:
-            return None
-        self._hand = group
-        return list(cards)
+        return LayoutObservation(regions, message)
 
     def _update_hand_evidence(self, hand: Sequence[CardBox], required: int) -> None:
         """短暂保留手牌减少的牌面，辅助判断紧接着出现的本家出牌。

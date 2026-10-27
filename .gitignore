@@ -9,3 +9,6 @@ tests/.tmp/
 # Local editor settings and captured game images
 .vscode/
 games_images/
+
+# User-provided local reference screenshots
+/tmp/

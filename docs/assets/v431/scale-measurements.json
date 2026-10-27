@@ -1,0 +1,899 @@
+{
+  "model": "yolo\\weights\\yolov11s_imgsz_960\\best.pt",
+  "model_sha256": "e2419bb59102168fde02324fe6981a583e4300c524645897c967f521605397b7",
+  "confidence": 0.6,
+  "iou": 0.45,
+  "reference_height": 38.581787109375,
+  "summary": {
+    "landlord_cards": {
+      "count": 6,
+      "median_height": 26.15540885925293,
+      "median_width": 22.296661376953125,
+      "joker_heights": []
+    },
+    "opponent_left": {
+      "count": 2,
+      "median_height": 38.57362365722656,
+      "median_width": 29.725372314453125,
+      "joker_heights": []
+    },
+    "opponent_right": {
+      "count": 2,
+      "median_height": 38.489990234375,
+      "median_width": 30.294708251953125,
+      "joker_heights": []
+    },
+    "player_hand": {
+      "count": 41,
+      "median_height": 54.80694580078125,
+      "median_width": 42.5517578125,
+      "joker_heights": [
+        83.77105712890625,
+        85.40032958984375,
+        83.523681640625
+      ]
+    },
+    "player_played": {
+      "count": 1,
+      "median_height": 46.147979736328125,
+      "median_width": 38.65362548828125,
+      "joker_heights": []
+    }
+  },
+  "scales": {
+    "landlord_cards": 1.6521095806618658,
+    "opponent_left": 1.0002116330117434,
+    "opponent_right": 1.002384954489233,
+    "player_hand": 0.703957984625099,
+    "player_played": 0.8360449867971805
+  },
+  "source_images": [
+    {
+      "file": "28.png",
+      "sha256": "aec235d2524a91923701c5bdb88442650dbe4bab09d7d3d30f44346d165221a0",
+      "size": [
+        1284,
+        804
+      ]
+    },
+    {
+      "file": "466.png",
+      "sha256": "d13109d0654e52160b96dc8bd07abf4ab8ae94da94547530df1b536690da333a",
+      "size": [
+        1284,
+        804
+      ]
+    },
+    {
+      "file": "61.png",
+      "sha256": "fd44320ca07838b88c435d90114681ff334fccb9824e3feccfa78ffcb2bdb7b4",
+      "size": [
+        1284,
+        804
+      ]
+    }
+  ],
+  "comparison": [
+    {
+      "file": "28.png",
+      "stage": "opening",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.24587634258613475,
+        "padding_fraction": 0.22694227430555558,
+        "tile_count": 5.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.9625
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.091849644978836,
+        "player_hand": 52.751685333251956
+      },
+      "detected_card_median_heights": {
+        "player_hand": 53.11640930175781,
+        "landlord_cards": 53.656158447265625
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "28.png",
+      "stage": "opening",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36902159799168976,
+        "tile_count": 3.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.9202453987730062
+      },
+      "expected_card_heights": {
+        "landlord_cards": 56.50859938727484,
+        "player_hand": 50.69642486572266
+      },
+      "detected_card_median_heights": {
+        "player_hand": 51.43541717529297,
+        "landlord_cards": 51.2559814453125
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "28.png",
+      "stage": "opening",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36728759765624996,
+        "tile_count": 3.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.9693251533742331
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.73766220940484,
+        "player_hand": 53.436772155761716
+      },
+      "detected_card_median_heights": {
+        "player_hand": 54.124473571777344,
+        "landlord_cards": 54.11676025390625
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "28.png",
+      "stage": "recording",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.3102323274592768,
+        "padding_fraction": 0.19844021267361112,
+        "tile_count": 7.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.8409090909090909
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 38.79404436383929,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 40.45428466796875,
+        "opponent_left": 38.789573669433594
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "28.png",
+      "stage": "recording",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.2415382617728532,
+        "tile_count": 5.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.843558282208589
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 39.014465070452005,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 40.6265869140625,
+        "opponent_left": 38.94818115234375
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "28.png",
+      "stage": "recording",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.23886230468750003,
+        "tile_count": 5.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.8895705521472392
+      },
+      "expected_card_heights": {
+        "landlord_cards": 46.17559835645888,
+        "opponent_left": 41.21867213657924,
+        "opponent_right": 41.129303850446426,
+        "player_played": 41.15900895402238
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 42.5816650390625,
+        "opponent_left": 41.306915283203125
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "opening",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.24587634258613475,
+        "padding_fraction": 0.22694227430555558,
+        "tile_count": 5.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.9625
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.091849644978836,
+        "player_hand": 52.751685333251956
+      },
+      "detected_card_median_heights": {
+        "player_hand": 53.3702392578125,
+        "landlord_cards": 53.34716033935547
+      },
+      "restored_count": 13,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "opening",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36902159799168976,
+        "tile_count": 3.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.9202453987730062
+      },
+      "expected_card_heights": {
+        "landlord_cards": 56.50859938727484,
+        "player_hand": 50.69642486572266
+      },
+      "detected_card_median_heights": {
+        "player_hand": 52.00100326538086,
+        "landlord_cards": 51.57568359375
+      },
+      "restored_count": 13,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "opening",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36728759765624996,
+        "tile_count": 3.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.9693251533742331
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.73766220940484,
+        "player_hand": 53.436772155761716
+      },
+      "detected_card_median_heights": {
+        "player_hand": 54.396759033203125,
+        "landlord_cards": 54.8856201171875
+      },
+      "restored_count": 13,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "recording",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.3102323274592768,
+        "padding_fraction": 0.19844021267361112,
+        "tile_count": 7.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.8409090909090909
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 38.79404436383929,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 40.3587646484375,
+        "player_played": 39.322265625
+      },
+      "restored_count": 4,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "recording",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.2415382617728532,
+        "tile_count": 5.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.843558282208589
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 39.014465070452005,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 40.1041259765625,
+        "player_played": 41.247093200683594
+      },
+      "restored_count": 4,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "466.png",
+      "stage": "recording",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.23886230468750003,
+        "tile_count": 5.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.8895705521472392
+      },
+      "expected_card_heights": {
+        "landlord_cards": 46.17559835645888,
+        "opponent_left": 41.21867213657924,
+        "opponent_right": 41.129303850446426,
+        "player_played": 41.15900895402238
+      },
+      "detected_card_median_heights": {
+        "landlord_cards": 42.6513671875,
+        "player_played": 42.162946701049805
+      },
+      "restored_count": 4,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "opening",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.24587634258613475,
+        "padding_fraction": 0.22694227430555558,
+        "tile_count": 5.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.9625
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.091849644978836,
+        "player_hand": 52.751685333251956
+      },
+      "detected_card_median_heights": {
+        "player_hand": 53.105281829833984,
+        "landlord_cards": 53.71533966064453
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "opening",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36902159799168976,
+        "tile_count": 3.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.9202453987730062
+      },
+      "expected_card_heights": {
+        "landlord_cards": 56.50859938727484,
+        "player_hand": 50.69642486572266
+      },
+      "detected_card_median_heights": {
+        "player_hand": 51.416276931762695,
+        "landlord_cards": 51.335205078125
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "opening",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "player_hand"
+      ],
+      "scales": [
+        1.6521095806618658,
+        0.703957984625099
+      ],
+      "metrics": {
+        "source_coverage": 0.19751999349049146,
+        "source_with_overlap": 0.21363877652237256,
+        "padding_fraction": 0.36728759765624996,
+        "tile_count": 3.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.9693251533742331
+      },
+      "expected_card_heights": {
+        "landlord_cards": 59.73766220940484,
+        "player_hand": 53.436772155761716
+      },
+      "detected_card_median_heights": {
+        "player_hand": 54.16168022155762,
+        "landlord_cards": 54.124267578125
+      },
+      "restored_count": 20,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "player_hand": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "recording",
+      "canvas": [
+        768,
+        480
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.3102323274592768,
+        "padding_fraction": 0.19844021267361112,
+        "tile_count": 7.0,
+        "canvas_width": 768.0,
+        "canvas_height": 480.0,
+        "source_scale": 0.8409090909090909
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 38.79404436383929,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "opponent_right": 38.999107360839844,
+        "landlord_cards": 40.70147705078125
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "recording",
+      "canvas": [
+        608,
+        608
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.2415382617728532,
+        "tile_count": 5.0,
+        "canvas_width": 608.0,
+        "canvas_height": 608.0,
+        "source_scale": 0.843558282208589
+      },
+      "expected_card_heights": {
+        "landlord_cards": 43.59234809875488,
+        "opponent_left": 39.014465070452005,
+        "opponent_right": 38.929875837053565,
+        "player_played": 39.08027112806165
+      },
+      "detected_card_median_heights": {
+        "opponent_right": 39.277191162109375,
+        "landlord_cards": 40.3582763671875
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    },
+    {
+      "file": "61.png",
+      "stage": "recording",
+      "canvas": [
+        640,
+        640
+      ],
+      "names": [
+        "landlord_cards",
+        "opponent_left",
+        "opponent_right",
+        "player_played"
+      ],
+      "scales": [
+        1.6521095806618658,
+        1.0002116330117434,
+        1.002384954489233,
+        0.8360449867971805
+      ],
+      "metrics": {
+        "source_coverage": 0.2515237287084825,
+        "source_with_overlap": 0.2878675160025418,
+        "padding_fraction": 0.23886230468750003,
+        "tile_count": 5.0,
+        "canvas_width": 640.0,
+        "canvas_height": 640.0,
+        "source_scale": 0.8895705521472392
+      },
+      "expected_card_heights": {
+        "landlord_cards": 46.17559835645888,
+        "opponent_left": 41.21867213657924,
+        "opponent_right": 41.129303850446426,
+        "player_played": 41.15900895402238
+      },
+      "detected_card_median_heights": {
+        "opponent_right": 41.1578369140625,
+        "landlord_cards": 42.79296875
+      },
+      "restored_count": 5,
+      "restore_reason": "",
+      "visual_reference_agreement": {
+        "landlord_cards": true,
+        "opponent_left": true,
+        "opponent_right": true,
+        "player_played": true
+      }
+    }
+  ],
+  "current_full_route_smoke": [
+    {
+      "file": "28.png",
+      "imgsz": [
+        480,
+        768
+      ],
+      "counts": {
+        "landlord_cards": 3,
+        "opponent_left": 2,
+        "opponent_right": 0,
+        "player_hand": 17,
+        "player_played": 0
+      },
+      "detections": 22
+    },
+    {
+      "file": "466.png",
+      "imgsz": [
+        480,
+        768
+      ],
+      "counts": {
+        "landlord_cards": 3,
+        "opponent_left": 0,
+        "opponent_right": 0,
+        "player_hand": 10,
+        "player_played": 1
+      },
+      "detections": 14
+    },
+    {
+      "file": "61.png",
+      "imgsz": [
+        480,
+        768
+      ],
+      "counts": {
+        "landlord_cards": 3,
+        "opponent_left": 0,
+        "opponent_right": 2,
+        "player_hand": 17,
+        "player_played": 0
+      },
+      "detections": 22
+    }
+  ]
+}
