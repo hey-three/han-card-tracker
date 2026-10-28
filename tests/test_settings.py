@@ -34,6 +34,25 @@ class SettingsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_panel_arrangement_persists_and_rejects_invalid_values(self) -> None:
+        """排列偏好原子保存并保留其他配置，拒绝非法枚举及类型。"""
+        for value in ('horizontal', 'vertical'):
+            settings.save_setting('panel_arrangement', value)
+            self.assertEqual(read_config(str(self.path))['panel_arrangement'], value)
+            self.assertEqual(settings.PANEL_ARRANGEMENT, value)
+        for value in ('auto', '', 'left'):
+            with self.assertRaises(ValueError):
+                settings.save_setting('panel_arrangement', value)
+        with self.assertRaises(TypeError):
+            settings.save_setting('panel_arrangement', True)
+        original = self.path.read_bytes()
+        with patch('config.store.os.replace', side_effect=OSError('read only')):
+            with self.assertRaises(OSError):
+                settings.save_setting('panel_arrangement', 'horizontal')
+        self.assertEqual(settings.PANEL_ARRANGEMENT, 'vertical')
+        self.assertEqual(self.path.read_bytes(), original)
+        self.assertEqual(read_config(str(self.path))['custom_key'], 'retained')
+
     def test_diagnostic_disk_quota_validates_and_persists(self) -> None:
         """磁盘额度严格校验并原子持久化，支持两位小数和旧配置缺省值。"""
         self.assertEqual(settings._SETTING_FIELDS['diagnostic_disk_gib'][0], 'DIAGNOSTIC_DISK_GIB')

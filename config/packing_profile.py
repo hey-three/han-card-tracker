@@ -1,13 +1,13 @@
 """拼图画布、阶段区域与历史样例尺度；运行时使用在线自适应尺度。
 
 原图 1284×804；模型 yolov11s_imgsz_960/best.pt，conf=.6，IoU=.45。
-详细样本计数、大小王例外、公式与矩形对照见 docs/V4.3.1设计与验证.md。
+详细样本计数、大小王例外和公式见 docs/设计决策.md 与 docs/排查与验证.md。
 下面实测权重也是用户确认的固定初始比例；识别后由 core/packing_scales.py 在线更新。
 """
 
 from collections.abc import Mapping
 
-PACKED_INPUT_SIZE = (768, 480)  # 宽、高；模型接口 imgsz 使用 (480, 768)。
+PACKED_INPUT_SIZE = (768, 480)  # 无 model_config.yaml 的旧模型后备画布；正式尺寸由所选模型决定。
 REFERENCE_CARD_HEIGHT = 38.581787109375
 MEASURED_CARD_HEIGHTS: dict[str, float] = {
     "landlord_cards": 26.15540885925293,

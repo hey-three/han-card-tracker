@@ -1,5 +1,6 @@
 """只读的牌局快照与诊断解释；不驱动或更改状态机。"""
 
+from collections import Counter
 from copy import deepcopy
 from typing import cast
 
@@ -27,7 +28,7 @@ def tracker_snapshot(tracker: BaseCardTracker) -> dict[str, object]:
 
 def decision_reasons(before: dict[str, object], after: dict[str, object], data: dict[str, list[str]],
                      known: list[str], valid: bool, required: int) -> list[dict[str, object]]:
-    """根据实际前后状态解释确认进度，输出仅供观察，不决定扣牌。
+    """按牌点多重集解释实际确认进度，不因显示换行误报待确认，不决定扣牌。
 
     Args:
         before: 更新前快照。
@@ -66,8 +67,9 @@ def decision_reasons(before: dict[str, object], after: dict[str, object], data: 
         if not cards or key == 'landlord_cards':
             continue
         consecutive = 0
+        signature = Counter(cards)
         for item in reversed(history):
-            if item != cards:
+            if Counter(item) != signature:
                 break
             consecutive += 1
         if consecutive < required:

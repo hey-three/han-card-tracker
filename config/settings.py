@@ -82,17 +82,6 @@ def _resolve_model_path(model_name: str | None) -> str:
     return os.path.join(YOLO_WEIGHTS_DIR, 'default', 'best.pt')
 
 
-def _scan_game_configs() -> list[str]:
-    """扫描 config/games/ 目录下的 YAML 文件，返回游戏名称列表。"""
-    if not os.path.isdir(GAMES_DIR):
-        return ['doudizhu']
-    names = []
-    for f in sorted(os.listdir(GAMES_DIR)):
-        if f.endswith('.yaml') or f.endswith('.yml'):
-            names.append(os.path.splitext(f)[0])
-    return names if names else ['doudizhu']
-
-
 def _load_game_config(game_name: str) -> dict:
     """加载指定游戏的配置文件。
 
@@ -213,10 +202,9 @@ def load_config():
 # 加载配置
 config = load_config()
 
-# ==================== 游戏选择 ====================
-GAME_NAME = config.get('game_name', 'doudizhu')
+# 当前程序仅支持斗地主，游戏标识是内部实现常量，不作为用户设置项。
+GAME_NAME = 'doudizhu'
 GAME_CONFIG = _load_game_config(GAME_NAME)
-GAME_DISPLAY_NAME = GAME_CONFIG.get('game_name', GAME_NAME)
 PLAYED_ZONES = GAME_CONFIG.get('played_zones', [
     {'key': 'left', 'label': '上家', 'region': 'opponent_left'},
     {'key': 'self', 'label': '本家', 'region': 'player_played'},
@@ -323,6 +311,13 @@ ALWAYS_ON_TOP = config.get('always_on_top', False)
 # 是否显示玩家所出的牌
 SHOW_PLAYED_CARDS = config.get('show_played_cards', True)
 
+# 仅控制记牌器两块内容的排列，不是游戏检测布局。
+PANEL_ARRANGEMENT = config.get('panel_arrangement', 'vertical')
+if not isinstance(PANEL_ARRANGEMENT, str):
+    raise TypeError('panel_arrangement 必须是字符串')
+if PANEL_ARRANGEMENT not in ('vertical', 'horizontal'):
+    raise ValueError('panel_arrangement 必须是 vertical 或 horizontal')
+
 class _LayoutOptions(TypedDict, total=False):
     """兼容旧配置的可选布局字段。
 
@@ -356,6 +351,7 @@ _SETTING_FIELDS: dict[str, tuple[str, type]] = {
     "detect_interval_sec": ("DETECT_INTERVAL_SEC", float),
     "always_on_top": ("ALWAYS_ON_TOP", bool),
     "show_played_cards": ("SHOW_PLAYED_CARDS", bool),
+    "panel_arrangement": ("PANEL_ARRANGEMENT", str),
     "debug_mode": ("DEBUG_MODE", bool),
     "show_current_screenshot": ("SHOW_CURRENT_SCREENSHOT", bool),
     "show_layout_status": ("SHOW_LAYOUT_STATUS", bool),
@@ -398,6 +394,8 @@ def _validate_setting(key: str, value: object) -> None:
         raise ValueError(f"{key} 不能为空")
     if key == "device_choice" and value not in ("cpu", "cuda"):
         raise ValueError("设备必须是 cpu 或 cuda")
+    if key == "panel_arrangement" and value not in ("vertical", "horizontal"):
+        raise ValueError('界面排列只能是 vertical 或 horizontal')
 
 
 def diagnostic_disk_bytes() -> int:
@@ -689,49 +687,6 @@ def save_show_timing_choice(show_timing: bool) -> None:
         yaml.YAMLError: 序列化失败。
     """
     save_setting("show_timing", show_timing)
-
-
-def apply_game_choice(game_name: str) -> None:
-    """只更新本进程的游戏配置，不写文件。
-
-    Args:
-        game_name: 已注册的游戏名称。
-
-    Raises:
-        TypeError: 名称不是字符串。
-        ValueError: 游戏未注册。
-    """
-    from core.games import TRACKER_REGISTRY
-
-    if not isinstance(game_name, str):
-        raise TypeError("游戏名称必须是字符串")
-    if game_name not in TRACKER_REGISTRY:
-        raise ValueError(f"游戏未注册: {game_name}")
-    global GAME_NAME, GAME_CONFIG, GAME_DISPLAY_NAME, TOTAL_CARDS, PLAYED_ZONES, LAYOUT_REGIONS
-    loaded = _load_game_config(game_name)
-    GAME_NAME, GAME_CONFIG = game_name, loaded
-    GAME_DISPLAY_NAME = loaded.get("game_name", game_name)
-    TOTAL_CARDS = loaded.get("total_cards", TOTAL_CARDS)
-    PLAYED_ZONES = loaded.get("played_zones", PLAYED_ZONES)
-    LAYOUT_REGIONS = loaded.get("layout_regions", LAYOUT_REGIONS)
-
-
-def save_game_choice(game_name: str) -> None:
-    """保存游戏选择并发布内存配置。
-
-    Args:
-        game_name: 已注册的游戏名称。
-
-    Raises:
-        ValueError: 名称未注册或原配置损坏。
-        OSError: 配置读写失败。
-    """
-    from core.games import TRACKER_REGISTRY
-
-    if game_name not in TRACKER_REGISTRY:
-        raise ValueError(f"游戏未注册: {game_name}")
-    _save_values({"game_name": game_name})
-    apply_game_choice(game_name)
 
 
 def save_current_layout(layout_name: str) -> None:

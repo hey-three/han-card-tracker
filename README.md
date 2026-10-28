@@ -17,8 +17,9 @@ A Windows Dou Dizhu card counter and playing-card detection application built wi
 | 自动布局 | 根据牌组相对位置学习常见三人斗地主界面，使用整图推理 |
 | 手动布局 | 自己框选五区，可选择原图检测或两阶段拼图检测 |
 | 拼图推理 | 开局前底牌＋手牌，扣手牌后底牌＋三家出牌；严格框内裁剪 |
-| 尺度调整 | 初始固定比例，之后按当前单牌检测框学习；画布固定宽768×高480 |
+| 尺度调整 | 初始固定比例，之后按当前单牌检测框学习；画布按所选模型配置固定像素宽高 |
 | 运行反馈 | 暂停、置顶、出牌历史、耗时、实际 YOLO 输入预览及原图/标注图保存 |
+| 界面排列 | 剩余牌数与出牌记录独立分区，可在基本设置切换上下或左右长条排列 |
 | 推理后端 | CPU 优先 ONNX Runtime；CUDA 优先 TensorRT，失败可回退 PyTorch |
 
 当前维护范围是**Windows 斗地主**。本仓库不提供 Android APK、OCR 文字识别方案或其他牌类游戏的完整支持；也不自动操作游戏。不同软件、皮肤和模式需要实际验证。
@@ -31,7 +32,7 @@ A Windows Dou Dizhu card counter and playing-card detection application built wi
 
 ## 从源码启动
 
-需要 Windows。源码采用 Python 3.10+ 语法；安装还需满足固定依赖的 Python 版本与平台要求。建议先用 Python 3.11/3.12 建立独立环境，完整步骤和限制见[安装说明](docs/使用指南.md#安装依赖)。
+需要 Windows。源码采用 Python 3.10+ 语法；安装还需满足固定依赖的 Python 版本与平台要求。建议先用 Python 3.11/3.12 建立独立环境，完整步骤和限制见[安装说明](docs/使用指南.md#安装依赖)。新增模型须在best.pt旁放置model_config.yaml，填写实际训练输入宽高，参考[模型放置与尺寸规范](docs/模型训练与拼图约定.md)。
 
 ```powershell
 git clone https://github.com/hey-three/han-card-tracker.git
@@ -74,7 +75,7 @@ python main.py
 
 ## 赞赏支持
 
-如果这个项目对你有帮助，欢迎通过[微信或支付宝二维码](SUPPORT.md)自愿赞赏，支持项目维护。也感谢每一份 Star、问题反馈和代码贡献。
+如果这个项目对你有帮助，欢迎通过[微信或支付宝二维码](SUPPORT.md)自愿赞赏，支持项目维护；也可以在程序“设置”→“赞赏”中查看本地二维码。感谢每一份 Star、问题反馈和代码贡献。
 
 ## 文档与贡献
 

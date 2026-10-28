@@ -2,102 +2,323 @@
 
 """
 设置对话框模块
-提供应用程序的设置界面，包括基本设置和高级设置
+提供基本设置、高级设置、关于和赞赏页面
 """
 
 from __future__ import annotations
 
+import os
 from collections.abc import Callable
 
 from PySide6.QtWidgets import (
+    QButtonGroup,
     QComboBox,
     QDialog,
     QDoubleSpinBox,
+    QFrame,
+    QGroupBox,
     QHBoxLayout,
     QLabel,
     QListView,
     QMessageBox,
     QPushButton,
+    QSizePolicy,
+    QStackedWidget,
+    QStyle,
+    QToolTip,
     QStyleOptionViewItem,
     QStyledItemDelegate,
     QTabWidget,
     QVBoxLayout,
     QWidget,
 )
-from PySide6.QtCore import Qt, QRect, Signal, QModelIndex, QPersistentModelIndex
-from PySide6.QtGui import QColor, QMouseEvent, QPainter, QPen
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, QTimer, Qt, QRect, Signal, QModelIndex, QPersistentModelIndex
+from PySide6.QtGui import QColor, QHelpEvent, QKeyEvent, QMouseEvent, QPainter, QPalette, QPen, QPixmap, QResizeEvent, QShowEvent
+
 import config.settings as settings
+from ui.switch_control import SwitchControl
+from ui.icons import line_icon
 
 
 class LayoutItemDelegate(QStyledItemDelegate):
-    """在布局下拉项右侧绘制“删除”按钮。"""
+    """绘制布局名称及右侧同风格的编辑、删除图标。"""
 
     def paint(self, painter: QPainter, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> None:
-        """绘制布局名称和删除按钮。
+        """给名称保留省略空间，图标颜色跟随列表选中状态。
 
         Args:
-            painter: Qt 绘图器。
-            option: 当前条目的样式及边界。
-            index: 当前条目的模型索引。
+            painter: Qt绘图器。
+            option: 条目样式。
+            index: 条目索引。
         """
-        # 先绘制文本区域，给右侧按钮留出空间
+        selected = bool(option.state & QStyle.StateFlag.State_Selected)
+        background = QPalette.ColorRole.Highlight if selected else QPalette.ColorRole.Base
+        painter.fillRect(option.rect, option.palette.brush(background))
         text_option = QStyleOptionViewItem(option)
-        text_option.rect = option.rect.adjusted(0, 0, -56, 0)
+        text_option.rect = option.rect.adjusted(0, 0, -76, 0)
+        text_option.textElideMode = Qt.TextElideMode.ElideRight
         super().paint(painter, text_option, index)
+        if index.data(Qt.ItemDataRole.DisplayRole) not in settings.WINDOW_LAYOUTS:
+            return
+        color = option.palette.color(QPalette.ColorRole.HighlightedText if selected else QPalette.ColorRole.Text)
+        for kind, rect in (('edit', self.get_edit_button_rect(option.rect)),
+                           ('delete', self.get_delete_button_rect(option.rect))):
+            line_icon(kind, color).paint(painter, rect.adjusted(4, 4, -4, -4))
 
-        btn_rect = self.get_delete_button_rect(option.rect)
-        painter.save()
-        painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
-        painter.setPen(QPen(QColor("#9e9e9e"), 1))
-        painter.setBrush(QColor("#f3f3f3"))
-        painter.drawRoundedRect(btn_rect, 4, 4)
-        painter.setPen(QColor("#333333"))
-        painter.drawText(btn_rect, Qt.AlignmentFlag.AlignCenter, "删除")
-        painter.restore()
+    def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex | QPersistentModelIndex) -> QSize:
+        """为两个图标保留足够点击高度。
+
+        Args:
+            option: 条目样式。
+            index: 条目索引。
+        Returns:
+            至少34逻辑像素高的条目尺寸。
+        """
+        size = super().sizeHint(option, index)
+        size.setHeight(max(34, size.height()))
+        return size
 
     @staticmethod
     def get_delete_button_rect(item_rect: QRect) -> QRect:
-        width = 44
-        height = 22
-        x = item_rect.right() - width - 8
-        y = item_rect.center().y() - height // 2
-        return QRect(x, y, width, height)
+        """计算条目右侧垃圾桶的点击区域。
+
+        Args:
+            item_rect: 条目矩形。
+        Returns:
+            28像素方形区域。
+        """
+        return QRect(item_rect.right()-36, item_rect.center().y()-14, 28, 28)
+
+    @staticmethod
+    def get_edit_button_rect(item_rect: QRect) -> QRect:
+        """计算垃圾桶左侧的编辑点击区域。
+
+        Args:
+            item_rect: 条目矩形。
+        Returns:
+            28像素方形区域。
+        """
+        return LayoutItemDelegate.get_delete_button_rect(item_rect).translated(-30, 0)
 
 
 class LayoutComboView(QListView):
-    """自定义下拉视图：点击“删除”按钮区域时触发布局删除。"""
+    """布局下拉列表：图标悬停提示、点击动作与普通选项互不混淆。
 
-    def __init__(self, combo, delete_handler, parent=None):
+    Attributes:
+        _pressed_action: 鼠标按下的动作和名称，松开时核对，拖出则取消。
+        _pending_action: 收起列表后等待执行的动作。
+    """
+
+    def __init__(self, combo: QComboBox, delete_handler: Callable[[str], None], parent: QWidget | None = None,
+                 *, edit_handler: Callable[[str], None] | None = None) -> None:
+        """绑定动作，使用子定时器避免在弹出列表事件中直接打开模态框。
+
+        Args:
+            combo: 所属下拉控件。
+            delete_handler: 删除回调。
+            parent: 父控件。
+            edit_handler: 编辑指定布局的回调。
+        """
         super().__init__(parent)
         self._combo = combo
         self._delete_handler = delete_handler
+        self._edit_handler = edit_handler
         self._delegate = LayoutItemDelegate(self)
         self.setItemDelegate(self._delegate)
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self._pressed_action: tuple[str, str] | None = None
+        self._pending_action: tuple[str, str] | None = None
+        self._action_timer = QTimer(self)
+        self._action_timer.setSingleShot(True)
+        self._action_timer.timeout.connect(self._run_action)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """在Qt弹出容器安装过滤器之后接管图标点击，防止松开事件被抢先消费。
+
+        Args:
+            event: 下拉视图显示事件。
+        """
+        super().showEvent(event)
+        self._pressed_action = None
+        self.viewport().installEventFilter(self)
+
+    def eventFilter(self, watched: QObject, event: QEvent) -> bool:
+        """优先处理图标按下及松开，普通行点击仍交给Qt选择逻辑。
+
+        Args:
+            watched: 事件接收对象，只有视口上的图标点击被接管。
+            event: Qt事件；拖离原图标松开仅取消动作，不切换布局。
+        Returns:
+            已消费图标事件为True，其余保持父类处理结果。
+        """
+        if watched is self.viewport() and isinstance(event, QMouseEvent):
+            if (event.type() == QEvent.Type.MouseButtonPress
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._action_at(event.position().toPoint()) is not None):
+                self.mousePressEvent(event)
+                return True
+            if (event.type() == QEvent.Type.MouseButtonRelease
+                    and event.button() == Qt.MouseButton.LeftButton
+                    and self._pressed_action is not None):
+                self.mouseReleaseEvent(event)
+                return True
+        return super().eventFilter(watched, event)
+
+    def _action_at(self, point: QPoint) -> tuple[str, str] | None:
+        """查找指针命中的动作，不把空列表占位项当作布局。
+
+        Args:
+            point: 视口坐标。
+        Returns:
+            动作和布局名，未命中为None。
+        """
+        index = self.indexAt(point)
+        name = index.data(Qt.ItemDataRole.DisplayRole)
+        if not index.isValid() or name not in settings.WINDOW_LAYOUTS:
+            return None
+        rect = self.visualRect(index)
+        if self._delegate.get_edit_button_rect(rect).contains(point) and self._edit_handler is not None:
+            return 'edit', str(name)
+        if self._delegate.get_delete_button_rect(rect).contains(point):
+            return 'delete', str(name)
+        return None
 
     def mousePressEvent(self, event: QMouseEvent) -> None:
-        """点击删除区域时执行删除回调，其余点击交给下拉列表处理。"""
-        index = self.indexAt(event.position().toPoint())
-        if index.isValid():
-            item_rect = self.visualRect(index)
-            btn_rect = self._delegate.get_delete_button_rect(item_rect)
-            if btn_rect.contains(event.position().toPoint()):
-                layout_name = index.data(Qt.ItemDataRole.DisplayRole)
-                self._delete_handler(layout_name)
-                return
+        """图标按下时暂存动作，避免误触布局切换。
+
+        Args:
+            event: 鼠标事件。
+        """
+        self._pressed_action = self._action_at(event.position().toPoint()) if event.button() == Qt.MouseButton.LeftButton else None
+        if self._pressed_action is not None:
+            event.accept()
+            return
         super().mousePressEvent(event)
+
+    def mouseReleaseEvent(self, event: QMouseEvent) -> None:
+        """在同一图标松开才执行，支持拖离取消。
+
+        Args:
+            event: 鼠标事件。
+        """
+        action, self._pressed_action = self._pressed_action, None
+        if action is not None:
+            if action == self._action_at(event.position().toPoint()):
+                self._pending_action = action
+                self._combo.hidePopup()
+                self._action_timer.start(0)
+            event.accept()
+            return
+        super().mouseReleaseEvent(event)
+
+    def viewportEvent(self, event: QEvent) -> bool:
+        """在图标上分别显示编辑、删除提示。
+
+        Args:
+            event: 视口事件。
+        Returns:
+            是否处理了该事件。
+        """
+        if event.type() == QEvent.Type.ToolTip and isinstance(event, QHelpEvent):
+            action = self._action_at(event.pos())
+            if action:
+                QToolTip.showText(event.globalPos(), '编辑' if action[0] == 'edit' else '删除', self)
+            else:
+                QToolTip.hideText()
+            return True
+        return super().viewportEvent(event)
+
+    def keyPressEvent(self, event: QKeyEvent) -> None:
+        """提供F2编辑和Delete删除的键盘入口。
+
+        Args:
+            event: 键盘事件。
+        """
+        name = self.currentIndex().data(Qt.ItemDataRole.DisplayRole)
+        if name in settings.WINDOW_LAYOUTS and event.key() in (Qt.Key.Key_F2, Qt.Key.Key_Delete):
+            self._pending_action = ('edit' if event.key() == Qt.Key.Key_F2 else 'delete', str(name))
+            self._combo.hidePopup()
+            self._action_timer.start(0)
+            event.accept()
+            return
+        super().keyPressEvent(event)
+
+    def _run_action(self) -> None:
+        """收起列表后运行唯一一次动作。"""
+        action, self._pending_action = self._pending_action, None
+        if action:
+            QToolTip.hideText()
+            handler = self._edit_handler if action[0] == 'edit' else self._delete_handler
+            if handler is not None:
+                handler(action[1])
+
+
+class ResponsiveImageLabel(QLabel):
+    """在可用区域内等比例缩放并居中显示图片。
+
+    Attributes:
+        _source_pixmap: 保留原始分辨率、供每次尺寸变化时重新缩放的图片。
+    """
+
+    def __init__(self, pixmap: QPixmap, parent: QWidget | None = None) -> None:
+        """创建自适应图片标签。
+
+        Args:
+            pixmap: 原始图片；允许为空以供调用方显示加载错误。
+            parent: 可选的Qt父控件。
+
+        Raises:
+            TypeError: pixmap不是QPixmap，或parent不是QWidget或None。
+        """
+        if not isinstance(pixmap, QPixmap):
+            raise TypeError("pixmap必须是QPixmap")
+        if parent is not None and not isinstance(parent, QWidget):
+            raise TypeError("parent必须是QWidget或None")
+        super().__init__(parent)
+        self._source_pixmap = QPixmap(pixmap)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
+        self._refresh_pixmap()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """控件尺寸变化时等比例刷新图片尺寸。
+
+        Args:
+            event: Qt传入的控件尺寸变化事件。
+        """
+        super().resizeEvent(event)
+        self._refresh_pixmap()
+
+    def _refresh_pixmap(self) -> None:
+        """将原始图片按当前标签可用尺寸等比例缩放。"""
+        if self._source_pixmap.isNull():
+            return
+        target_size = self.contentsRect().size()
+        if target_size.width() <= 0 or target_size.height() <= 0:
+            return
+        self.setPixmap(
+            self._source_pixmap.scaled(
+                target_size,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
 
 
 class SettingsDialog(QDialog):
     """
     设置对话框
-    提供基本设置和高级设置两个标签页，用于配置应用程序的各种参数
+    提供基本设置、高级设置、关于和赞赏四个标签页，用于配置和介绍应用程序
     """
 
     LABEL_MIN_WIDTH = 80
     PAGE_MARGIN = 20
     PAGE_SPACING = 20
+    layout_edit_requested = Signal(str)
     auto_layout_requested = Signal()
     layout_status_changed = Signal(int)
+    panel_arrangement_changed = Signal(int)
 
     manual_inference_changed = Signal(int)
     diagnostics_changed = Signal(int)
@@ -106,9 +327,8 @@ class SettingsDialog(QDialog):
     def __init__(
         self,
         parent: QWidget | None = None,
-        on_reset_callback: Callable[[], None] | None = None,
         on_interval_change_callback: Callable[[int], None] | None = None,
-        on_layout_change_callback: Callable[[int], None] | None = None,
+        on_layout_change_callback: Callable[[str], None] | None = None,
         on_device_change_callback: Callable[[int], None] | None = None,
         on_reset_time_change_callback: Callable[[int], None] | None = None,
         on_frame_length_change_callback: Callable[[int], None] | None = None,
@@ -121,15 +341,13 @@ class SettingsDialog(QDialog):
         on_layout_delete_callback: Callable[[SettingsDialog, str], bool] | None = None,
         on_model_change_callback: Callable[[int], None] | None = None,
         on_confidence_change_callback: Callable[[int], None] | None = None,
-        on_game_change_callback: Callable[[int], None] | None = None,
     ) -> None:
         """创建设置页及可选操作回调。
 
         Args:
             parent: 父窗口。
-            on_reset_callback: 对应设置操作的回调；None不连接外部处理。
             on_interval_change_callback: 对应设置操作的回调；None不连接外部处理。
-            on_layout_change_callback: 对应设置操作的回调；None不连接外部处理。
+            on_layout_change_callback: 接收手动布局名称的回调；None不连接外部处理。
             on_device_change_callback: 对应设置操作的回调；None不连接外部处理。
             on_reset_time_change_callback: 对应设置操作的回调；None不连接外部处理。
             on_frame_length_change_callback: 对应设置操作的回调；None不连接外部处理。
@@ -142,13 +360,11 @@ class SettingsDialog(QDialog):
             on_layout_delete_callback: 对应设置操作的回调；None不连接外部处理。
             on_model_change_callback: 对应设置操作的回调；None不连接外部处理。
             on_confidence_change_callback: 对应设置操作的回调；None不连接外部处理。
-            on_game_change_callback: 对应设置操作的回调；None不连接外部处理。
         """
         super().__init__(parent)
         self.setWindowTitle("设置")
         self.setMinimumSize(680, 400)
 
-        self.on_reset_callback = on_reset_callback
         self.on_interval_change_callback = on_interval_change_callback
         self.on_layout_change_callback = on_layout_change_callback
         self.on_device_change_callback = on_device_change_callback
@@ -163,7 +379,6 @@ class SettingsDialog(QDialog):
         self.on_layout_delete_callback = on_layout_delete_callback
         self.on_model_change_callback = on_model_change_callback
         self.on_confidence_change_callback = on_confidence_change_callback
-        self.on_game_change_callback = on_game_change_callback
 
         # 创建标签页控件
         self.tab_widget = QTabWidget(self)
@@ -172,10 +387,12 @@ class SettingsDialog(QDialog):
         self.tab1 = QWidget()
         self.tab2 = QWidget()
         self.tab3 = QWidget()
+        self.tab4 = QWidget()
 
         # 添加标签页
         self.tab_widget.addTab(self.tab1, "基本设置")
         self.tab_widget.addTab(self.tab2, "高级设置")
+        self.tab_widget.addTab(self.tab4, "赞赏")
         self.tab_widget.addTab(self.tab3, "关于")
 
         # 创建整体布局
@@ -190,6 +407,9 @@ class SettingsDialog(QDialog):
 
         # 在关于标签页中添加控件
         self._setup_about_settings()
+
+        # 在赞赏标签页中显示项目二维码
+        self._setup_donation_settings()
 
     @staticmethod
     def _set_combo_current_safely(combo: QComboBox, index: int) -> None:
@@ -238,78 +458,173 @@ class SettingsDialog(QDialog):
             help_label.setToolTip(tooltip)
             row.addWidget(help_label)
 
-        row.addWidget(combo)
-        row.addStretch()
+        row.addStretch(1)
+        row.addWidget(combo, 0, Qt.AlignmentFlag.AlignRight)
         parent_layout.addLayout(row)
         return combo
 
-    def _setup_basic_settings(self) -> None:
-        """在基本设置标签页中添加控件。"""
-        basic_layout = self._new_page_layout(self.tab1)
+    def _add_switch_row(
+        self,
+        parent_layout: QVBoxLayout,
+        label_text: str,
+        switch_name: str,
+        callback: Callable[[int], None],
+        tooltip: str = "",
+    ) -> SwitchControl:
+        """在设置页添加左侧说明、右侧滑动开关。
 
-        reset_layout = QHBoxLayout()
-        self.btn_reset = QPushButton("重置记牌器")
-        self.btn_reset.setObjectName("BtnReset")
-        self.btn_reset.clicked.connect(self._on_reset_clicked)
-        reset_layout.addWidget(self.btn_reset)
-        reset_layout.addStretch()
-        basic_layout.addLayout(reset_layout)
+        Args:
+            parent_layout: 接收设置行的垂直布局。
+            label_text: 设置名称及显示文字。
+            switch_name: 开关的稳定Qt对象名称。
+            callback: 状态变化时接收0/1值的回调。
+            tooltip: 可选的说明文字。
 
-        # 游戏选择
-        from config.settings import _scan_game_configs, GAME_NAME
-        game_names = _scan_game_configs()
-        self.combo_game = self._add_combo_row(
-            basic_layout,
-            "游戏选择：",
-            "GameCombo",
-            game_names,
-            self._on_game_changed,
-            tooltip="选择要支持的卡牌游戏类型",
-        )
+        Returns:
+            SwitchControl: 已接入回调的开关控件。
+        """
+        row = QHBoxLayout()
+        label = QLabel(label_text)
+        label.setMinimumWidth(self.LABEL_MIN_WIDTH)
+        row.addWidget(label)
+
+        if tooltip:
+            help_label = QLabel("?")
+            help_label.setFixedSize(16, 16)
+            help_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            help_label.setStyleSheet(
+                "QLabel { color: #999; font-size: 12px; font-weight: bold; "
+                "border: 1px solid #bbb; border-radius: 8px; }"
+                "QLabel:hover { color: #333; border-color: #666; }"
+            )
+            help_label.setToolTip(tooltip)
+            row.addWidget(help_label)
+
+        switch = SwitchControl(label_text.rstrip("：:"), self)
+        switch.setObjectName(switch_name)
+        switch.value_changed.connect(callback)
+        row.addStretch(1)
+        row.addWidget(switch)
+        parent_layout.addLayout(row)
+        return switch
+
+    def _build_layout_mode_settings(self, parent_layout: QVBoxLayout) -> None:
+        """建立自动/手动模式选择及对应的缩进配置区。
+
+        Args:
+            parent_layout: 接收布局模式控件的基本设置布局。
+        """
+        mode_row = QHBoxLayout()
+        mode_label = QLabel("布局方式：")
+        mode_label.setMinimumWidth(self.LABEL_MIN_WIDTH)
+        mode_row.addWidget(mode_label)
+
+        self.btn_layout_auto = QPushButton("自动布局")
+        self.btn_layout_manual = QPushButton("手动框选")
+        for button in (self.btn_layout_auto, self.btn_layout_manual):
+            button.setObjectName("LayoutModeButton")
+            button.setCheckable(True)
+
+        self.layout_mode_group = QButtonGroup(self)
+        self.layout_mode_group.setExclusive(True)
+        self.layout_mode_group.addButton(self.btn_layout_auto, 0)
+        self.layout_mode_group.addButton(self.btn_layout_manual, 1)
+        self.layout_mode_group.idClicked.connect(self._on_layout_mode_changed)
+        mode_row.addWidget(self.btn_layout_auto)
+        mode_row.addWidget(self.btn_layout_manual)
+        mode_row.addStretch(1)
+        parent_layout.addLayout(mode_row)
+
+        self.layout_mode_details = QFrame()
+        self.layout_mode_details.setObjectName("LayoutModeDetails")
+        self.layout_mode_details.setFrameShape(QFrame.Shape.NoFrame)
+        details_layout = QVBoxLayout(self.layout_mode_details)
+        details_layout.setContentsMargins(18, 5, 0, 5)
+
+        self.layout_settings_group = QGroupBox()
+        self.layout_settings_group.setObjectName("LayoutSettingsGroup")
+        group_layout = QVBoxLayout(self.layout_settings_group)
+        group_layout.setContentsMargins(10, 14, 10, 8)
+
+        self.layout_mode_stack = QStackedWidget(self.layout_settings_group)
+        self.auto_layout_panel = QWidget(self.layout_mode_stack)
+        auto_panel_layout = QHBoxLayout(self.auto_layout_panel)
+        auto_panel_layout.setContentsMargins(0, 0, 0, 0)
+        auto_panel_layout.addWidget(QLabel("目标游戏窗口："))
+        self.label_auto_window = QLabel("尚未选择目标窗口")
+        self.label_auto_window.setObjectName("AutoLayoutWindowTitle")
+        auto_panel_layout.addWidget(self.label_auto_window, 1)
+        self.btn_auto_layout = QPushButton("选择窗口…")
+        self.btn_auto_layout.setObjectName("AutoLayoutWindowButton")
+        self.btn_auto_layout.setToolTip("选择要自动定位牌区的游戏窗口")
+        self.btn_auto_layout.clicked.connect(self.auto_layout_requested.emit)
+        auto_panel_layout.addWidget(self.btn_auto_layout)
+        self.layout_mode_stack.addWidget(self.auto_layout_panel)
+
+        self.manual_layout_panel = QWidget(self.layout_mode_stack)
+        manual_panel_layout = QVBoxLayout(self.manual_layout_panel)
+        manual_panel_layout.setContentsMargins(0, 0, 0, 0)
+        manual_panel_layout.setSpacing(12)
 
         self.combo_layout = QComboBox()
         self.combo_layout.setObjectName("LayoutCombo")
         self.combo_layout.setMinimumWidth(300)
         self.combo_layout.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
         self.combo_layout.setMinimumContentsLength(18)
-        self.combo_layout.setView(LayoutComboView(self.combo_layout, self._on_layout_delete_requested, self))
-        from config.settings import WINDOW_LAYOUTS
-
-        layout_names = list(WINDOW_LAYOUTS.keys())
-        self._set_combo_items(self.combo_layout, layout_names, default_index=0)
-        self.combo_layout.currentIndexChanged.connect(self._on_layout_changed)
+        self.combo_layout.setView(LayoutComboView(self.combo_layout, self._on_layout_delete_requested, self,
+                                                   edit_handler=self.layout_edit_requested.emit))
+        self.combo_layout.activated.connect(self._on_layout_changed)
 
         layout_row = QHBoxLayout()
-        layout_label = QLabel("布局配置管理：")
+        layout_label = QLabel("选择布局：")
         layout_label.setMinimumWidth(self.LABEL_MIN_WIDTH)
         layout_row.addWidget(layout_label)
         layout_row.addWidget(self.combo_layout, 1)
-        self.btn_refresh_layout = QPushButton("\u21bb")
-        self.btn_refresh_layout.setFixedSize(28, 28)
-        self.btn_refresh_layout.setToolTip("刷新布局列表")
-        from PySide6.QtGui import QFont
-        font = self.btn_refresh_layout.font()
-        font.setBold(True)
-        font.setPointSize(font.pointSize() + 2)
-        self.btn_refresh_layout.setFont(font)
-        self.btn_refresh_layout.clicked.connect(lambda: self.refresh_layout_list(selected_name=self.combo_layout.currentText()))
-        layout_row.addWidget(self.btn_refresh_layout)
-        layout_row.addSpacing(8)
-
-        self.btn_layout_editor = QPushButton("可视化编辑")
+        self.btn_layout_editor = QPushButton("新建布局")
         self.btn_layout_editor.setObjectName("BtnLayoutEditor")
         self.btn_layout_editor.clicked.connect(self._on_layout_editor_clicked)
         layout_row.addWidget(self.btn_layout_editor)
-        basic_layout.addLayout(layout_row)
+        manual_panel_layout.addLayout(layout_row)
 
-        auto_row = QHBoxLayout()
-        self.btn_auto_layout = QPushButton("自动布局…")
-        self.btn_auto_layout.setToolTip("选择游戏窗口即可；请在开局前启用，自动识别手牌、底牌和出牌区")
-        self.btn_auto_layout.clicked.connect(self.auto_layout_requested.emit)
-        auto_row.addWidget(self.btn_auto_layout)
-        auto_row.addWidget(QLabel("选择窗口，自动定位牌区；支持单张、长牌组和多行出牌"))
-        auto_row.addStretch()
-        basic_layout.addLayout(auto_row)
+        self.combo_manual_inference = self._add_combo_row(
+            manual_panel_layout,
+            "检测方式：",
+            "ManualInferenceCombo",
+            ["拼图检测", "原图检测"],
+            self.manual_inference_changed.emit,
+            tooltip="仅对手动框选布局生效；自动布局始终使用整图。",
+        )
+        self.set_current_manual_inference(settings.PACKED_INFERENCE)
+        self.layout_mode_stack.addWidget(self.manual_layout_panel)
+        group_layout.addWidget(self.layout_mode_stack)
+        details_layout.addWidget(self.layout_settings_group)
+        parent_layout.addWidget(self.layout_mode_details)
+
+        self.refresh_layout_list()
+        current_layout = settings.WINDOW_LAYOUTS.get(settings.CURRENT_LAYOUT or "", {})
+        current_mode = "auto" if current_layout.get("mode") == "auto" else "manual"
+        self.set_current_layout_mode(current_mode, str(current_layout.get("window_title", "")))
+
+    def _setup_basic_settings(self) -> None:
+        """在基本设置标签页中添加控件。"""
+        basic_layout = self._new_page_layout(self.tab1)
+        self._build_layout_mode_settings(basic_layout)
+
+        self.combo_panel_arrangement = self._add_combo_row(
+            basic_layout, "界面排列：", "PanelArrangementCombo",
+            ["上下排列", "左右排列（长条）"], self.panel_arrangement_changed.emit,
+            tooltip="仅调整剩余牌数与出牌记录的位置，保留当前牌局；与游戏检测布局独立",
+        )
+
+        from config.settings import _scan_model_dirs
+        self.combo_model = self._add_combo_row(
+            basic_layout,
+            "YOLO 模型：",
+            "ModelCombo",
+            _scan_model_dirs(),
+            self._on_model_changed,
+            tooltip="选择 YOLO 推理模型，将 yolo/weights/ 下的子文件夹放入 best.pt 即可识别",
+        )
 
         self.combo_device = self._add_combo_row(
             basic_layout,
@@ -318,55 +633,47 @@ class SettingsDialog(QDialog):
             ["CPU", "GPU"],
             self._on_device_changed,
         )
-        self.combo_always_on_top = self._add_combo_row(
+
+        self.switch_always_on_top = self._add_switch_row(
             basic_layout,
             "显示在最上层：",
-            "AlwaysOnTopCombo",
-            ["否", "是"],
+            "AlwaysOnTopSwitch",
             self._on_always_on_top_changed,
         )
-        self.combo_show_played_cards = self._add_combo_row(
+        self.switch_show_played_cards = self._add_switch_row(
             basic_layout,
             "显示出牌：",
-            "ShowPlayedCardsCombo",
-            ["否", "是"],
+            "ShowPlayedCardsSwitch",
             self._on_show_played_cards_changed,
         )
-        self.combo_show_layout_status = self._add_combo_row(
+        self.switch_show_layout_status = self._add_switch_row(
             basic_layout,
             "显示布局状态提示：",
-            "ShowLayoutStatusCombo",
-            ["否", "是"],
+            "ShowLayoutStatusSwitch",
             self.layout_status_changed.emit,
-            tooltip="显示底部的自动定位和等待画面提示；关闭后仍显示故障和恢复入口",
+            tooltip="在标题栏耗时后显示简短布局提示，悬停查看详情；关闭后仍保留故障和恢复入口",
+        )
+        self.switch_show_timing = self._add_switch_row(
+            basic_layout,
+            "显示耗时：",
+            "ShowTimingSwitch",
+            self._on_show_timing_changed,
+            tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
         )
 
         basic_layout.addStretch()
 
+    def set_current_panel_arrangement(self, arrangement: str) -> None:
+        """回显已保存的界面排列，避免刷新触发重复保存。
+
+        Args:
+            arrangement: vertical为上下排列，horizontal为左右排列。
+        """
+        self._set_combo_current_safely(self.combo_panel_arrangement, int(arrangement == 'horizontal'))
+
     def _setup_advanced_settings(self) -> None:
         """在高级设置标签页中添加控件。"""
         advanced_layout = self._new_page_layout(self.tab2)
-
-        self.combo_debug_mode = self._add_combo_row(
-            advanced_layout,
-            "输出调试日志：",
-            "DebugModeCombo",
-            ["否", "是"],
-            self._on_debug_mode_changed,
-            tooltip="在终端输出每帧各牌区的识别结果，不负责保存截图",
-        )
-
-        # 模型选择
-        from config.settings import _scan_model_dirs, YOLO_MODEL_NAME
-        model_dirs = _scan_model_dirs()
-        self.combo_model = self._add_combo_row(
-            advanced_layout,
-            "YOLO 模型：",
-            "ModelCombo",
-            model_dirs,
-            self._on_model_changed,
-            tooltip="选择 YOLO 推理模型，将 yolo/weights/ 下的子文件夹放入 best.pt 即可识别",
-        )
 
         self.combo_confidence = self._add_combo_row(
             advanced_layout,
@@ -406,32 +713,34 @@ class SettingsDialog(QDialog):
         )
 
 
-        self.combo_show_current_screenshot = self._add_combo_row(
+        self.switch_show_current_screenshot = self._add_switch_row(
             advanced_layout,
             "实时显示 YOLO 输入：",
-            "ShowCurrentScreenshotCombo",
-            ["否", "是"],
+            "ShowCurrentScreenshotSwitch",
             self._on_show_current_screenshot_changed,
             tooltip="显示本轮实际传给 YOLO 的原图或拼图；补查回退时显示最后使用的原图，不叠加原图牌区框。",
         )
 
-        self.combo_show_timing = self._add_combo_row(
+        self.switch_debug_mode = self._add_switch_row(
             advanced_layout,
-            "显示耗时：",
-            "ShowTimingCombo",
-            ["否", "是"],
-            self._on_show_timing_changed,
-            tooltip="在标题栏显示 YOLO 推理耗时和整轮流程耗时",
+            "输出调试日志：",
+            "DebugModeSwitch",
+            self._on_debug_mode_changed,
+            tooltip="在终端输出每帧各牌区的识别结果，不负责保存截图",
         )
 
-        self.combo_full_diagnostics = self._add_combo_row(
-            advanced_layout, '完整诊断：', 'FullDiagnosticsCombo', ['否', '是'], self.diagnostics_changed.emit,
+        self.switch_full_diagnostics = self._add_switch_row(
+            advanced_layout, '完整诊断：', 'FullDiagnosticsSwitch', self.diagnostics_changed.emit,
             tooltip='后台保存原图、每次YOLO输入及标注、状态变化。队列/内存拥堵时暂缓采样，回落后自动恢复并记录缺帧；磁盘故障需处理后重开。识别继续。保存期间仍有图片复制等开销。',
         )
         disk_row = QHBoxLayout()
-        disk_row.addWidget(QLabel('诊断磁盘上限：'))
+        disk_label = QLabel('诊断磁盘上限：')
+        disk_label.setMinimumWidth(self.LABEL_MIN_WIDTH)
+        disk_row.addWidget(disk_label)
+        disk_row.addStretch(1)
         self.spin_diagnostic_disk = QDoubleSpinBox()
         self.spin_diagnostic_disk.setObjectName('DiagnosticDiskLimit')
+        self.spin_diagnostic_disk.setFixedWidth(130)
         self.spin_diagnostic_disk.setRange(0.1, 1024.0)
         self.spin_diagnostic_disk.setDecimals(2)
         self.spin_diagnostic_disk.setSingleStep(0.5)
@@ -439,7 +748,7 @@ class SettingsDialog(QDialog):
         self.spin_diagnostic_disk.setKeyboardTracking(False)
         self.spin_diagnostic_disk.setToolTip('诊断文件总额，0.1～1024 GiB，1 GiB约1.07 GB；不会预先占用磁盘。下调时只清已结束旧局，当前局超额会暂停。')
         self.spin_diagnostic_disk.editingFinished.connect(self._on_diagnostic_disk_edited)
-        disk_row.addWidget(self.spin_diagnostic_disk)
+        disk_row.addWidget(self.spin_diagnostic_disk, 0, Qt.AlignmentFlag.AlignRight)
         advanced_layout.addLayout(disk_row)
         self.set_current_diagnostic_disk(float(settings.DIAGNOSTIC_DISK_GIB))
 
@@ -448,24 +757,7 @@ class SettingsDialog(QDialog):
         advanced_layout.addWidget(self.label_diagnostics)
         self.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
 
-        self.combo_manual_inference = self._add_combo_row(
-            advanced_layout, "手动布局检测方式：", 'ManualInferenceCombo',
-            ["拼图检测", "原图检测"], self.manual_inference_changed.emit,
-        )
-        self.set_current_manual_inference(settings.PACKED_INFERENCE)
-        self.combo_manual_inference.setToolTip("所有手动布局共用此选择，保存后重新打开仍保留。自动布局始终整图。")
-        self.label_inference_route = QLabel("自动布局使用整图；手动布局可选原图。选择拼图时，未扣手牌时拼底牌与手牌，扣牌后拼三家出牌与底牌。")
-        self.label_inference_route.setWordWrap(True)
-        self.label_inference_route.setToolTip("当前布局单牌框自适应尺度，固定768×480；开局前只推理两区，结果不可靠等下一帧。记牌中可复查原图。静态模型保留导出尺寸。")
-        advanced_layout.addWidget(self.label_inference_route)
         advanced_layout.addStretch()
-
-    def _on_reset_clicked(self):
-        """
-        重置按钮点击事件
-        """
-        if self.on_reset_callback:
-            self.on_reset_callback()
 
     def _on_interval_changed(self, index):
         """
@@ -477,20 +769,27 @@ class SettingsDialog(QDialog):
         if self.on_interval_change_callback:
             self.on_interval_change_callback(index)
 
-    def _on_layout_changed(self, index):
-        """
-        布局配置改变事件
+    def _on_layout_mode_changed(self, index: int) -> None:
+        """仅切换二级配置区，不在选择布局前改变当前运行布局。
 
-        参数:
-            index: 选择的索引
+        Args:
+            index: 0显示自动窗口选择，1显示手动布局设置。
         """
+        if index not in (0, 1):
+            return
+        self._layout_mode = "auto" if index == 0 else "manual"
+        self.layout_mode_stack.setCurrentIndex(index)
+
+    def _on_layout_changed(self, index: int) -> None:
+        """将手动布局下拉项转换为布局名称后交给主窗口处理。
+
+        Args:
+            index: 手动布局下拉列表索引。
+        """
+        if not self.combo_layout.isEnabled() or not 0 <= index < self.combo_layout.count():
+            return
         if self.on_layout_change_callback:
-            self.on_layout_change_callback(index)
-
-    def _on_game_changed(self, index):
-        """游戏选择改变事件。"""
-        if self.on_game_change_callback:
-            self.on_game_change_callback(index)
+            self.on_layout_change_callback(self.combo_layout.itemText(index))
 
     def _on_device_changed(self, index):
         """
@@ -575,8 +874,8 @@ class SettingsDialog(QDialog):
         if self.on_confidence_change_callback:
             self.on_confidence_change_callback(index)
 
-    def _on_layout_editor_clicked(self):
-        """打开可视化布局编辑器。"""
+    def _on_layout_editor_clicked(self) -> None:
+        """打开空白编辑器创建新布局，已有布局通过各自的铅笔图标编辑。"""
         if self.on_layout_editor_callback:
             self.on_layout_editor_callback(self)
 
@@ -602,17 +901,26 @@ class SettingsDialog(QDialog):
             if deleted is False:
                 QMessageBox.warning(self, "删除失败", "布局删除失败，请检查配置文件后重试。")
 
-    def refresh_layout_list(self, selected_name=None):
-        """刷新布局下拉列表并可选指定当前项。"""
-        import config.settings as settings
+    def refresh_layout_list(self, selected_name: str | None = None) -> None:
+        """刷新手动布局列表，并保留可用的当前项。
 
-        names = list(settings.WINDOW_LAYOUTS.keys())
-        self._set_combo_items(self.combo_layout, names, default_index=0)
-        target_name = selected_name or settings.CURRENT_LAYOUT
-        if target_name:
-            idx = self.combo_layout.findText(target_name)
-            if idx >= 0:
-                self._set_combo_current_safely(self.combo_layout, idx)
+        Args:
+            selected_name: 优先显示的手动布局名称；自动布局名称会被忽略。
+        """
+        names = [
+            name for name, config in settings.WINDOW_LAYOUTS.items()
+            if config.get("mode", "manual") == "manual"
+        ]
+        display_names = names or ["暂无手动布局"]
+        self._set_combo_items(self.combo_layout, display_names, default_index=0)
+        self.combo_layout.setEnabled(bool(names))
+        self.combo_layout.setToolTip(
+            "选择要使用的手动布局。" if names else "暂无手动布局；可通过“可视化编辑”创建。"
+        )
+        if names:
+            target_name = selected_name if selected_name in names else settings.CURRENT_LAYOUT
+            target_name = target_name if target_name in names else names[0]
+            self._set_combo_current_safely(self.combo_layout, self.combo_layout.findText(str(target_name)))
         self.combo_layout.update()
         self.combo_layout.repaint()
 
@@ -626,15 +934,33 @@ class SettingsDialog(QDialog):
         index = self.combo_interval.findText(interval_text)
         self._set_combo_current_safely(self.combo_interval, index)
 
-    def set_current_layout(self, layout_name):
-        """
-        设置当前布局配置
+    def set_current_layout(self, layout_name: str) -> None:
+        """恢复当前手动布局选择，不触发切换回调。
 
-        参数:
-            layout_name: 布局配置名称
+        Args:
+            layout_name: 已保存的手动布局名称。
         """
         index = self.combo_layout.findText(layout_name)
         self._set_combo_current_safely(self.combo_layout, index)
+
+    def set_current_layout_mode(self, mode: str, window_title: str = "") -> None:
+        """按当前活动布局恢复顶层模式和自动窗口标题。
+
+        Args:
+            mode: 当前活动布局模式，只允许auto或manual。
+            window_title: 自动模式当前关联的游戏窗口标题。
+
+        Raises:
+            ValueError: mode不是auto或manual。
+        """
+        if mode not in ("auto", "manual"):
+            raise ValueError("布局模式必须是auto或manual")
+        index = 0 if mode == "auto" else 1
+        button = self.layout_mode_group.button(index)
+        if button is not None:
+            button.setChecked(True)
+        self._on_layout_mode_changed(index)
+        self.label_auto_window.setText(window_title or "尚未选择目标窗口")
 
     def set_current_device(self, device_choice):
         """
@@ -647,15 +973,6 @@ class SettingsDialog(QDialog):
         device_text = device_map.get(device_choice, "CPU")
         index = self.combo_device.findText(device_text)
         self._set_combo_current_safely(self.combo_device, index)
-
-    def set_current_game(self, game_name: str):
-        """设置当前游戏选择。
-
-        Args:
-            game_name: 游戏名称（如 ``"doudizhu"``）。
-        """
-        index = self.combo_game.findText(game_name)
-        self._set_combo_current_safely(self.combo_game, index)
 
     def set_current_reset_time(self, reset_time):
         """
@@ -679,50 +996,37 @@ class SettingsDialog(QDialog):
         index = self.combo_frame_length.findText(frame_length_text)
         self._set_combo_current_safely(self.combo_frame_length, index)
 
-    def set_current_always_on_top(self, always_on_top):
-        """
-        设置当前是否显示在最上层
+    def set_current_always_on_top(self, always_on_top: bool) -> None:
+        """恢复已保存的置顶状态，不触发设置回调。
 
-        参数:
-            always_on_top: 是否显示在最上层（True/False）
+        Args:
+            always_on_top: 是否显示在最上层。
         """
-        always_on_top_text = "是" if always_on_top else "否"
-        index = self.combo_always_on_top.findText(always_on_top_text)
-        self._set_combo_current_safely(self.combo_always_on_top, index)
+        self.switch_always_on_top.set_checked_silently(always_on_top)
 
-    def set_current_show_played_cards(self, show_played_cards):
+    def set_current_show_played_cards(self, show_played_cards: bool) -> None:
+        """恢复已保存的出牌历史显示状态。
+
+        Args:
+            show_played_cards: 是否显示出牌历史。
         """
-        设置当前是否显示玩家所出的牌
+        self.switch_show_played_cards.set_checked_silently(show_played_cards)
 
-        参数:
-            show_played_cards: 是否显示玩家所出的牌（True/False）
+    def set_current_debug_mode(self, debug_mode: bool) -> None:
+        """恢复已保存的调试日志状态。
+
+        Args:
+            debug_mode: 是否输出调试日志。
         """
-        show_played_cards_text = "是" if show_played_cards else "否"
-        index = self.combo_show_played_cards.findText(show_played_cards_text)
-        self._set_combo_current_safely(self.combo_show_played_cards, index)
+        self.switch_debug_mode.set_checked_silently(debug_mode)
 
-    def set_current_debug_mode(self, debug_mode):
+    def set_current_show_timing(self, show_timing: bool) -> None:
+        """恢复已保存的耗时显示状态。
+
+        Args:
+            show_timing: 是否在标题栏显示耗时。
         """
-        设置当前调试模式
-
-        参数:
-            debug_mode: 是否开启调试模式（True/False）
-        """
-        debug_mode_text = "是" if debug_mode else "否"
-        index = self.combo_debug_mode.findText(debug_mode_text)
-        self._set_combo_current_safely(self.combo_debug_mode, index)
-
-
-    def set_current_show_timing(self, show_timing):
-        """
-        设置当前显示耗时
-
-        参数:
-            show_timing: 是否显示耗时（True/False）
-        """
-        text = "是" if show_timing else "否"
-        index = self.combo_show_timing.findText(text)
-        self._set_combo_current_safely(self.combo_show_timing, index)
+        self.switch_show_timing.set_checked_silently(show_timing)
 
     def set_current_show_current_screenshot(self, show_current_screenshot: bool) -> None:
         """设置当前实时截图预览选项。
@@ -730,9 +1034,7 @@ class SettingsDialog(QDialog):
         Args:
             show_current_screenshot: 是否打开实时截图预览。
         """
-        text = "是" if show_current_screenshot else "否"
-        index = self.combo_show_current_screenshot.findText(text)
-        self._set_combo_current_safely(self.combo_show_current_screenshot, index)
+        self.switch_show_current_screenshot.set_checked_silently(show_current_screenshot)
 
     def _on_diagnostic_disk_edited(self) -> None:
         """只提交编辑完成后的磁盘额度，等后端确认后再持久化。"""
@@ -756,9 +1058,7 @@ class SettingsDialog(QDialog):
         Args:
             enabled: 主进程已经确认保存的偏好。
         """
-        self.combo_full_diagnostics.blockSignals(True)
-        self.combo_full_diagnostics.setCurrentIndex(int(enabled))
-        self.combo_full_diagnostics.blockSignals(False)
+        self.switch_full_diagnostics.set_checked_silently(enabled)
 
     def set_diagnostic_status(self, status: dict[str, object]) -> None:
         """展示后台实际状态和完整故障原因。
@@ -795,7 +1095,7 @@ class SettingsDialog(QDialog):
         Args:
             enabled: 是否显示正常布局状态。
         """
-        self._set_combo_current_safely(self.combo_show_layout_status, int(enabled))
+        self.switch_show_layout_status.set_checked_silently(enabled)
 
     def set_current_model(self, model_name: str):
         """设置当前 YOLO 模型选择。"""
@@ -850,3 +1150,19 @@ class SettingsDialog(QDialog):
 
         # 添加弹性空间
         about_layout.addStretch()
+
+    def _setup_donation_settings(self) -> None:
+        """在赞赏标签页中自适应展示项目二维码，不添加说明文字。"""
+        donation_layout = QVBoxLayout(self.tab4)
+        donation_layout.setContentsMargins(0, 0, 0, 0)
+        donation_layout.setSpacing(0)
+        image_path = os.path.join(settings.RESOURCE_DIR, "images", "QR.png")
+        pixmap = QPixmap(image_path)
+        if pixmap.isNull():
+            image_label = QLabel(self.tab4)
+            image_label.setText(f"无法加载赞赏图片：{image_path}")
+            image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        else:
+            image_label = ResponsiveImageLabel(pixmap, self.tab4)
+            image_label.setObjectName("DonationQRCode")
+        donation_layout.addWidget(image_label, 1)

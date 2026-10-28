@@ -13,14 +13,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PIL import Image
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QApplication, QLabel
-from PySide6.QtGui import QPixmap
+from PySide6.QtWidgets import QApplication, QLabel, QStatusBar
+from PySide6.QtGui import QStatusTipEvent
 from shiboken6 import delete
 
 from config import settings
 from config.store import read_config
 from core.inference_process import InferenceWorker
-from ui.layout_editor_dialog import LayoutEditorDialog, PreviewDialog
+from ui.layout_editor_dialog import LayoutEditorDialog
 from ui.main_window import CardUI
 from ui.screenshot_preview import ScreenshotPreviewDialog
 from ui.settings_dialog import SettingsDialog
@@ -55,6 +55,78 @@ class WindowBehaviorTests(unittest.TestCase):
         self.app.processEvents()
         self.addCleanup(self.window.close)
 
+    def test_horizontal_startup_matches_switched_height_and_preserves_later_user_resize(self) -> None:
+        """启动临时高窗口应收拢到切换后的高度，后续重显不能覆盖用户改高的尺寸。"""
+        with patch.object(settings, 'PANEL_ARRANGEMENT', 'horizontal'):
+            window = CardUI()
+            self.addCleanup(delete, window)
+            self.addCleanup(window.close)
+            window.setStyleSheet(Path('ui/ui.qss').read_text(encoding='utf-8'))
+            # 模拟原生窗口创建期间留下的临时额外高度，不是显示后的用户调整。
+            window.resize(window.width(), window.height() + 60)
+            window.show()
+            self.app.processEvents()
+            self.app.processEvents()
+            startup_height = window.height()
+            with patch.object(settings, 'PANEL_ARRANGEMENT', 'vertical'):
+                window._apply_panel_arrangement()
+                self.app.processEvents()
+            window._apply_panel_arrangement()
+            self.app.processEvents()
+            self.assertEqual(startup_height, window.height())
+            self.assertLessEqual(abs(window.card_panel.width() - window.played_panel.width()), 1)
+            window.resize(window.width(), window.height() + 40)
+            self.app.processEvents()
+            user_size = window.size()
+            window.hide()
+            window.show()
+            self.app.processEvents()
+            self.assertEqual(window.size(), user_size)
+
+    def test_layout_popup_icons_receive_release_without_selecting_a_layout(self) -> None:
+        """真实下拉点击分别触发编辑和删除，不被Qt弹出容器抢走，也不误切换条目。"""
+        from PySide6.QtTest import QTest
+        from PySide6.QtWidgets import QMessageBox
+        from ui.settings_dialog import LayoutItemDelegate
+        layouts = {name: {'window_title': 'Test Game', 'layout': {}}
+                   for name in ('测试布局甲', '测试布局乙')}
+        edited: list[str] = []
+        deleted: list[str] = []
+        activated: list[int] = []
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), \
+                patch('ui.settings_dialog.QMessageBox.question', return_value=QMessageBox.StandardButton.Yes):
+            dialog = SettingsDialog(self.window, on_layout_delete_callback=lambda _dialog, name: deleted.append(name) or True)
+            self.addCleanup(delete, dialog)
+            self.addCleanup(dialog.close)
+            dialog.layout_edit_requested.connect(lambda name: edited.append(name))
+            dialog.combo_layout.activated.connect(lambda index: activated.append(index))
+            dialog.set_current_layout_mode('manual', '')
+            dialog.show()
+            self.app.processEvents()
+            combo = dialog.combo_layout
+            row_index = combo.findText('测试布局乙')
+            for kind in ('edit', 'delete'):
+                combo.showPopup()
+                QTest.qWait(300)  # 让Qt自身的弹出防误触计时结束，覆盖真实点击路径。
+                view = combo.view()
+                rect = view.visualRect(view.model().index(row_index, 0))
+                target = (LayoutItemDelegate.get_edit_button_rect(rect) if kind == 'edit'
+                          else LayoutItemDelegate.get_delete_button_rect(rect))
+                QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
+                self.app.processEvents()
+                self.app.processEvents()
+            self.assertEqual(edited, ['测试布局乙'])
+            self.assertEqual(deleted, ['测试布局乙'])
+            self.assertEqual(activated, [])
+            combo.showPopup()
+            QTest.qWait(300)
+            view = combo.view()
+            rect = view.visualRect(view.model().index(row_index, 0))
+            QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
+            self.app.processEvents()
+            self.assertEqual(activated, [row_index])
+            self.assertEqual(combo.currentText(), '测试布局乙')
+
     def make_editor(self) -> LayoutEditorDialog:
         """创建真实编辑器，不枚举用户正在使用的窗口。
 
@@ -88,17 +160,42 @@ class WindowBehaviorTests(unittest.TestCase):
         self.assertEqual(dialog.spin_diagnostic_disk.minimum(), .1)
         self.assertEqual(dialog.spin_diagnostic_disk.maximum(), 1024.)
 
+    def test_transient_diagnostic_notices_do_not_toggle_footer_or_resize_window(self) -> None:
+        """压力暂缓/恢复交替只更新标题栏，关闭普通提示也不能漏掉暂缓通知。"""
+        settings.SHOW_LAYOUT_STATUS = False
+        self.window.worker.state = 'ready'
+        self.window.on_layout_status_changed('自动布局：已定位')
+        self.assertIsNone(self.window.findChild(QStatusBar))
+        with patch.object(self.window, '_fit_main_window') as fit:
+            for stamp in range(2, 12, 2):
+                self.window.on_diagnostic_status({'state': 'backpressure', 'reason': 'memory_limit',
+                                                  'at_monotonic_ns': stamp})
+                self.assertIsNone(self.window.findChild(QStatusBar))
+                self.assertEqual(self.window.title_bar.status_label.text(), '· 诊断暂缓')
+                self.assertIn('memory_limit', self.window.title_bar.status_label.toolTip())
+                self.window.on_layout_status_changed('自动布局：等待有效画面')
+                self.assertEqual(self.window.title_bar.status_label.text(), '· 诊断暂缓')
+                self.window.on_diagnostic_status({'state': 'recording', 'at_monotonic_ns': stamp + 1})
+                self.assertIsNone(self.window.findChild(QStatusBar))
+                self.assertTrue(self.window.title_bar.status_label.isHidden())
+            fit.assert_not_called()
+        settings.SHOW_LAYOUT_STATUS = True
+        self.window.on_layout_status_changed('自动布局：已定位')
+        self.assertEqual(self.window.title_bar.status_label.text(), '· 定位完成')
+
     def test_diagnostic_warning_visible_with_layout_status_hidden(self) -> None:
         """诊断写盘失败不因隐藏普通提示而消失，也不强制停止识别。"""
         settings.SHOW_LAYOUT_STATUS = False
         self.window.worker.state = 'ready'
         self.window.on_diagnostic_status({'state': 'paused', 'reason': 'disk full', 'at_monotonic_ns': 2})
-        self.assertFalse(self.window.statusBar().isHidden())
-        self.assertIn('disk full', self.window.statusBar().currentMessage())
+        self.assertIsNone(self.window.findChild(QStatusBar))
+        self.assertEqual(self.window.title_bar.status_label.text(), '· 诊断暂停')
+        self.assertIn('disk full', self.window.title_bar.status_label.toolTip())
         self.window.on_diagnostic_status({'state': 'recording', 'at_monotonic_ns': 1})
-        self.assertIn('disk full', self.window.statusBar().currentMessage())
+        self.assertIn('disk full', self.window.title_bar.status_label.toolTip())
         self.window.on_diagnostic_status({'state': 'off', 'at_monotonic_ns': 3})
-        self.assertTrue(self.window.statusBar().isHidden())
+        self.assertIsNone(self.window.findChild(QStatusBar))
+        self.assertTrue(self.window.title_bar.status_label.isHidden())
         self.assertEqual(self.window.worker.state, 'ready')
 
     def test_full_diagnostic_preference_waits_for_ack_and_reopens(self) -> None:
@@ -115,8 +212,8 @@ class WindowBehaviorTests(unittest.TestCase):
         self.assertTrue(read_config(str(self.config_path))['full_diagnostics'])
         dialog = SettingsDialog(self.window)
         self.addCleanup(dialog.close)
-        self.assertEqual(dialog.combo_full_diagnostics.currentIndex(), 1)
-        self.assertEqual(dialog.combo_full_diagnostics.receivers('2currentIndexChanged(int)'), 1)
+        self.assertTrue(dialog.switch_full_diagnostics.isChecked())
+        self.assertEqual(dialog.switch_full_diagnostics.receivers('2value_changed(int)'), 1)
 
     def test_preview_width_and_shrinking_after_large_image(self) -> None:
         """预览与主窗口同宽；大图不会强迫窗口扩大或阻止缩小。"""
@@ -151,7 +248,7 @@ class WindowBehaviorTests(unittest.TestCase):
             update.assert_called_once_with({"SHOW_CURRENT_SCREENSHOT": False})
             self.assertTrue(preview.isHidden())
             self.assertFalse(read_config(str(self.config_path))["show_current_screenshot"])
-            self.assertEqual(dialog.combo_show_current_screenshot.currentIndex(), 0)
+            self.assertFalse(dialog.switch_show_current_screenshot.isChecked())
             self.window.on_screenshot_ready(b"late image")
             self.assertTrue(preview.isHidden())
             self.window.worker.command_completed.emit(81, "update_settings", True, "")
@@ -206,21 +303,36 @@ class WindowBehaviorTests(unittest.TestCase):
         self.assertTrue(self.window._screenshot_preview.isHidden())
 
     def test_layout_status_visibility_and_failure(self) -> None:
-        """提示开关持久化并收起状态栏，故障仍显示详情及恢复按钮。"""
+        """普通提示开关持久化，故障仍在顶部显示详情及重启入口，始终无底栏。"""
         self.window.worker.state = "ready"
         self.window.on_layout_status_changed("自动布局：等待有效画面")
         self.window.on_show_layout_status_changed(0)
-        self.assertTrue(self.window.statusBar().isHidden())
+        self.assertIsNone(self.window.findChild(QStatusBar))
         self.assertFalse(read_config(str(self.config_path))["show_layout_status"])
         self.window.on_layout_status_changed("自动布局：已定位")
-        self.assertTrue(self.window.statusBar().isHidden())
+        self.assertIsNone(self.window.findChild(QStatusBar))
         self.window.on_show_layout_status_changed(1)
-        self.assertIn("已定位", self.window.statusBar().currentMessage())
+        self.assertIsNone(self.window.findChild(QStatusBar))
+        self.assertEqual(self.window.title_bar.status_label.text(), "· 定位完成")
+        self.assertIn("已定位", self.window.title_bar.status_label.toolTip())
         self.window.on_show_layout_status_changed(0)
         self.window.worker.fail("测试故障")
-        self.assertFalse(self.window.statusBar().isHidden())
+        self.assertIsNone(self.window.findChild(QStatusBar))
         self.assertFalse(self.window.btn_retry.isHidden())
-        self.assertIn("测试故障", self.window.statusBar().currentMessage())
+        self.assertTrue(self.window.title_bar.isAncestorOf(self.window.btn_retry))
+        self.assertIn("测试故障", self.window.title_bar.status_label.toolTip())
+
+    def test_status_tip_cannot_create_a_bottom_bar_after_failure(self) -> None:
+        """帮助状态事件和真实故障都不能生成底栏，故障入口留在顶部且不增高。"""
+        height = self.window.height()
+        QApplication.sendEvent(self.window, QStatusTipEvent('临时帮助提示'))
+        self.window.worker.fail('诊断顶部故障详情')
+        self.app.processEvents()
+        self.assertIsNone(self.window.findChild(QStatusBar))
+        self.assertIn('诊断顶部故障详情', self.window.title_bar.status_label.toolTip())
+        self.assertTrue(self.window.title_bar.isAncestorOf(self.window.btn_retry))
+        self.assertFalse(self.window.btn_retry.isHidden())
+        self.assertEqual(self.window.height(), height)
 
     def test_played_labels_remain_in_layout_after_repeated_toggles(self) -> None:
         """反复隐藏出牌记录后标签仍正确排版，不与牌数或状态栏重叠。"""
@@ -289,27 +401,19 @@ class WindowBehaviorTests(unittest.TestCase):
             self.assertEqual(self.window.size(), before)
             self.assertTrue(self.window.isVisible())
 
-    def test_destroying_preview_cancels_deferred_resize(self) -> None:
-        """预览窗口在延迟刷新执行前销毁，不会访问已删除的 Qt 控件。"""
-        pixmap = QPixmap(640, 360)
-        pixmap.fill(Qt.GlobalColor.white)
-        dialog = PreviewDialog(pixmap, self.window)
-        dialog.show()
-        self.assertTrue(dialog._preview_timer.isActive())
-        delete(dialog)
-        self.app.processEvents()
-
     def test_settings_grouping_and_labels(self) -> None:
         """终端日志、完整诊断和实时预览独立，移除旧截图开关。"""
         dialog = SettingsDialog(self.window)
         self.addCleanup(dialog.close)
-        for combo in (dialog.combo_debug_mode, dialog.combo_full_diagnostics, dialog.combo_show_current_screenshot):
-            self.assertTrue(dialog.tab2.isAncestorOf(combo))
+        for switch in (dialog.switch_debug_mode, dialog.switch_full_diagnostics, dialog.switch_show_current_screenshot):
+            self.assertTrue(dialog.tab2.isAncestorOf(switch))
         texts = {label.text() for label in dialog.tab2.findChildren(QLabel)}
         self.assertIn("输出调试日志：", texts)
         self.assertIn("完整诊断：", texts)
         self.assertNotIn("保存游戏截图：", texts)
-        self.assertTrue(dialog.tab1.isAncestorOf(dialog.combo_show_layout_status))
+        self.assertTrue(dialog.tab1.isAncestorOf(dialog.switch_show_layout_status))
+        self.assertFalse(hasattr(dialog, "combo_game"))
+        self.assertNotIn("游戏选择：", texts)
 
 
 if __name__ == "__main__":

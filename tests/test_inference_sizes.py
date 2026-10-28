@@ -7,6 +7,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 from PIL import Image
+from core.model_input import ModelInput
 
 
 class InferenceSizeTests(unittest.TestCase):
@@ -22,6 +23,7 @@ class InferenceSizeTests(unittest.TestCase):
         module = importlib.util.module_from_spec(spec)
         with patch.dict('sys.modules', {'torch': torch_stub, 'ultralytics': yolo_stub}):
             spec.loader.exec_module(module)
+        self.module = module
         self.detector = module.YoloInferencer.__new__(module.YoloInferencer)
         self.detector.model = Mock()
         self.detector.model.overrides = {'imgsz': 960}
@@ -86,6 +88,100 @@ class InferenceSizeTests(unittest.TestCase):
         """没有截图时不执行模型、不伪造耗时。"""
         self.assertEqual(self.detector.detect(None), (None, 0.))
         self.detector.model.assert_not_called()
+
+    def test_configured_shape_is_shared_by_full_packed_and_fallback(self) -> None:
+        """配置尺寸优先于训练标量和上次画布参数，整图/拼图一致且关闭最小补边。"""
+        for width, height in ((960, 608), (960, 960)):
+            with self.subTest(size=(width, height)):
+                self.detector.input_spec = ModelInput(width, height, Path('model_config.yaml'))
+                self.detector.model.reset_mock()
+                self.detector.detect_packed(self.image)
+                self.detector.detect(self.image)
+                self.detector.detect_packed(Image.new('RGB', (width, height)))
+                self.detector.detect(self.image)
+                self.assertEqual(self.detector.input_canvas_size, (width, height))
+                for call in self.detector.model.call_args_list:
+                    self.assertEqual(call.kwargs['imgsz'], (height, width))
+                    self.assertFalse(call.kwargs['rect'])
+
+    def test_configured_static_mismatch_is_not_used(self) -> None:
+        """配置矩形却加载方形静态模型时，在业务推理前失败。"""
+        self.detector.input_spec = ModelInput(960, 608, Path('model_config.yaml'))
+        self.detector.model.predictor.model = SimpleNamespace(pt=False, dynamic=False, imgsz=[960, 960])
+        with self.assertRaisesRegex(ValueError, '不一致'):
+            self.detector.detect_packed(self.image)
+        self.detector.model.assert_not_called()
+
+    def test_configured_backend_initializes_without_image_inference(self) -> None:
+        """首帧拼图之前只建立后端，不额外识别整张截图。"""
+        self.detector.input_spec = ModelInput(960, 608, Path('model_config.yaml'))
+        predictor = Mock()
+        predictor.model = SimpleNamespace(pt=False, dynamic=False, imgsz=[608, 960], stride=32)
+        factory = self.detector.model._smart_load.return_value
+        factory.return_value = predictor
+        self.detector._prepare_configured_model(self.detector.model, 'cpu')
+        self.detector.model.assert_not_called()
+        predictor.setup_model.assert_called_once()
+        self.assertEqual(factory.call_args.kwargs['overrides']['imgsz'], (608, 960))
+
+    def test_onnx_python_native_mismatch_is_rejected_early(self) -> None:
+        """复现本机Python1.31.1/原生1.26.0混装，不等首帧触发缺少原生方法。"""
+        bad = SimpleNamespace(__version__='1.31.1', get_version_string=Mock(return_value='1.26.0'))
+        with self.assertRaisesRegex(RuntimeError, '不一致'):
+            self.detector._check_onnx_runtime(bad)
+        good = SimpleNamespace(__version__='1.26.0+cpu', get_version_string=Mock(return_value='1.26.0'))
+        self.detector._check_onnx_runtime(good)
+
+    def test_incompatible_onnx_runtime_skips_export_and_allows_pt_fallback(self) -> None:
+        """坏依赖在选择后端时退出ONNX路线，不修改或重新生成缓存。"""
+        module = ModuleType('onnxruntime')
+        module.__version__ = '1.31.1'
+        module.get_version_string = Mock(return_value='1.26.0')
+        self.detector.input_spec = ModelInput(960, 608, Path('model_config.yaml'))
+        with patch.dict('sys.modules', {'onnxruntime': module}), \
+                patch.object(self.detector, '_load_configured_export') as export:
+            self.assertIsNone(self.detector._YoloInferencer__load_onnx('best.onnx'))
+        export.assert_not_called()
+
+    def test_export_uses_explicit_shape_and_reuses_only_matching_cache(self) -> None:
+        """模拟一次导出，明确高宽/批次/精度且下一次加载不再导出。"""
+        from tempfile import TemporaryDirectory
+        root = Path(__file__).parent / '.tmp'
+        root.mkdir(exist_ok=True)
+        with TemporaryDirectory(dir=root) as directory:
+            path = Path(directory)
+            weight = path / 'best.pt'
+            weight.write_bytes(b'fake PT')
+            self.detector.weight_path = str(weight)
+            self.detector.input_spec = ModelInput(960, 608, path / 'model_config.yaml')
+            model = Mock()
+
+            def export_stub(**kwargs: object) -> str:
+                """只创建占位导出文件，不运行任何真实模型。
+
+                Args:
+                    kwargs: 被测代码传给导出器的关键字参数。
+                Returns:
+                    本次隔离缓存中生成的 ONNX 路径。
+                """
+                source = Path(factory.call_args.args[0])
+                artifact = source.with_suffix('.onnx')
+                artifact.write_bytes(b'fake ONNX')
+                return str(artifact)
+
+            model.export.side_effect = export_stub
+            with patch.object(self.module, 'YOLO', return_value=model) as factory, \
+                    patch.object(self.module, 'version', return_value='test'), \
+                    patch.object(self.module.settings, 'BASE_DIR', str(path)), \
+                    patch.object(self.detector, '_check_export_dependencies'), \
+                    patch.object(self.detector, '_simplify_onnx') as simplify, \
+                    patch.object(self.detector, '_prepare_configured_model', return_value=model):
+                self.detector._load_configured_export('onnx', 'cpu')
+                self.detector._load_configured_export('onnx', 'cpu')
+            model.export.assert_called_once_with(format='onnx', imgsz=(608, 960), batch=1,
+                                                 dynamic=False, half=False, device='cpu', simplify=False)
+            simplify.assert_called_once()
+            self.assertEqual(weight.read_bytes(), b'fake PT')
 
 
 if __name__ == '__main__':

@@ -135,8 +135,13 @@ class LayoutObservation:
     reset_required: bool = False
 
     def as_boxes(self) -> dict[str, list[dict[str, object]]]:
-        """转换成 Tracker 已使用的检测对象格式，保持稳定的牌面顺序。"""
-        return {key: [{"name": c.name, "bbox": c.bbox} for c in sorted(cards, key=lambda c: c.name)]
+        """按画面从上到下、每行从左到右输出牌框，不按类别名称重排。
+
+        Returns:
+            保留画面阅读顺序的检测对象；空区域仍为空列表。
+        """
+        return {key: [{"name": c.name, "bbox": c.bbox}
+                      for group in group_rows(cards) for c in group.cards]
                 for key, cards in self.regions.items()}
 
 

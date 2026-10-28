@@ -49,14 +49,13 @@ class GameController:
         last_performance: 当前子进程阶段耗时快照，经过回执传回 UI。
     """
 
-    def __init__(self, game_name: str, layout_name: str | None = None) -> None:
+    def __init__(self, layout_name: str | None = None) -> None:
         """初始化游戏控制器，创建截图器、检测器、分析器和 Tracker。
 
         Args:
-            game_name: 游戏名称（如 ``"doudizhu"``）。
             layout_name: 布局名称。为 None 时自动使用第一个可用配置。
         """
-        self.game_name: str = game_name
+        self.game_name: str = settings.GAME_NAME
         
         if layout_name is None or layout_name not in settings.WINDOW_LAYOUTS:
             available_layouts = list(settings.WINDOW_LAYOUTS.keys())
@@ -72,7 +71,7 @@ class GameController:
         self.layout_analyzer: LayoutAnalyzer | AutoLayoutAnalyzer = self._create_analyzer(self.layout_config)
         window_title: str = self.layout_config["window_title"]
         self.screen_capture: ScreenCapture = ScreenCapture(window_title)
-        self.tracker: BaseCardTracker = create_tracker(game_name, layout_name)
+        self.tracker: BaseCardTracker = create_tracker(self.game_name, layout_name)
         self.last_screenshot_jpeg: bytes | None = None
         self.last_screenshot_regions: dict[str, tuple[float, float, float, float]] = {}
         self.packed_pipeline = PackedPipeline()
@@ -114,14 +113,28 @@ class GameController:
         artifact = getattr(model, 'model', None)
         if not isinstance(artifact, (str, Path)):
             artifact = getattr(model, 'ckpt_path', None)
+        model_input = getattr(self.yolo_inferencer, 'input_description', None)
         return {'request_id': self.request_context[0], 'generation': self.request_context[1],
                 'game': self.game_name, 'layout_name': self.layout_name, 'layout': deepcopy(self.layout_config),
                 'weight_path': settings.YOLO_MODEL_PATH, 'model': settings.YOLO_MODEL_NAME,
                 'artifact_path': str(artifact) if isinstance(artifact, (str, Path)) else None,
+                'model_input': model_input if isinstance(model_input, dict) else None,
                 'device': settings.DEVICE_CHOICE, 'frame_length': settings.FRAME_LENGTH,
                 'reset_time': settings.RESET_TIME, 'confidence': settings.YOLO_CONFIDENCE_THRESHOLD,
                 'iou': settings.YOLO_IOU_THRESHOLD, 'packed_inference': settings.PACKED_INFERENCE,
                 'class_mapping': dict(settings.YOLO_TO_CARD_MAPPING)}
+
+    def _model_canvas_size(self) -> tuple[int, int]:
+        """读取所选模型的画布宽高，兼容旧检测器和测试替身。
+
+        Returns:
+            配置指定的实际像素宽高；旧接口回退到历史画布。
+        """
+        size = getattr(self.yolo_inferencer, 'input_canvas_size', None)
+        if (isinstance(size, tuple) and len(size) == 2
+                and all(type(value) is int and value > 0 for value in size)):
+            return size[0], size[1]
+        return PACKED_INPUT_SIZE
 
     def detect(self) -> tuple[dict[str, int], dict[str, list[list[str]]], float]:
         """执行检测并只读记录证据；诊断错误不能改变记牌结果。
@@ -227,7 +240,7 @@ class GameController:
                          cast(tuple[float, float, float, float], tuple(self.layout_config["layout"]["landlord_cards"])))
         raw_result, yolo_ms = self.packed_pipeline.detect(img, self.yolo_inferencer, regions,
                                                        presence_region=bottom_region, scales=scales,
-                                                       canvas_size=PACKED_INPUT_SIZE, region_names=names or None,
+                                                       canvas_size=self._model_canvas_size(), region_names=names or None,
                                                        allow_full_fallback=self.tracker.state == settings.STARTED_RECORD_CARD,
                                                        full_label='自动布局整图' if isinstance(self.layout_analyzer, AutoLayoutAnalyzer) else '手动布局原图', trace=trace)
         detected = time.perf_counter()
@@ -406,29 +419,6 @@ class GameController:
         self.yolo_inferencer = inferencer
         self.packed_pipeline = PackedPipeline()
 
-    def switch_game(self, game_name: str) -> None:
-        """在子进程内存中切换已注册游戏。
-
-        Args:
-            game_name: 已注册游戏名称。
-
-        Raises:
-            TypeError: 名称类型错误。
-            ValueError: 游戏未注册。
-            Exception: Tracker 构造失败，原游戏配置恢复。
-        """
-        previous = self.game_name
-        try:
-            settings.apply_game_choice(game_name)
-            tracker = create_tracker(game_name, self.layout_name)
-        except Exception:
-            settings.apply_game_choice(previous)
-            raise
-        self.game_name, self.tracker = game_name, tracker
-        self.packed_pipeline = PackedPipeline()
-        if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            self.layout_analyzer.reset()
-
     def update_settings(self, updates: Mapping[str, object]) -> None:
         """应用允许热更新的参数，禁止绕过组件切换流程。
 
@@ -491,13 +481,12 @@ class GameController:
             if not isinstance(payload, Mapping):
                 raise TypeError("设置参数必须是字典")
             self.update_settings(cast(Mapping[str, object], payload))
-        elif name in ("switch_model", "switch_device", "switch_game"):
+        elif name in ("switch_model", "switch_device"):
             if not isinstance(payload, str):
                 raise TypeError("切换命令参数必须是字符串")
             handlers = {
                 "switch_model": self.switch_model,
                 "switch_device": self.switch_device,
-                "switch_game": self.switch_game,
             }
             handlers[name](payload)
         else:
