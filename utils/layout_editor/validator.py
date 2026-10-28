@@ -1,19 +1,18 @@
-from typing import Dict, Tuple
+"""保存手动布局前的五区归一化坐标校验。"""
 
-from PIL import Image, ImageDraw
+from collections.abc import Mapping
 
 from utils.layout_editor.coord import REGION_KEYS
 
-_COLORS = {
-    "player_hand": (0, 255, 0),
-    "player_played": (255, 0, 255),
-    "opponent_left": (255, 0, 0),
-    "opponent_right": (0, 0, 255),
-    "landlord_cards": (0, 255, 255),
-}
 
+def validate_normalized_layout(layout: Mapping[str, object]) -> tuple[bool, str]:
+    """检查五区是否齐全、坐标格式正确且为0到1内的非空矩形。
 
-def validate_normalized_layout(layout: Dict[str, Tuple[float, float, float, float]]):
+    Args:
+        layout: 区域键到四个边界坐标的映射，接受列表或元组形式的坐标。
+    Returns:
+        校验结果及原因；非法区域返回False和说明，全部合法返回True和ok。
+    """
     for key in REGION_KEYS:
         if key not in layout:
             return False, f"缺少区域: {key}"
@@ -30,23 +29,3 @@ def validate_normalized_layout(layout: Dict[str, Tuple[float, float, float, floa
         if x1 >= x2 or y1 >= y2:
             return False, f"区域 {key} 坐标范围无效（x1<x2, y1<y2）"
     return True, "ok"
-
-
-def build_preview_image(base_image: Image.Image, normalized_layout):
-    image = base_image.convert("RGB").copy()
-    draw = ImageDraw.Draw(image)
-    w, h = image.size
-
-    for key in REGION_KEYS:
-        x1, y1, x2, y2 = normalized_layout[key]
-        px1 = int(round(x1 * w))
-        py1 = int(round(y1 * h))
-        px2 = int(round(x2 * w))
-        py2 = int(round(y2 * h))
-
-        color = _COLORS.get(key, (255, 255, 255))
-        draw.rectangle((px1, py1, px2, py2), outline=color, width=3)
-        draw.text((px1 + 4, max(0, py1 - 16)), key, fill=color)
-
-    return image
-

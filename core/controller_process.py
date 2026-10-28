@@ -14,7 +14,7 @@ from core.diagnostics import DiagnosticRecorder
 
 def run_controller_loop(
     cmd_queue: Queue[Command | None], result_queue: Queue[Response],
-    layout_name: str, game_name: str, snapshot: Mapping[str, object],
+    layout_name: str, snapshot: Mapping[str, object],
 ) -> None:
     """执行命令并为每条命令回传独立结果，禁止操作 Qt 对象。
 
@@ -22,7 +22,6 @@ def run_controller_loop(
         cmd_queue: 输入命令队列；None 表示正常退出。
         result_queue: 输出结果队列。
         layout_name: 初始布局名。
-        game_name: 初始游戏名。
         snapshot: 主进程确认过的配置快照。
     """
     recorder: DiagnosticRecorder | None = None
@@ -42,10 +41,9 @@ def run_controller_loop(
         from config import settings
         from core.game_controller import GameController
 
-        settings.apply_game_choice(game_name)
         settings.apply_runtime_settings(snapshot)
         recorder = DiagnosticRecorder(settings.BASE_DIR, notify)
-        controller = GameController(game_name, layout_name)
+        controller = GameController(layout_name)
         controller.attach_diagnostics(recorder)
     except Exception:
         if recorder is not None:

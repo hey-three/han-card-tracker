@@ -1,0 +1,10 @@
+# 复制到 yolo/weights/<模型目录>/model_config.yaml，填写实际训练输入。
+# model 仅为描述；真正的网络结构由 best.pt 决定。
+model: YOLO11n
+weights:
+  - best.pt
+input:
+  width: 960
+  height: 608
+  resize: letterbox
+  rect: false

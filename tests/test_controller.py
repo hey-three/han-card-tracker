@@ -27,6 +27,27 @@ class ControllerTests(unittest.TestCase):
         self.controller.yolo_inferencer = Mock()
         self.controller.packed_pipeline = PackedPipeline()
 
+    def test_model_shape_is_forwarded_to_manual_packing(self) -> None:
+        """控制器使用所选模型的实际像素画布，而不是继续硬编码 768×480。"""
+        from PIL import Image
+        settings.PACKED_INFERENCE = True
+        settings.SHOW_CURRENT_SCREENSHOT = False
+        self.controller.tracker.state = settings.WAIT_BEGIN
+        self.controller.screen_capture.capture_window.return_value = Image.new('RGB', (1200, 800))
+        self.controller.tracker.get_cards_number.return_value = ({}, {}, 0.)
+        self.controller.layout_config = {'window_title': 'test', 'mode': 'manual', 'layout': {
+            'landlord_cards': [.35, .02, .65, .12], 'player_hand': [.05, .7, .95, .95],
+            'player_played': [.3, .4, .7, .6], 'opponent_left': [.05, .2, .3, .4],
+            'opponent_right': [.7, .2, .95, .4]}}
+        self.controller.packed_pipeline = Mock()
+        self.controller.packed_pipeline.timings = {}
+        self.controller.packed_pipeline.detect.return_value = (None, 0.)
+        for size in ((960, 608), (960, 960)):
+            self.controller.yolo_inferencer.input_canvas_size = size
+            self.controller._detect_frame()
+            self.assertEqual(self.controller.packed_pipeline.detect.call_args.kwargs['canvas_size'], size)
+            self.assertEqual(len(self.controller.packed_pipeline.detect.call_args.args[2]), 2)
+
     def test_failed_enable_rolls_back_quota_and_settings_together(self) -> None:
         """同批修改额度后启动线程失败，后端内存也须恢复旧额度。"""
         from core.diagnostics import DiagnosticLimits
@@ -89,12 +110,6 @@ class ControllerTests(unittest.TestCase):
             with self.assertRaises(RuntimeError):
                 self.controller.switch_device("cpu")
         self.assertEqual(settings.DEVICE_CHOICE, previous)
-
-    def test_game_switch_does_not_write_configuration(self) -> None:
-        """子进程切换游戏只改内存，磁盘由主进程管理。"""
-        with patch.object(settings, "save_game_choice") as save:
-            self.controller.switch_game("doudizhu")
-        save.assert_not_called()
 
     def test_legacy_packing_update_clears_geometry_without_resetting_round(self) -> None:
         """兼容旧命令只使已有规划失效，不清除牌局或改变布局路线。"""

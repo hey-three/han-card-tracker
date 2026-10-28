@@ -30,7 +30,7 @@ class RoundLifecycleTests(unittest.TestCase):
         config = settings.validate_layout({"window_title": "Game", "mode": "auto", "layout": {}})
         self.enterContext(patch.object(settings, "WINDOW_LAYOUTS", {"Auto": config}))
         with patch.object(GameController, "_create_inferencer", return_value=Mock()), patch("core.game_controller.ScreenCapture"):
-            self.controller = GameController("doudizhu", "Auto")
+            self.controller = GameController("Auto")
         self.hand = opening()[:-3]
         self.bottom = row(["A"], .43, .1, .035, .035)
         self.image = Image.new("RGB", (1000, 800), (20, 60, 80))

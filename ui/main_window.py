@@ -7,11 +7,11 @@
 
 from collections.abc import Callable
 
-from PySide6.QtCore import Qt, QTimer, Slot
-from PySide6.QtGui import QCloseEvent
+from PySide6.QtCore import QEvent, QMargins, Qt, QTimer, Slot
+from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QGridLayout, QPushButton, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox,
-    QInputDialog,
+    QWidget, QLabel, QVBoxLayout, QGridLayout, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox,
+    QBoxLayout, QFrame, QInputDialog, QStyle,
 )
 from core.inference_process import InferenceWorker
 from config.settings import TOTAL_CARDS
@@ -19,6 +19,8 @@ from utils.trans_yolo_names_to_string import trans_yolo_names_to_string
 from ui.layout_editor_dialog import LayoutEditorDialog
 from ui.settings_dialog import SettingsDialog
 from ui.settings_controller import SettingsController
+from ui.title_bar import MainTitleBar, clip_native_title_overlay, native_caption_button_width
+from ui.layout_status import compact_layout_status
 from ui.screenshot_preview import ScreenshotPreviewDialog
 from utils.layout_editor.service import list_visible_window_titles
 import config.settings as settings
@@ -28,6 +30,10 @@ import time
 INTERVAL_TEXT_OPTIONS = ["0.1秒", "0.15秒", "0.2秒", "0.25秒", "0.3秒", "0.35秒", "0.4秒", "0.45秒", "0.5秒"]
 RESET_TIME_OPTIONS = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
 FRAME_LENGTH_OPTIONS = [1, 2, 3, 4, 5, 6]
+COMPACT_WINDOW_WIDTH = 495  # 原默认550逻辑像素缩减10%。
+HORIZONTAL_WINDOW_WIDTH = 900
+HORIZONTAL_PANEL_MIN_WIDTH = 440
+PLAYED_ZONE_TITLES = {"left": "上", "self": "本", "right": "下"}
 
 
 class CardUI(QMainWindow):
@@ -46,14 +52,20 @@ class CardUI(QMainWindow):
     def __init__(self) -> None:
         """创建窗口、设置协调器和可恢复的推理服务。"""
         super().__init__()
+        # QMainWindow自身也会应用安全区；只关闭central_widget的避让仍会下移整行。
+        self.setAttribute(Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False)
 
         # -------------------------
         # 窗口基础设置（保持你原设置）
         # -------------------------
         self.setWindowTitle("Han记牌器")
-        self.setMinimumWidth(550) # 最小宽度
+        self.setWindowFlag(Qt.WindowType.ExpandedClientAreaHint, True)
+        # 右侧Qt标题叠加层先绘制不透明底色，避免深色悬停的半透明白色合成成白块。
+        # 左侧仍由clip_native_title_overlay裁掉，不会重新显示默认标题/图标。
+        self.setWindowFlag(Qt.WindowType.NoTitleBarBackgroundHint, False)
+        self.setMinimumWidth(COMPACT_WINDOW_WIDTH)
         self.setMinimumHeight(100) # 允许窗口缩小到最小高度
-        self.resize(550, 100) # 设置初始窗口大小
+        self.resize(COMPACT_WINDOW_WIDTH, 100)
 
         # 应用是否显示在最上层设置
         from config.settings import ALWAYS_ON_TOP
@@ -67,9 +79,13 @@ class CardUI(QMainWindow):
         # 应用是否显示玩家所出的牌设置
         from config.settings import SHOW_PLAYED_CARDS
         self._show_played_cards = SHOW_PLAYED_CARDS
+        self._panel_arrangement = settings.PANEL_ARRANGEMENT
 
         # 创建中央部件
         self.central_widget = QWidget()
+        self.central_widget.setAttribute(
+            Qt.WidgetAttribute.WA_ContentsMarginsRespectsSafeArea, False,
+        )
         self.setCentralWidget(self.central_widget)
 
         # 设置窗口大小策略，允许窗口根据内容自动调整大小
@@ -103,69 +119,74 @@ class CardUI(QMainWindow):
         # UI 结构：根布局 + 网格布局（两行）
         # -------------------------
         self.root_layout = QVBoxLayout(self.central_widget) # 创建一个垂直布局（QVBoxLayout）
-        self.root_layout.setContentsMargins(8, 8, 8, 8) # 内边距（布局边缘到窗口边缘的距离），四个数值分别对应：左、上、右、下（单位：像素）。
-        self.root_layout.setSpacing(6)          #设置布局内子控件之间的间距（单位：像素）。
+        # 标题栏横跨整个客户区；牌面内容自己保留原有左右边距。
+        self.root_layout.setContentsMargins(0, 0, 0, 4)
+        self.root_layout.setSpacing(0)
 
-
+        # 此控件占用扩展后的原生标题栏区域，与系统窗口按钮处于同一行。
+        self.is_paused = False
+        self._safe_area_signal_connected = False
+        self._initial_size_pending = True
+        self.title_bar = MainTitleBar(
+            self.central_widget,
+            on_settings_clicked=self.on_settings_clicked,
+            on_pause_clicked=self.on_pause_clicked,
+            on_reset_clicked=self.on_reset_clicked,
+            on_restart_clicked=self.on_restart_clicked,
+        )
+        self.title_bar.set_caption(self.windowTitle())
+        self.btn_settings = self.title_bar.settings_button
+        self.btn_pause = self.title_bar.pause_button
+        self.btn_reset = self.title_bar.reset_button
+        self.btn_retry = self.title_bar.retry_button
+        self.root_layout.addWidget(self.title_bar)
+        self._title_bar_update_timer = QTimer(self)
+        self._title_bar_update_timer.setSingleShot(True)
+        self._title_bar_update_timer.timeout.connect(self._refresh_title_bar_geometry)
 
         self.grid = QGridLayout() # 创建一个网格布局对象（QGridLayout）
-        self.grid.setHorizontalSpacing(6) # 列与列之间的水平间距（单位：像素）。
+        self.grid.setHorizontalSpacing(4)
         self.grid.setVerticalSpacing(4) #行与行之间的垂直间距（单位：像素）。
         # root.addLayout(self.grid)
 
         # -------------------------
-        # 第一大行：左侧控制按钮 + 右侧扑克牌和数量
+        # 第一大行：显示扑克牌和数量
         # -------------------------
-        first_row_layout = QHBoxLayout()
-        first_row_layout.setContentsMargins(0, 0, 0, 10)  # 底部间距
-        first_row_layout.setSpacing(2)
-        self.root_layout.addLayout(first_row_layout)
+        self.content_layout = QBoxLayout(QBoxLayout.Direction.TopToBottom)
+        self.content_layout.setContentsMargins(4, 1, 4, 0)
+        self.content_layout.setSpacing(5)
+        self.root_layout.addLayout(self.content_layout)
 
-        # 左侧控制按钮区域（垂直布局）
-        left_controls_layout = QVBoxLayout()
-        left_controls_layout.setContentsMargins(0, 0, 0, 0)
-        left_controls_layout.setSpacing(10)
-        first_row_layout.addLayout(left_controls_layout)
-
-        # 设置按钮
-        self.btn_settings = QPushButton("设置")
-        self.btn_settings.setObjectName("BtnSettings")
-        self.btn_settings.setFixedWidth(50)
-        self.btn_settings.clicked.connect(self.on_settings_clicked)
-        left_controls_layout.addWidget(self.btn_settings)
-
-        # 暂停按钮
-        self.btn_pause = QPushButton("暂停")
-        self.btn_pause.setObjectName("BtnPause")
-        self.btn_pause.setFixedWidth(50)
-        self.btn_pause.clicked.connect(self.on_pause_clicked)
-        left_controls_layout.addWidget(self.btn_pause)
-
-        # 初始化暂停状态
-        self.is_paused = False
-
-        # 右侧扑克牌和数量
-        right_cards_layout = QVBoxLayout()
-        right_cards_layout.setContentsMargins(0, 0, 0, 0)
-        right_cards_layout.addLayout(self.grid)
-        first_row_layout.addLayout(right_cards_layout, 1)  # 右侧占主要空间
+        self.card_panel = QFrame(self.central_widget)
+        self.card_panel.setObjectName("CardCountPanel")
+        self.card_panel.setAccessibleName("剩余牌数")
+        self.card_panel_layout = QVBoxLayout(self.card_panel)
+        self.card_panel_layout.setContentsMargins(5, 4, 5, 4)
+        self.card_panel_layout.addLayout(self.grid)
+        self.content_layout.addWidget(self.card_panel)
 
         # -------------------------
         # 第二大行：显示上家、本家、下家的三行字符串
         # -------------------------
-        self.second_row_layout = QVBoxLayout()
-        self.second_row_layout.setContentsMargins(0, 0, 0, 0)
+        self.played_panel = QFrame(self.central_widget)
+        self.played_panel.setObjectName("PlayedCardsPanel")
+        self.played_panel.setAccessibleName("出牌记录")
+        self.second_row_layout = QVBoxLayout(self.played_panel)
+        self.second_row_layout.setContentsMargins(4, 4, 4, 4)
         self.second_row_layout.setSpacing(3)
-        # 注意：这里不立即添加到root，而是在_update_played_cards_visibility中根据设置添加
+        self.content_layout.addWidget(self.played_panel)
 
         # 初始化出牌标签（从游戏配置动态生成）
         self.played_cards_labels: dict[str, QLabel] = {}
         for zone in settings.PLAYED_ZONES:
             key = zone["key"]
             label = zone["label"]
-            lbl = QLabel(self.played_cards[key])
+            lbl = QLabel(f"{PLAYED_ZONE_TITLES.get(key, label[:1])}  ")
             lbl.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
             lbl.setObjectName("InfoLabel")
+            lbl.setTextFormat(Qt.TextFormat.PlainText)
+            lbl.setMinimumWidth(0)
+            lbl.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
             self.played_cards_labels[key] = lbl
 
         # 根据设置决定是否显示玩家所出的牌
@@ -217,7 +238,7 @@ class CardUI(QMainWindow):
         # -------------------------
         # 多进程推理 worker
         # -------------------------
-        self.worker = InferenceWorker(self.layout_name, game_name=settings.GAME_NAME)
+        self.worker = InferenceWorker(self.layout_name)
         self.worker.result_ready.connect(self.on_result_ready)
         self.worker.performance_ready.connect(self.on_performance_ready)
         self.worker.diagnostic_status_changed.connect(self.on_diagnostic_status)
@@ -227,6 +248,7 @@ class CardUI(QMainWindow):
         self._preview_requested = settings.SHOW_CURRENT_SCREENSHOT
         self._diagnostic_status: dict[str, object] = {}
         self._diagnostic_warning = ""
+        self._diagnostic_notice = ""
         self._layout_status = ""
         self._status_error = ""
         self._closing = False
@@ -253,13 +275,8 @@ class CardUI(QMainWindow):
         self.settings_controller.applied.connect(self._refresh_open_settings)
         self.worker.state_changed.connect(self.on_worker_state_changed)
         self.worker.layout_status_changed.connect(self.on_layout_status_changed)
-        self.btn_retry = QPushButton("重启识别", self)
-        self.btn_retry.setToolTip("重新加载推理服务，并从头初始化记牌状态")
-        self.btn_retry.clicked.connect(self.on_restart_clicked)
-        self.statusBar().addPermanentWidget(self.btn_retry)
-        self.btn_retry.hide()
         self.worker.start()
-        self._fit_main_window()
+        self._apply_panel_arrangement()
         self._apply_screenshot_preview_visibility()
 
     def on_settings_clicked(self) -> None:
@@ -277,7 +294,6 @@ class CardUI(QMainWindow):
         # 注意：不要把 on_always_on_top_change_callback 传给 dialog（避免在对话框打开时立即变更窗口 flags 导致显示问题）
         dialog = SettingsDialog(
             self,
-            on_reset_callback=self.on_reset_clicked,
             on_interval_change_callback=self.on_interval_changed,
             on_layout_change_callback=self.on_layout_changed,
             on_device_change_callback=self.on_device_changed,
@@ -292,7 +308,6 @@ class CardUI(QMainWindow):
             on_layout_delete_callback=self.on_layout_delete_clicked,
             on_model_change_callback=self.on_model_changed,
             on_confidence_change_callback=self.on_confidence_changed,
-            on_game_change_callback=self.on_game_changed,
         )
         dialog.manual_inference_changed.connect(self.on_manual_inference_changed)
         dialog.diagnostics_changed.connect(self.on_full_diagnostics_changed)
@@ -300,7 +315,9 @@ class CardUI(QMainWindow):
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
+        dialog.layout_edit_requested.connect(lambda name: self.on_layout_editor_clicked(dialog, name))
         dialog.layout_status_changed.connect(self.on_show_layout_status_changed)
+        dialog.panel_arrangement_changed.connect(self.on_panel_arrangement_changed)
         dialog.set_current_always_on_top(settings.ALWAYS_ON_TOP)
         if settings.ALWAYS_ON_TOP:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
@@ -310,7 +327,7 @@ class CardUI(QMainWindow):
             dialog.exec()
             # 对于 "显示在最上层" 我们在对话框关闭后统一应用，避免在 modal dialog 打开时改变 window flags
             try:
-                always_index = dialog.combo_always_on_top.currentIndex()
+                always_index = int(dialog.switch_always_on_top.isChecked())
                 # 如果用户选择了不同值，则调用处理函数
                 if always_index is not None:
                     self.on_always_on_top_changed(always_index)
@@ -329,7 +346,10 @@ class CardUI(QMainWindow):
             return
         # 设置当前值
         dialog.set_current_interval(f"{self.detect_interval_sec}秒")
+        layout_config = settings.WINDOW_LAYOUTS.get(self.layout_name, {})
+        layout_mode = "auto" if layout_config.get("mode") == "auto" else "manual"
         dialog.refresh_layout_list(selected_name=self.layout_name)
+        dialog.set_current_layout_mode(layout_mode, str(layout_config.get("window_title", "")))
 
         # 设置当前设备选择
         from config.settings import DEVICE_CHOICE
@@ -346,6 +366,7 @@ class CardUI(QMainWindow):
         # 设置当前是否显示玩家所出的牌
         from config.settings import SHOW_PLAYED_CARDS
         dialog.set_current_show_played_cards(SHOW_PLAYED_CARDS)
+        dialog.set_current_panel_arrangement(settings.PANEL_ARRANGEMENT)
 
         # 设置当前调试模式
         from config.settings import DEBUG_MODE
@@ -368,35 +389,33 @@ class CardUI(QMainWindow):
         from config.settings import YOLO_MODEL_NAME
         dialog.set_current_model(YOLO_MODEL_NAME)
 
-        # 设置当前游戏选择
-        from config.settings import GAME_NAME
-        dialog.set_current_game(GAME_NAME)
-
         # 设置当前置信度阈值
         from config.settings import YOLO_CONFIDENCE_THRESHOLD
         dialog.set_current_confidence(YOLO_CONFIDENCE_THRESHOLD)
 
-    def on_layout_editor_clicked(self, settings_dialog: SettingsDialog) -> None:
-        """打开可视化布局编辑器并刷新设置对话框中的布局列表。"""
+    def on_layout_editor_clicked(self, settings_dialog: SettingsDialog, layout_name: str | None = None) -> None:
+        """编辑明确指定的布局，保存后立即更新列表并重新应用同名活动配置。
+
+        Args:
+            settings_dialog: 当前设置窗口。
+            layout_name: 点击编辑的手动布局；None为新建。
+        """
         editor = LayoutEditorDialog(
-            settings_dialog,
-            initial_layout_name=(None if settings.WINDOW_LAYOUTS[self.layout_name].get("mode") == "auto"
-                                 else self.layout_name),
+            settings_dialog, initial_layout_name=layout_name,
             on_restore_topmost=lambda: self._reapply_topmost_if_enabled(settings_dialog),
             stay_on_top=settings.ALWAYS_ON_TOP,
         )
-        if editor.exec() != editor.DialogCode.Accepted:
-            return
-
-        new_layout_name = editor.saved_layout_name
-        if not new_layout_name:
-            return
-
-        should_set_current = bool(getattr(editor, "saved_set_current", True))
-        if should_set_current or new_layout_name == self.layout_name:
-            self._switch_layout_by_name(new_layout_name)
-
-        settings_dialog.refresh_layout_list(selected_name=self.layout_name)
+        try:
+            if editor.exec() != editor.DialogCode.Accepted or not editor.saved_layout_name:
+                return
+            saved_name = editor.saved_layout_name
+            apply_saved = editor.saved_set_current or saved_name == self.layout_name
+        finally:
+            editor.deleteLater()
+        settings_dialog.refresh_layout_list(selected_name=saved_name if apply_saved else self.layout_name)
+        # 名字相同不代表配置相同，仍须提交完整新坐标并等待后端确认。
+        if apply_saved:
+            self.on_layout_changed(saved_name)
 
     def on_auto_layout_clicked(self, dialog: SettingsDialog) -> None:
         """选择窗口后提交自动布局，后端确认成功才保存窗口配置。
@@ -437,7 +456,7 @@ class CardUI(QMainWindow):
         self._layout_status = message
         if self.worker.state == "ready":
             self._status_error = ""
-            self._refresh_status_bar()
+            self._refresh_title_status()
 
     def on_show_layout_status_changed(self, index: int) -> None:
         """保存布局提示开关，故障信息不受该开关影响。
@@ -446,29 +465,33 @@ class CardUI(QMainWindow):
             index: 否/是选项索引。
         """
         if index in (0, 1):
-            self._apply_setting("show_layout_status", bool(index), after=self._refresh_status_bar)
+            self._apply_setting("show_layout_status", bool(index), after=self._refresh_title_status)
 
-    def _refresh_status_bar(self) -> None:
-        """集中显示布局进度和服务状态，隐藏时收起整行。"""
-        state = self.worker.state
-        labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
-        message = self._status_error or labels.get(state, "") or self._diagnostic_warning
-        if not message and settings.SHOW_LAYOUT_STATUS:
-            message = self._layout_status
-        bar = self.statusBar()
-        bar.showMessage(message)
-        bar.setToolTip(self._status_error or message)
-        visible = bool(message) or state == "failed"
-        if visible != (not bar.isHidden()):
-            bar.setVisible(visible)
-            self._fit_main_window()
+    def _refresh_title_status(self) -> None:
+        """全部状态只在顶部显示，优先故障并在悬停详情中保留并存告警。"""
+        alerts = [item for item in (self._status_error, self._diagnostic_warning,
+                                    self._diagnostic_notice) if item]
+        failed = self.worker.state == 'failed'
+        self.btn_retry.setVisible(failed)
+        if self._status_error or failed:
+            text = '识别异常' if self._status_error else '识别已停止'
+            if not self._status_error:
+                alerts.insert(0, '识别已停止，请点击顶部“重启”恢复')
+        elif self._diagnostic_warning:
+            text = '诊断暂停' if self._diagnostic_status.get('state') == 'paused' else '日志异常'
+        elif self._diagnostic_notice:
+            text = '诊断暂缓'
+        else:
+            detail = self._layout_status if settings.SHOW_LAYOUT_STATUS else ''
+            self.title_bar.set_layout_status(compact_layout_status(detail), detail)
+            return
+        self.title_bar.set_layout_status(text, '\n\n'.join(alerts))
 
     def _switch_layout_by_name(self, layout_name: str) -> bool:
         """按布局名切换，避免设置窗口刷新后索引和内存列表不同步。"""
-        layout_names = list(settings.WINDOW_LAYOUTS.keys())
-        if layout_name not in layout_names:
+        if layout_name not in settings.WINDOW_LAYOUTS:
             return False
-        self.on_layout_changed(layout_names.index(layout_name))
+        self.on_layout_changed(layout_name)
         return True
 
     def on_layout_delete_clicked(self, settings_dialog: SettingsDialog, layout_name: str) -> bool:
@@ -510,25 +533,21 @@ class CardUI(QMainWindow):
         """
         settings.delete_window_layout(name)
 
-    def on_pause_clicked(self):
-        """
-        点击暂停按钮时切换暂停/恢复状态
+    def on_pause_clicked(self) -> None:
+        """切换检测暂停状态，并更新标题栏图标。
+
+        暂停时停止定时检测；恢复时重置超时参考时间后重新启动定时器。
         """
         if self.is_paused:
-            # 恢复检测
-            self.btn_pause.setText("暂停")
             self.is_paused = False
+            self.title_bar.set_paused(False)
             self._start_timer_if_allowed()
-
-            # 更新最后检测时间，避免因为暂停时间过长而立即重置
             self._touch_no_target_time()
-
             print("检测已恢复")
         else:
-            # 暂停检测
             self._stop_timer_if_exists()
-            self.btn_pause.setText("恢复")
             self.is_paused = True
+            self.title_bar.set_paused(True)
             print("检测已暂停")
 
     def _load_layout_options(self):
@@ -562,13 +581,18 @@ class CardUI(QMainWindow):
         self._busy = self.worker.request_detect()
 
     @Slot(dict, dict, float)
-    def on_result_ready(self, remain_cards: dict, zone_cards: dict, inference_ms: float):
+    def on_result_ready(self, remain_cards: dict[str, int], zone_cards: dict[str, list[list[str]]], inference_ms: float) -> None:
         """
         收到 worker 的识别结果：
         - 更新剩余牌数量
         - v <= 0 时样式变灰
         - v > 0 时样式恢复正常
         - 更新各区域出牌记录
+
+        Args:
+            remain_cards: 各牌点剩余数量。
+            zone_cards: 各区域已经确认的出牌历史。
+            inference_ms: 当轮模型调用耗时，单位毫秒。
         """
         # 计算整轮耗时（从本轮开始到收到结果）
         now = time.perf_counter()
@@ -576,9 +600,11 @@ class CardUI(QMainWindow):
 
         # 更新标题栏
         if settings.SHOW_TIMING:
-            self.setWindowTitle(f"Han记牌器  ·  推理 {inference_ms:.0f}ms  ·  整轮 {self._last_round_ms:.0f}ms")
+            self._set_window_caption(
+                f"Han记牌器 · 推理{inference_ms:.0f}ms · 整轮{self._last_round_ms:.0f}ms",
+            )
         else:
-            self.setWindowTitle("Han记牌器")
+            self._set_window_caption("Han记牌器")
 
         # 更新出牌文本（仅在内容变化时更新）
         played_signature = tuple(
@@ -592,7 +618,9 @@ class CardUI(QMainWindow):
                 label = zone["label"]
                 lbl = self.played_cards_labels.get(key)
                 if lbl:
-                    lbl.setText(f"   {label}     " + trans_yolo_names_to_string(zone_cards.get(key, [])))
+                    history = trans_yolo_names_to_string(zone_cards.get(key, []))
+                    lbl.setText(f"{PLAYED_ZONE_TITLES.get(key, label[:1])}  {history}")
+                    lbl.setToolTip(f"{label}：{history.strip()}")
             self._last_played_signature = played_signature
 
         for card in self.card_order:
@@ -655,7 +683,8 @@ class CardUI(QMainWindow):
         for zone in settings.PLAYED_ZONES:
             label = self.played_cards_labels.get(zone["key"])
             if label is not None:
-                label.setText(f"   {zone['label']}     ")
+                label.setText(f"{PLAYED_ZONE_TITLES.get(zone['key'], zone['label'][:1])}  ")
+                label.setToolTip("")
 
     def on_reset_clicked(self) -> None:
         """等待重置回执后清空显示；服务故障时改为重启。"""
@@ -677,20 +706,24 @@ class CardUI(QMainWindow):
             value = float(INTERVAL_TEXT_OPTIONS[index].replace("秒", ""))
             self._apply_setting("detect_interval_sec", value, after=self._apply_interval)
 
-    def on_layout_changed(self, index: int) -> None:
-        """提交完整布局，执行成功后才确认选择并清空牌局。
+    def on_layout_changed(self, layout_name: str) -> None:
+        """提交选中的手动布局，成功后确认选择并清空牌局。
 
         Args:
-            index: 布局下拉列表索引。
+            layout_name: 已保存的手动布局名称。
         """
-        names = list(settings.WINDOW_LAYOUTS)
-        if not 0 <= index < len(names):
+        layout_config = settings.WINDOW_LAYOUTS.get(layout_name)
+        if not isinstance(layout_config, dict) or layout_config.get("mode") == "auto":
             return
-        name = names[index]
+        try:
+            validated_layout = settings.validate_layout(layout_config)
+        except (TypeError, ValueError) as exc:
+            self._on_settings_error(f'布局内容无效：{exc}')
+            return
         self.settings_controller.apply(
-            save=lambda: settings.save_current_layout(name),
-            request=lambda: self.worker.switch_layout(name),
-            after=lambda: self._apply_layout_selection(name),
+            save=lambda: settings.save_current_layout(layout_name),
+            request=lambda: self.worker.switch_layout(layout_name, validated_layout),
+            after=lambda: self._apply_layout_selection(layout_name),
         )
 
     def on_device_changed(self, index: int) -> None:
@@ -774,11 +807,22 @@ class CardUI(QMainWindow):
             if widget is None or bool(widget.windowFlags() & Qt.WindowType.WindowStaysOnTopHint) == always_on_top:
                 continue
             geometry = widget.saveGeometry()
+            client_geometry = widget.geometry()
+            normal = not (widget.isMaximized() or widget.isMinimized() or widget.isFullScreen())
             visible = widget.isVisible()
             widget.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, always_on_top)
             widget.restoreGeometry(geometry)
             if visible:
                 widget.show()
+            if normal:
+                # 扩展标题栏在分数DPI下整矩形恢复会再次折算边框，位置/宽度可漂移1像素。
+                # 分别向原生QWindow恢复Qt逻辑位置和尺寸，避免QWidget缓存误判为无需调整。
+                handle = widget.windowHandle()
+                if handle is None:
+                    widget.setGeometry(client_geometry)
+                else:
+                    handle.resize(client_geometry.size())
+                    handle.setPosition(client_geometry.topLeft())
         self.central_widget.update()
 
     def _reapply_topmost_if_enabled(self, settings_dialog: QWidget) -> None:
@@ -797,6 +841,43 @@ class CardUI(QMainWindow):
         """
         if index in (0, 1):
             self._apply_setting("show_played_cards", bool(index), after=self._apply_played_visibility)
+
+    @Slot(int)
+    def on_panel_arrangement_changed(self, index: int) -> None:
+        """原子保存显示排列，不向推理进程发送命令或重置牌局。
+
+        Args:
+            index: 0表示上下排列，1表示左右排列。
+        """
+        if index in (0, 1):
+            value = ('vertical', 'horizontal')[index]
+            if value != settings.PANEL_ARRANGEMENT:
+                self._apply_setting('panel_arrangement', value, after=self._apply_panel_arrangement)
+
+    def _apply_panel_arrangement(self) -> None:
+        """切换两区排列和单边分隔线方向，并按内容重新收拢尺寸。"""
+        self._panel_arrangement = settings.PANEL_ARRANGEMENT
+        horizontal = self._panel_arrangement == 'horizontal'
+        self.played_panel.setProperty('arrangement', self._panel_arrangement)
+        self.played_panel.style().unpolish(self.played_panel)
+        self.played_panel.style().polish(self.played_panel)
+        self.played_panel.update()
+        self.content_layout.setDirection(
+            QBoxLayout.Direction.LeftToRight if horizontal else QBoxLayout.Direction.TopToBottom,
+        )
+        # 两块使用相同最小宽度及伸缩系数，窗口拉宽时也始终各占一半。
+        paired = horizontal and self._show_played_cards
+        panel_minimum = max(HORIZONTAL_PANEL_MIN_WIDTH, self.grid.minimumSize().width() + 10) if paired else 0
+        self.card_panel.setMinimumWidth(panel_minimum)
+        self.played_panel.setMinimumWidth(panel_minimum)
+        self.content_layout.setStretch(0, 1 if horizontal else 0)
+        self.content_layout.setStretch(1, 1 if horizontal else 0)
+        self.card_panel_layout.setContentsMargins(5, 1 if horizontal else 4, 5, 1 if horizontal else 4)
+        self.second_row_layout.setContentsMargins(4, 1 if horizontal else 4, 4, 1 if horizontal else 4)
+        self.second_row_layout.setSpacing(0 if horizontal else 3)
+        self.grid.setVerticalSpacing(2 if horizontal else 4)
+        self.root_layout.setContentsMargins(0, 0, 0, 1 if horizontal else 4)
+        self._fit_main_window(reset_width=True)
 
     def on_debug_mode_changed(self, index: int) -> None:
         """同步调试日志开关。
@@ -839,12 +920,13 @@ class CardUI(QMainWindow):
         self._diagnostic_status = dict(status)
         reason = str(status.get('reason', ''))
         warning = ('完整诊断已暂停：'+(reason or '未知原因').splitlines()[-1]+'；关闭后重新开启') if status.get('state') == 'paused' else ''
-        if status.get('state') == 'backpressure':
-            warning = '完整诊断暂缓：'+(reason or '保存队列拥堵').splitlines()[-1]+'；队列回落后自动恢复'
+        notice = ('完整诊断暂缓：'+(reason or '保存队列拥堵').splitlines()[-1]+'；队列回落后自动恢复'
+                  if status.get('state') == 'backpressure' else '')
         if status.get('daily_log_error'):
             warning += ' 日常日志写入失败：'+str(status['daily_log_error'])
         self._diagnostic_warning = warning
-        self._refresh_status_bar()
+        self._diagnostic_notice = notice
+        self._refresh_title_status()
         if self._settings_dialog is not None:
             self._settings_dialog.set_diagnostic_status(status)
 
@@ -857,16 +939,6 @@ class CardUI(QMainWindow):
         if index in (0, 1):
             self._apply_setting('packed_inference', index == 0, 'PACKED_INFERENCE')
 
-
-    def on_game_changed(self, index: int) -> None:
-        """保持当前斗地主功能范围，只接受已注册的斗地主选项。
-
-        Args:
-            index: 游戏列表索引。
-        """
-        names = settings._scan_game_configs()
-        if 0 <= index < len(names) and names[index] != settings.GAME_NAME:
-            self._on_settings_error("当前版本仅支持斗地主。")
 
     def on_show_timing_changed(self, index: int) -> None:
         """保存并刷新耗时显示开关。
@@ -984,6 +1056,8 @@ class CardUI(QMainWindow):
             name: 已应用布局名。
         """
         self.layout_name = name
+        self._layout_status = ""
+        self._refresh_title_status()
         self._reset_ui_to_total()
         self._refresh_open_settings()
 
@@ -997,11 +1071,95 @@ class CardUI(QMainWindow):
         self._show_played_cards = settings.SHOW_PLAYED_CARDS
         self._update_played_cards_visibility()
 
+    def _set_window_caption(self, caption: str) -> None:
+        """窗口保留固定名称，状态与耗时只在应用标题栏绘制一次。
+
+        Args:
+            caption: 主窗口需要展示的标题文本。
+        """
+        self.setWindowTitle("Han记牌器")
+        self.setAccessibleName(caption)
+        self.title_bar.set_caption(caption)
+
+    def showEvent(self, event: QShowEvent) -> None:
+        """窗口显示后读取安全区域，避开右侧系统标题栏按钮。
+
+        Args:
+            event: Qt窗口显示事件。
+        """
+        super().showEvent(event)
+        handle = self.windowHandle()
+        if handle is not None:
+            if not self._safe_area_signal_connected:
+                handle.safeAreaMarginsChanged.connect(self._update_title_bar_safe_area)
+                handle.screenChanged.connect(self._schedule_title_bar_refresh)
+                self._safe_area_signal_connected = True
+            self._update_title_bar_safe_area(handle.safeAreaMargins())
+            clip_native_title_overlay(self)
+        # 首显不能把创建期间的临时高度当作用户尺寸保留；重显才只允许增高。
+        self._fit_main_window(shrink=self._initial_size_pending)
+        self._title_bar_update_timer.start(0)
+
+    def event(self, event: QEvent) -> bool:
+        """阻止Qt默认帮助提示自动创建底栏，其余事件保持原有行为。
+
+        Args:
+            event: Qt分发的窗口事件。
+        Returns:
+            帮助状态事件已接管时为True，其他事件交由主窗口处理。
+        """
+        if event.type() == QEvent.Type.StatusTip:
+            event.accept()
+            return True
+        return super().event(event)
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        """尺寸变化后重新读取已更新的系统按钮边界。
+
+        Args:
+            event: Qt窗口尺寸事件。
+        """
+        super().resizeEvent(event)
+        if hasattr(self, '_title_bar_update_timer'):
+            self._title_bar_update_timer.start(0)
+
+    def _refresh_title_bar_geometry(self) -> None:
+        """原生布局生效后更新按钮避让，并在首次可见时收拢一次启动高度。"""
+        handle = self.windowHandle()
+        if handle is not None:
+            self._update_title_bar_safe_area(handle.safeAreaMargins())
+            clip_native_title_overlay(self)
+        if self._initial_size_pending and self.isVisible():
+            # 先清标记，避免本次resize触发的下一次回调继续压缩用户窗口。
+            self._initial_size_pending = False
+            self._fit_main_window()
+
+    @Slot()
+    def _schedule_title_bar_refresh(self) -> None:
+        """切换屏幕后按新的缩放比例重新设置标题层裁剪区域。"""
+        self._title_bar_update_timer.start(0)
+
+    def _update_title_bar_safe_area(self, margins: QMargins) -> None:
+        """按系统标题栏高度和安全边距对齐控件、避开系统按钮。
+
+        Args:
+            margins: Qt报告的窗口安全区边距。
+        """
+        title_height = self.style().pixelMetric(QStyle.PixelMetric.PM_TitleBarHeight, None, self)
+        title_button = self.style().pixelMetric(QStyle.PixelMetric.PM_TitleBarButtonSize, None, self)
+        self.title_bar.setFixedHeight(max(32, title_height, margins.top()))
+        # PM_TitleBarButtonSize可能只有16px，不能据此估算Windows的宽按钮组。
+        native_width = max(native_caption_button_width(self), 144)
+        right_inset = max(margins.right() + 8, native_width + 8, title_button * 3 + 12)
+        self.title_bar.set_right_safe_area_inset(right_inset)
+
     def _apply_timing_visibility(self) -> None:
         """刷新耗时标题，故障状态保持可见。"""
         if self.worker.state == "failed":
             return
-        self.setWindowTitle("Han记牌器  ·  推理 --ms  ·  整轮 --ms" if settings.SHOW_TIMING else "Han记牌器")
+        self._set_window_caption(
+            "Han记牌器 · 推理--ms · 整轮--ms" if settings.SHOW_TIMING else "Han记牌器",
+        )
 
     def _on_settings_error(self, message: str) -> None:
         """设置失败时恢复已确认的控件值并显示原因。
@@ -1031,8 +1189,8 @@ class CardUI(QMainWindow):
         else:
             self.timer.stop()
             labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
-            self.setWindowTitle("Han记牌器  ·  " + labels.get(state, state))
-        self._refresh_status_bar()
+            self._set_window_caption("Han记牌器  ·  " + labels.get(state, state))
+        self._refresh_title_status()
 
     @Slot()
     def on_restart_clicked(self) -> None:
@@ -1043,16 +1201,22 @@ class CardUI(QMainWindow):
 
     def _update_played_cards_visibility(self) -> None:
         """保留出牌标签的布局归属，仅切换可见性。"""
-        if self.second_row_layout.parent() is None:
-            self.root_layout.addLayout(self.second_row_layout)
         for label in self.played_cards_labels.values():
             if self.second_row_layout.indexOf(label) < 0:
                 self.second_row_layout.addWidget(label)
             label.setVisible(self._show_played_cards)
-        self._fit_main_window()
+        self.played_panel.setVisible(self._show_played_cards)
+        self._apply_panel_arrangement()
 
-    def _fit_main_window(self) -> None:
-        """按整个主窗口计算所需高度，包括状态栏，保留用户调整的宽度。"""
+    def _fit_main_window(self, shrink: bool = True, *, reset_width: bool = False) -> None:
+        """按整个主窗口计算高度，重显窗口时保留用户已调整的尺寸。
+
+        Args:
+            shrink: 是否按内容收起高度；首次显示为True，后续重显/置顶重建为False。
+            reset_width: 用户主动切换显示排列或显隐时按新布局收拢宽度。
+        """
+        previous_width = self.width()
+        self.setMinimumSize(0, 0)
         self.central_widget.updateGeometry()
         self.root_layout.invalidate()
         self.root_layout.activate()
@@ -1061,8 +1225,12 @@ class CardUI(QMainWindow):
             layout.invalidate()
             layout.activate()
         minimum = self.minimumSizeHint()
-        self.setMinimumSize(max(550, minimum.width()), max(100, minimum.height()))
-        self.resize(max(self.width(), self.minimumWidth()), max(100, self.sizeHint().height()))
+        base_width = (HORIZONTAL_WINDOW_WIDTH if self._panel_arrangement == 'horizontal'
+                      and self._show_played_cards else COMPACT_WINDOW_WIDTH)
+        base_height = 80 if self._panel_arrangement == 'horizontal' else 100
+        self.setMinimumSize(max(base_width, minimum.width()), max(base_height, minimum.height()))
+        height = max(base_height, self.sizeHint().height(), 0 if shrink else self.height())
+        self.resize(self.minimumWidth() if reset_width else max(previous_width, self.minimumWidth()), height)
 
     @Slot(str)
     def on_worker_error(self, err_text: str) -> None:
@@ -1072,10 +1240,8 @@ class CardUI(QMainWindow):
             err_text: 错误详情。
         """
         print("Worker error:\n", err_text)
-        message = err_text.strip().splitlines()[-1] if err_text.strip() else "识别失败"
-        self._status_error = message
-        self._refresh_status_bar()
-        self.statusBar().setToolTip(err_text)
+        self._status_error = err_text.strip() or "识别失败"
+        self._refresh_title_status()
 
     @Slot()
     def on_worker_finished(self):

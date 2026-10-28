@@ -16,3 +16,9 @@ games_images/
 # 本机诊断证据与轮转日志
 /diagnostics/
 /logs/
+
+# 本机布局编辑参考图，不随源码上传
+/config/layout_previews/
+
+# 按权重内容与输入尺寸隔离的本机 ONNX/TensorRT 导出缓存
+/model_cache/

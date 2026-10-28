@@ -29,7 +29,7 @@ class LayoutAnalyzer:
         self.layout_config = layout_config
 
     def sort_cards_by_topright_rowwise(self, dets: List[Dict], max_rows: int = 3) -> List[Dict]:
-        """按右上角坐标对检测框进行先行后列排序。
+        """按画面左上坐标读取牌组，先上行再下行，每行从左到右。
 
         Args:
             dets: 检测结果列表，每个元素包含 ``bbox`` (x1, y1, x2, y2) 和 ``name``。
@@ -45,7 +45,7 @@ class LayoutAnalyzer:
         heights = []
         for i, d in enumerate(dets):
             x1, y1, x2, y2 = d["bbox"]
-            feats.append((float(y1), float(x2), i))
+            feats.append((float(y1), float(x1), i))
             heights.append(max(1, (y2 - y1)))
 
         heights_sorted = sorted(heights)

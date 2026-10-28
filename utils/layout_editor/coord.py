@@ -37,25 +37,29 @@ def denormalize_rect(norm_rect, width: int, height: int) -> Tuple[int, int, int,
     )
 
 
-def sanitize_pixel_rect(rect: Tuple[int, int, int, int], width: int, height: int) -> Tuple[int, int, int, int]:
-    x1, y1, x2, y2 = rect
-    x1 = int(clamp(x1, 0, max(0, width - 1)))
-    x2 = int(clamp(x2, 0, max(0, width - 1)))
-    y1 = int(clamp(y1, 0, max(0, height - 1)))
-    y2 = int(clamp(y2, 0, max(0, height - 1)))
+def sanitize_pixel_rect(rect: tuple[int, int, int, int], width: int, height: int) -> tuple[int, int, int, int]:
+    """规范化裁剪边界，右下边界允许等于图片尺寸。
 
-    if x1 > x2:
-        x1, x2 = x2, x1
-    if y1 > y2:
-        y1, y2 = y2, y1
-
-    # keep at least 1px height/width when possible
-    if width > 1 and x1 == x2:
-        x2 = min(width - 1, x1 + 1)
-    if height > 1 and y1 == y2:
-        y2 = min(height - 1, y1 + 1)
-
-    return x1, y1, x2, y2
+    Args:
+        rect: 任意拖动方向的两个端点。
+        width: 正整数图片宽度。
+        height: 正整数图片高度。
+    Returns:
+        左闭右开的非空像素区域。
+    Raises:
+        TypeError: 尺寸或端点不是整数。
+        ValueError: 尺寸非正或端点数量错误。
+    """
+    if not isinstance(rect, (tuple, list)) or type(width) is not int or type(height) is not int:
+        raise TypeError("图片尺寸和像素区域类型错误")
+    if any(type(value) is not int for value in rect):
+        raise TypeError('图片尺寸和像素坐标必须是整数')
+    if width <= 0 or height <= 0 or len(rect) != 4:
+        raise ValueError('图片尺寸必须为正，区域必须包含四个端点值')
+    left, right = sorted((max(0, min(width, rect[0])), max(0, min(width, rect[2]))))
+    top, bottom = sorted((max(0, min(height, rect[1])), max(0, min(height, rect[3]))))
+    left, top = min(left, width-1), min(top, height-1)
+    return left, top, max(left+1, right), max(top+1, bottom)
 
 
 def normalize_layout(pixel_layout: Dict[str, Tuple[int, int, int, int]], width: int, height: int):

@@ -11,8 +11,9 @@
 - Original-image or packed inference for manual layouts; automatic layouts always use the full image.
 - Two-stage packing: bottom cards and initial hand first, then bottom cards and the three play areas after the initial hand has been deducted.
 - Strict user-region crops with no added margins, fixed initial scaling, and online scale estimates from individual card detections.
-- A fixed 768×480 canvas, overlap-aware coordinate restoration and duplicate removal.
+- A fixed pixel canvas per model's `model_config.yaml`, overlap-aware coordinate restoration and duplicate removal. New weights must include this sidecar; square and rectangular inputs use their declared dimensions.
 - Pause/resume, always-on-top UI, play history, timing, actual YOLO input preview, and paired original/annotated screenshots.
+- Separate remaining-card and play-history panels, with stacked or side-by-side arrangements in Basic Settings.
 
 This repository currently maintains the **Windows Dou Dizhu application**. It does not ship an Android APK, use OCR for rank recognition, or implement other card games. It does not control the game. Compatibility and accuracy must be checked for each interface and skin.
 
@@ -54,7 +55,7 @@ The diagnostic update passed 203 unit tests, including a real Windows spawn/work
 
 ## Support this project
 
-If this project has helped you, optional donations via the [WeChat Pay or Alipay QR codes](SUPPORT.md) support its maintenance. Stars, issue reports and code contributions are welcome too.
+If this project has helped you, optional donations via the [WeChat Pay or Alipay QR codes](SUPPORT.md) support its maintenance. You can also view the local QR code in the app under Settings → Support. Stars, issue reports and code contributions are welcome too.
 
 ## Contributing and license
 

@@ -29,6 +29,45 @@ class TrackerTests(unittest.TestCase):
         for _ in range(count):
             self.tracker.get_cards_number(self.frame, 0.0)
 
+    def test_reading_order_changes_do_not_recount_a_visible_play(self) -> None:
+        """换行只改变显示顺序，不重复扣牌；空区过渡后允许再出相同牌组。"""
+        self.feed(1)
+        cards = ['8', '9', '10', 'J', 'Q']
+        self.frame['opponent_left'] = cards
+        self.feed(1)
+        self.frame['opponent_left'] = list(reversed(cards))
+        self.feed(1)
+        self.assertEqual(self.tracker.show_cards['left'], [cards])
+        self.assertTrue(all(self.tracker.remain_cards[card] == 3 for card in cards))
+        self.frame['opponent_left'] = []
+        self.feed(1)
+        self.frame['opponent_left'] = cards
+        self.feed(1)
+        self.assertEqual(self.tracker.show_cards['left'], [cards, cards])
+        self.assertTrue(all(self.tracker.remain_cards[card] == 2 for card in cards))
+
+    def test_frame_confirmation_ignores_order_but_keeps_card_multiplicity(self) -> None:
+        """连续确认不比较排列，但必须区分AAK与AKK的张数。"""
+        settings.FRAME_LENGTH = 2
+        self.assertTrue(self.tracker._check_card([['A', 'A', 'K'], ['K', 'A', 'A']]))
+        self.assertFalse(self.tracker._check_card([['A', 'A', 'K'], ['K', 'K', 'A']]))
+
+    def test_diagnostics_follow_order_independent_confirmation(self) -> None:
+        """显示顺序变化后实际完成确认，诊断不能仍然报告该区域待确认。"""
+        from core.diagnostic_state import decision_reasons, tracker_snapshot
+        self.feed(1)
+        settings.FRAME_LENGTH = 2
+        self.frame['opponent_left'] = ['8', '9', '10', 'J', 'Q']
+        self.feed(1)
+        before = tracker_snapshot(self.tracker)
+        self.frame['opponent_left'] = ['Q', 'J', '10', '9', '8']
+        self.feed(1)
+        after = tracker_snapshot(self.tracker)
+        reasons = decision_reasons(before, after, self.frame, list(self.frame), True, 2)
+        self.assertEqual(self.tracker.show_cards['left'], [self.frame['opponent_left']])
+        self.assertFalse(any(reason['code'] == 'confirmation_pending'
+                             and reason.get('region') == 'opponent_left' for reason in reasons))
+
     def test_initial_hand_and_self_play_are_counted_once(self) -> None:
         """持续可见的手牌和本家出牌不重复扣减。"""
         self.feed(5)

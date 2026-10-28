@@ -68,6 +68,26 @@ class AutoLayoutTests(unittest.TestCase):
             self.tracker.get_cards_number(data, 1., set(observation.regions))
         return observation
 
+    def test_observation_uses_screen_reading_order_instead_of_label_names(self) -> None:
+        """两行牌先读取上行，行内从左到右，不按标签字母或牌点重排。"""
+        top = row(['eight', 'nine', 'ten'], .2, .3)
+        bottom = row(['J', 'Q'], .2, .37)
+        observation = LayoutObservation(regions={'opponent_left': list(reversed(top + bottom))})
+        boxes = observation.as_boxes()['opponent_left']
+        self.assertEqual([box['name'] for box in boxes], ['eight', 'nine', 'ten', 'J', 'Q'])
+
+    def test_manual_reading_order_uses_left_edges_and_preserves_wrapped_rows(self) -> None:
+        """手动分区中宽框右沿越过邻牌时仍依照左沿顺序读取。"""
+        from core.layout_analyzer import LayoutAnalyzer
+        analyzer = LayoutAnalyzer({'window_title': 'test', 'layout': {}})
+        detections = [
+            {'name': '10', 'bbox': (5, 42, 18, 62)},
+            {'name': '9', 'bbox': (30, 10, 42, 30)},
+            {'name': '8', 'bbox': (10, 10, 48, 30)},
+        ]
+        result = analyzer.sort_cards_by_topright_rowwise(detections)
+        self.assertEqual([box['name'] for box in result], ['8', '9', '10'])
+
     def test_single_card_for_each_player(self) -> None:
         """本家、左家、右家单张出牌均归入独立区域。"""
         plays = row(["A"], .22, .37) + row(["K"], .47, .57) + row(["Q"], .76, .37)
@@ -251,7 +271,7 @@ class AutoLayoutTests(unittest.TestCase):
             GameController, "_create_inferencer", return_value=Mock(),
         ), patch("core.game_controller.ScreenCapture") as capture:
             capture.return_value.capture_window.return_value = Image.new("RGB", (1000, 800))
-            controller = GameController("doudizhu", "Auto")
+            controller = GameController("Auto")
         controller.yolo_inferencer.detect.return_value = (Mock(), 1.)
         with patch("core.game_controller.read_yolo_boxes", return_value=self.cards):
             for _ in range(8):

@@ -41,17 +41,15 @@ class InferenceWorker(QObject):
     performance_ready = Signal(dict)
     diagnostic_status_changed = Signal(dict)
 
-    def __init__(self, layout_name: str, game_name: str = "doudizhu", parent: QObject | None = None) -> None:
+    def __init__(self, layout_name: str, parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
 
         Args:
             layout_name: 初始布局名。
-            game_name: 初始游戏名。
             parent: Qt 父对象。
         """
         super().__init__(parent)
         self._layout_name = layout_name
-        self._game_name = game_name
         self._cmd_queue: Queue[Command | None] | None = None
         self._result_queue: Queue[Response] | None = None
         self._process: mp.Process | None = None
@@ -79,7 +77,6 @@ class InferenceWorker(QObject):
             return
         self.stop()
         self._layout_name = settings.CURRENT_LAYOUT or self._layout_name
-        self._game_name = settings.GAME_NAME
         self._generation += 1
         self._set_state("starting")
         try:
@@ -88,7 +85,7 @@ class InferenceWorker(QObject):
             self._process = mp.Process(
                 target=run_controller_loop,
                 args=(self._cmd_queue, self._result_queue, self._layout_name,
-                      self._game_name, settings.runtime_snapshot()),
+                      settings.runtime_snapshot()),
                 daemon=True,
             )
             self._process.start()
@@ -231,17 +228,6 @@ class InferenceWorker(QObject):
             请求编号，服务不可用时为 None。
         """
         return self._submit("switch_device", device_name, invalidate=True)
-
-    def switch_game(self, game_name: str) -> int | None:
-        """提交游戏切换。
-
-        Args:
-            game_name: 已注册游戏名。
-
-        Returns:
-            请求编号，服务不可用时为 None。
-        """
-        return self._submit("switch_game", game_name, invalidate=True)
 
     def update_settings(self, updates: Mapping[str, object]) -> int | None:
         """提交热更新设置。

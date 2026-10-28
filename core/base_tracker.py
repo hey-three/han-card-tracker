@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import time
+from collections import Counter
 from collections.abc import Mapping, Sequence
 from typing import cast
 from abc import ABC, abstractmethod
@@ -157,22 +158,19 @@ class BaseCardTracker(ABC):
         ...
 
     def _check_card(self, lst: list[list[str]]) -> bool:
-        """检查连续帧缓存是否稳定（长度足够且所有帧内容一致）。
+        """按牌点及张数判断连续帧稳定，不因排列或换行改变而中断确认。
 
         Args:
             lst: 帧缓存列表，每个元素为一帧的检测结果。
 
         Returns:
-            bool: 缓存长度达到 FRAME_LENGTH 且所有帧完全一致时返回 True。
+            缓存长度足够且各帧牌点多重集一致时返回True，不修改显示顺序。
         """
         if len(lst) < settings.FRAME_LENGTH:
             return False
 
-        for i in range(1, len(lst)):
-            if lst[i - 1] != lst[i]:
-                return False
-
-        return True
+        signature = Counter(lst[-1])
+        return all(Counter(frame) == signature for frame in lst[:-1])
 
     def _delete_played_cards(self, lst: list[str]) -> None:
         """从剩余牌数中扣减已出的牌。
@@ -234,7 +232,7 @@ class BaseCardTracker(ABC):
 
             current = cache[-1]
             if (len(show) == 0
-                    or current != show[-1]
+                    or Counter(current) != Counter(show[-1])
                     or self.has_found_empty[key]):
                 if len(current) > 0:
                     show.append(current)

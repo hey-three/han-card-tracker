@@ -75,7 +75,7 @@ class ProcessTests(unittest.TestCase):
         commands, results = context.Queue(), context.Queue()
         process = context.Process(
             target=run_controller_loop,
-            args=(commands, results, settings.CURRENT_LAYOUT, "doudizhu", {"FRAME_LENGTH": 0}),
+            args=(commands, results, settings.CURRENT_LAYOUT, {"FRAME_LENGTH": 0}),
         )
         try:
             process.start()
@@ -108,7 +108,7 @@ class ProcessTests(unittest.TestCase):
         controller.detect.return_value = (remain, zones, 2.0)
         controller.execute_command.side_effect = lambda *args: (remain.clear(), zones.clear(), metrics.clear())
         with patch("core.game_controller.GameController", return_value=controller):
-            run_controller_loop(commands, results, settings.CURRENT_LAYOUT, "doudizhu", {})
+            run_controller_loop(commands, results, settings.CURRENT_LAYOUT, {})
         self.assertEqual(results.get_nowait().status, "ready")
         response = results.get_nowait()
         self.assertEqual(response.remain_cards, {"A": 1})

@@ -49,6 +49,25 @@ class PipelineTests(unittest.TestCase):
         self.card = Detection("A", (a+20., b+20., a+40., b+50.))
         self.detector.detect_packed.return_value = (raw_result([Detection("A", tile.project(self.card.bbox))]), 5.)
 
+    def test_model_canvas_change_replans_and_restores_coordinates(self) -> None:
+        """矩形与方形目标均生成精确像素画布，切换尺寸不复用旧坐标变换。"""
+        from core.square_packing import make_rect_plan
+        scales = [1.] * len(self.regions)
+        with patch('core.packed_pipeline.make_rect_plan', wraps=make_rect_plan) as build:
+            for size in ((960, 608), (960, 960)):
+                plan = make_rect_plan(self.image.size, self.regions, scales, size)
+                tile = plan.tiles[0]
+                a, b, _, _ = tile.source
+                card = Detection('A', (a+20., b+20., a+40., b+50.))
+                self.detector.detect_packed.return_value = (raw_result([Detection('A', tile.project(card.bbox))]), 5.)
+                self.pipeline.detect(self.image, self.detector, self.regions, scales=scales, canvas_size=size)
+                self.assertEqual(self.detector.detect_packed.call_args.args[0].size, size)
+                restored = self.detector.restore_result.call_args.args[2]
+                self.assertEqual(len(restored), 1)
+                for actual, expected in zip(restored[0].bbox, card.bbox):
+                    self.assertAlmostEqual(actual, expected)
+            self.assertEqual(build.call_count, 2)
+
     def test_auto_always_uses_full_and_does_not_build_a_plan(self) -> None:
         """自动模式始终整图，哪怕已曾运行过手动拼图。"""
         self.pipeline.detect(self.image, self.detector, self.regions)

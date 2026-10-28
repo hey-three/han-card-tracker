@@ -1,0 +1,13 @@
+# train3 权重的预测配置；请与权重文件放在同一个文件夹中。
+# 记牌器读取本文件，统一原图、拼图及静态导出的固定输入尺寸。
+model: YOLO11s
+weights:
+  - best.pt
+  - last.pt
+
+input:
+  width: 960
+  height: 960
+  # 按原比例缩放并补边，使用固定尺寸画布。
+  resize: letterbox
+  rect: false

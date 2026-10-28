@@ -8,7 +8,7 @@
 - [架构](docs/架构与数据流.md)、[记牌规则](docs/斗地主记牌设计说明.md)、[自动布局](docs/自动布局设计说明.md)、[拼图](docs/拼图自适应与检测方式.md)是当前实现说明。
 - [设计决策](docs/设计决策.md)保留长期取舍，[排查与验证](docs/排查与验证.md)区分真实证据/未测项，[CHANGELOG](CHANGELOG.md)记版本变化；不通过层叠“以上废弃”维护当前规则。
 - [配置参考](docs/配置参考.md)、[模型训练](docs/模型训练与拼图约定.md)、[维护与发布](docs/维护与发布.md)随对应变更同步。
-- 仓库赞赏按钮由.github/FUNDING.yml的custom链接指向SUPPORT.md，使用images/QR.png中的微信/支付宝二维码；更新入口或图片时同步中英文README和维护文档，不自动改写收款二维码。
+- 仓库赞赏按钮由.github/FUNDING.yml的custom链接指向SUPPORT.md；桌面程序设置页也从images/QR.png展示微信/支付宝二维码。更新入口或图片时同步中英文README和维护文档，不自动改写收款二维码。
 
 ## 2. 编码要求
 
@@ -16,7 +16,7 @@
 
 ## 3. 范围与入口
 
-当前仅维护Windows斗地主，不合并够级逻辑；TRACKER_REGISTRY只启用doudizhu，新增YAML不等于新增游戏支持。Android和第三方APK分析是独立工程，不把第三方代码/权重/图片复制进来。
+当前仅维护Windows斗地主，不合并够级逻辑；设置页不提供游戏选择，推理链固定使用doudizhu；TRACKER_REGISTRY只启用doudizhu，新增YAML不等于新增游戏支持。Android和第三方APK分析是独立工程，不把第三方代码/权重/图片复制进来。
 
 入口main.py建立QApplication、样式和CardUI，必须保留multiprocessing.freeze_support。主链：ui/main_window.py → inference_process.py → controller_process.py → game_controller.py → 布局/Tracker/YOLO/截图。设置由ui/settings_controller.py协调，协议在core/inference_protocol.py。
 
@@ -33,6 +33,7 @@
 - WAIT_BEGIN见上方底牌任意一张，当前帧进HAS_STARTED；非空合法手牌按FRAME_LENGTH连续一致，扣一次后进STARTED_RECORD_CARD。无17/20硬门槛，无17→20补扣，空手牌不能通过。
 - remain_cards只排除本家首次确认手牌及已确认的对手出牌。本家后续任何出牌只记历史，不补扣、不重扣、不反推初始手牌；用户已明确撤回累计出牌补扣。底牌不另扣。has_found_empty维护连续两手相同牌的空区过渡。
 - frame_caches只保留最新阈值帧；阈值变小时下一帧即可确认，变大需等足够帧。
+- 连续确认与已记录牌组比较使用Counter，比较牌点及张数而非排列；显示保持画面阅读顺序，先上行再下行、每行从左到右。自动布局as_boxes复用group_rows，不能再按类别名排序输出；手动布局按框左沿排序。空区过渡仍控制连续相同牌组的再次确认。
 - 底牌缺失暂停并清未确认序列；已知为空连续max(3,FRAME_LENGTH)帧且持续RESET_TIME秒才内部结束。同帧模型复查只算一次。未知、截图失败、暂停/恢复中断累计。
 - begin_waiting保留remain_cards/show_cards，新底牌出现开局才刷新。显式reset立即清空。不按某家零张、全图无牌、底牌牌面变化额外结束。
 - 缺区域键是未知，有键空列表才是已知为空。未知清该区确认缓存、保留出牌与空帧历史；未观测区不能补成空区。
@@ -46,7 +47,7 @@
 - 手动拼图WAIT_BEGIN/HAS_STARTED只底牌+手牌；首扣后的下一帧底牌+三家出牌，不含手牌。开局无底牌、全空或未知也不跑整图校准；记牌中可同帧复查原图。
 - 用户框就是源边界，向内取整，只用1e-7像素误差容差；不向四周或下沿扩框，不为框外牌补救。内部保护重叠也只在原框内。
 - Tile.source_region区分人工边界与内部切口。内部残片须完整副本覆盖85%自身面积；人工边缘可接受但有完整副本时仍优先去重。按原位置/类别去重，不能按牌点去重。
-- config/packing_profile.py定义固定画布(W,H)=(768,480)、阶段区域及INITIAL_REGION_SCALES。初值底牌1.652110、手牌0.703958、上下家约1、本家出牌0.836045；不在无底牌时试探放大。
+- core/model_input.py在加载所选best.pt时读取同目录model_config.yaml，width/height为正的32倍数、resize:letterbox、rect:false；新增模型必须附带该文件，已有非法文件报错，仅缺文件旧模型兼容768×480画布。正式拼图使用所选模型的实际像素(W,H)，不是仅比例固定；config/packing_profile.py保留后备尺寸、阶段区域及INITIAL_REGION_SCALES。初值底牌1.652110、手牌0.703958、上下家约1、本家出牌0.836045；不在无底牌时试探放大。
 - core/packing_scales.py复用当前检测框学习普通单牌高度，排除大小王长框。三帧最高/最低≤1.2确认，10%迟滞、权重0.25～8；测准底牌和参照后优先出牌、其次手牌，底牌目标多12%。未知/空区中断未确认测量。
 - 布局、截图尺寸、模型、显式重置和检测方式切换隔离学习，二区→四区保留参照。规划缓存只存几何和画布，每帧重新识别；不旋转、不拉伸裁片。make_square_plan是历史/对照接口，正式用加权make_rect_plan。
 
@@ -54,12 +55,18 @@
 
 - 仅主进程通过settings.save_*及config/store.py写盘。同目录唯一临时文件+os.replace；成功后更新内存，读取损坏必须报错，不能空配置覆盖。
 - 后端成功回执后保存并刷新；后端失败保留旧组件，保存失败停止检测并提示重启。故障时允许修正持久化参数供新进程使用。
-- 预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览、终端日志和完整诊断三项功能独立，完整诊断为唯一图片保存入口。
+- 设置页所有布尔项使用滑动开关，持久化配置键保持不变；其他有多个取值的设置继续使用下拉框。预览偏好先保存/更新UI，再同步传图。点叉/Esc持久化关闭，退出主程序仅隐藏。实际预览、终端日志和完整诊断三项功能独立，完整诊断为推理运行证据的唯一图片保存入口；手动布局编辑参考图为独立本机缓存。
+- 设置标签顺序为基本、高级、赞赏、关于；基本设置中的YOLO模型选择、设备、布局和显示耗时位于基本页。布局先选择“自动布局/手动框选”，下方缩进的无标题QGroupBox以系统窗口底色和中性边框区分二级配置：自动布局只选目标游戏窗口；手动框选只列手动布局，并可选拼图检测/原图检测。顶层模式按钮只切换配置面板，选择具体窗口或布局后才提交运行时切换。高级设置中“输出调试日志”位于“实时显示YOLO输入”之后；数值下拉控件在设置行右侧对齐，诊断磁盘上限输入框保持紧凑宽度。赞赏页只显示images/QR.png，响应页面尺寸等比例缩放并保留二维码可扫描性。
+- 手动布局下拉项右侧依次为细线编辑/垃圾桶图标，悬停提示“编辑/删除”，支持F2/Delete；视图showEvent在Qt弹出容器安装过滤器后重新安装自己的视口事件过滤器，优先接管图标按下/松开，避免QComboBox提前消费松开事件；普通条目仍由Qt选择。图标松开后收起列表，再由子QTimer运行操作，不误切换布局。移除手动刷新按钮；新建与按名称编辑分开，保存后自动刷新，用户再次选择同一项也会重交完整配置。
+- 编辑器参考图由utils/layout_editor/reference_store.py保存在CONFIG_PATH同目录layout_previews/，布局名哈希PNG内嵌名称/窗口身份，每个名称仅保留最新一张，原子替换并Git忽略，不进入诊断配额或推理链。重开直接加载原图并叠加YAML已保存的五区；旧布局无缓存需补截一次。同窗重截立即更新原布局缓存，新建/改目标/另存名称在保存成功后建立关联；缓存失败保留草稿并提示。编辑器不按图像尺寸resize或居中，画布直接按当前视口缩放，用户仍可手动改窗口大小。编辑器绑定明确的布局名称和截图目标；同一窗口重截图保留并等比映射未保存框选，换窗口必须重截图且清旧框。同名编辑直接覆盖，另存为已存在名称需确认；保存失败保留草稿，取消保护未保存修改。五区完整后启用保存，保存时直接校验五区齐全、坐标范围和截图目标；已移除重复的“预览校验”按钮及独立预览窗口，不运行YOLO预验证。右下坐标允许到图片width/height，极小拖动不覆盖旧框。
 - 编辑布局先保存内容，后端确认切换再保存current_layout。删除当前布局先确认替代布局；失败不删除原记录。
 - 模型/设备/布局切换重建相应组件并重置牌局。控制设置有白名单，子进程只改内存，不写YAML。
 - BASE_DIR是可写运行目录，RESOURCE_DIR负责冻结资源/_internal解析；首次冻结运行复制配置到可写目录。
 - UI增量更新计数/历史；出牌标签保留布局归属仅切可见性。depleted/count动态属性更新需unpolish/polish。
-- 窗口置顶仅标志变化时设置并保留几何，不反复adjustSize；设置框打开暂停检测，关闭touch_time中断超时连续性。
+- panel_arrangement/PANEL_ARRANGEMENT为纯UI偏好，缺省vertical，可选horizontal；基本设置“界面排列”切换上下/左右长条，原子保存后只重排同一对QFrame，不重启推理或清牌局。两区同底色，无外框、无圆角、无区域标题；PlayedCardsPanel的arrangement动态属性控制单边分隔线，上下用横线、左右用竖线，隐藏出牌区时同时隐藏线；出牌行简称上/本/下并靠左，完整历史可悬停查看。上下默认宽495逻辑像素（原550缩10%），左右默认900且两区始终等宽（相同最小宽和1:1伸缩）；左右模式缩减内边距/行距并将最小高度下限降到80，内容最小高度仍优先，实际最小尺寸受字体/DPI影响；显式切换时收拢；首显允许收拢，并在标题栏子QTimer回调中待原生布局生效后补算一次（_initial_size_pending先清再resize），不保留创建期间的临时高度；后续重显及置顶仍保留用户尺寸。布局二级配置用palette(window)/palette(mid)，不再蓝色底纹。
+- 标题栏三个操作统一使用ui/icons.py按主题绘制的细线图标；ui/layout_status.py仅压缩展示文案到最多六字，不改变业务状态。ui/title_bar.py在耗时后显示更小字号的短状态，悬停显示完整说明；正常布局提示不占底行且只刷新标题栏；完整诊断backpressure暂缓仅在标题栏显示“诊断暂缓”，悬停完整原因，不受show_layout_status影响，恢复后回显布局提示；故障、诊断暂停和日志错误也只在顶部显示，优先级为识别故障/错误→持久诊断告警→诊断暂缓→普通布局；悬停详情包含并存告警。完全不创建QStatusBar，并拦截StatusTip事件防止Qt隐式创建；顶部“重启”仅failed时显示，状态变化不计算窗口尺寸。空间不足时标题文字省略，不挤占原生窗口按钮。
+- 主窗口设置、暂停/继续、重置图标与运行标题显示在Windows原生标题栏同一行左侧；Qt 6.9+扩展客户区中，CardUI自身及central_widget都关闭WA_ContentsMarginsRespectsSafeArea，避免主窗口把整行再次下推。右侧按钮避让读取DWM物理宽度并按devicePixelRatioF转换；子QTimer在显示/缩放后刷新，不轮询。首次可见在延迟回调中收拢一次；后续重显只按需增高，保留用户尺寸。已撤回无效的底层QWindow标志切换。ui/title_bar.py的clip_native_title_overlay只裁剪本窗口的_q_titlebar子窗口，让Qt标题叠加层仅显示右侧系统按钮，隐藏左侧默认图标/重复文字；显示、缩放和切换屏幕后重新设置，依赖Qt 6.10/6.11的Windows标题层实现。窗口名称固定Han记牌器，运行状态/耗时只交由MainTitleBar显示，保留系统最小化/最大化/关闭提示。NoTitleBarBackgroundHint固定为False，让右侧Qt标题叠加层先绘制不透明主题底色后再画悬停高亮，避免深色半透明白色悬停合成白块；左侧默认内容仍由原有裁剪隐藏，不切换其他底层QWindow标志。右侧系统窗口控制按钮及窗口缩放仍由Windows处理。
+- 窗口置顶仅标志变化时设置并保留几何，不反复adjustSize；普通窗口重显后先QWindow.resize恢复Qt逻辑尺寸，再setPosition恢复位置，避免150%缩放下边框换算漂移1像素；最大化/最小化仍用序列化状态。设置框打开暂停检测，关闭touch_time中断超时连续性。
 - 截图下沉/恢复统一Qt逻辑坐标，防止重入，失败也恢复。延迟定时器随窗口销毁。show_layout_status仅隐藏正常提示，故障和恢复按钮始终可见。
 
 ## 8. 图像、计时与模型
@@ -71,13 +78,14 @@
 - diagnostic_status含当前预算、待写字节与跳过数；独立Response状态diagnostic携带diagnostic_status，不回执或解锁检测；异步状态含单调时间戳，UI拒绝旧通知。暂停警告不随show_layout_status隐藏，后台实际状态不能与保存的开关混淆。
 - 详见[诊断记录](docs/诊断记录.md)。关闭最多等待250ms，退出最多1秒；超时不宣称完整；暂未实现一键导出/自动回放；会话跨多局但每局独立子目录，冻结round_id随帧保存；开局边界最多128条元数据按帧序由写线程处理，即使跳过全部图帧也建局标记。GameController._sync_diagnostic_round只观察业务状态转换，不改Tracker规则。清理按所设总额度触发，记录retention_cleanup和pruned_rounds，清理后complete为false。额度改变只在后台下次检查执行；已暂停需关闭重开。
 - 已移除同步图片保存模块及其构造参数、开关、白名单与旧YAML键；YoloInferencer只推理，Tracker只记牌。已有本地历史图片不自动删除。
-- 动态/PT明确请求(H,W)=(480,768)；静态ONNX/TensorRT尊重导出尺寸，首帧直接拼图也不能污染后续输入。CPU优先ONNX，CUDA优先TensorRT FP16，再回退PyTorch；不自动因拼图改权重或重新导出形状。
+- 有模型旁置配置时，原图/拼图/同帧复查与静态导出统一使用配置(H,W)，预测rect=False；首帧前只初始化后端核对实际绑定和步长，不额外跑整图。CPU优先ONNX、CUDA优先TensorRT FP16，再回退同尺寸PT。core/model_export_cache.py按PT内容SHA、尺寸、静态batch=1、精度、版本与设备隔离model_cache/；不信任旧同名导出，不覆盖源权重/旧导出，完成标记与文件摘要一致才复用。配置/哈希/导出仅在模型加载时处理，不入逐帧路径。缺旁置文件旧模型才保留原动态请求/旧静态兼容行为。
 - yolo_ms含本轮全部Ultralytics调用及内部前后处理/回退，GPU同步；主进程整轮另含截图/队列/轮询，子进程performance也不等于物理显示延迟。
-- 权重仅在yolo/weights/<目录>/best.pt；训练仓库hey-three/yolo-for-han-card-tracker。一个8:5模型混合原图与两阶段图，按牌局先划分，未启动训练或承诺200ms。
+- ONNX加载前比较Python包装/原生库主次修订版本，混装则明确回退PT；不只相信安装记录。requirements锁定ORT1.26.0、onnx1.21.0和onnxslim0.1.94。导出显式simplify=False，应用再单独用已安装的onnxslim简化ONNX、保留元数据并校验；避免Ultralytics按CUDA是否可用自动叠装onnxruntime-gpu。缺导出依赖不自动安装，回退PT。缓存格式version=2。
+- 权重仅在yolo/weights/<目录>/best.pt，新模型同目录必须提供model_config.yaml（模板yolo/model_config.example.yaml）；model描述不决定n/s结构，实际网络来自PT。训练仓库hey-three/yolo-for-han-card-tracker。一个模型混合原图与两阶段图，尺寸以真实训练批次为准（960×608为30:19，不是严格8:5），按牌局先划分，未启动训练或承诺200ms。
 
 ## 9. 验证与提交边界
 
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。
 - 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
 - 个人config/config.yaml的本地修改、tmp参考图、tests/.tmp中间产物、games_images、.vscode不得混入提交；已存在权重不因文档工作改动。
-- 当前任务新增诊断按局目录及可配置总磁盘额度，保留8帧/64MiB内存与压力自动恢复。本家出牌补扣仍已撤回，首扣缺张原因保持待查；已授权继续推送V4.3.2、合并main并同步本地。个人配置和已有诊断材料不得混入提交或删除。
+- 保留诊断按局目录、可配置总磁盘额度及8帧/64MiB内存与压力自动恢复。本家出牌补扣仍已撤回，首扣缺张原因保持待查。2026-10-29用户已授权将本次模型尺寸适配和此前本地界面改动一起发布至V4.3.2并合并main，撤销这些源码改动此前仅本地的边界；个人config/config.yaml、诊断、参考截图和权重替换/删除仍不提交，也不删除。
