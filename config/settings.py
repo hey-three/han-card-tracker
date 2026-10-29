@@ -689,6 +689,60 @@ def save_show_timing_choice(show_timing: bool) -> None:
     save_setting("show_timing", show_timing)
 
 
+def preferred_layout(mode: str) -> str | None:
+    """返回指定模式上次使用的有效布局，旧配置依次回退当前项和首项。
+
+    Args:
+        mode: auto或manual。
+    Returns:
+        已保存布局名称；该模式没有布局时为None。
+    Raises:
+        TypeError: mode不是字符串。
+        ValueError: 模式无效或布局历史不是字典。
+    """
+    if not isinstance(mode, str):
+        raise TypeError('布局模式必须为字符串')
+    if mode not in ('auto', 'manual'):
+        raise ValueError('布局模式必须是auto或manual')
+    history = config.get('last_layouts', {})
+    if not isinstance(history, Mapping):
+        raise ValueError('配置中的last_layouts必须是字典')
+    names = [name for name, layout in WINDOW_LAYOUTS.items() if layout.get('mode', 'manual') == mode]
+    for name in (history.get(mode), CURRENT_LAYOUT):
+        if isinstance(name, str) and name in names:
+            return name
+    return names[0] if names else None
+
+
+def _layout_selection_values(
+    name: str, layouts: Mapping[str, Mapping[str, object]], source: Mapping[str, object],
+) -> dict[str, object]:
+    """生成与当前选择同次原子保存的分模式历史，移除失效记录。
+
+    Args:
+        name: 即将使用且存在的布局名称。
+        layouts: 保存后的完整布局列表。
+        source: 已读配置，用于保留另一模式的历史。
+    Returns:
+        current_layout和last_layouts两个更新字段。
+    Raises:
+        ValueError: 历史配置不是字典或布局不存在。
+    """
+    history = source.get('last_layouts', {})
+    if not isinstance(history, Mapping) or name not in layouts:
+        raise ValueError('布局选择或last_layouts配置无效')
+    remembered = {
+        mode: value for mode, value in history.items()
+        if mode in ('auto', 'manual') and isinstance(value, str) and value in layouts
+        and layouts[value].get('mode', 'manual') == mode
+    }
+    previous = source.get('current_layout', CURRENT_LAYOUT)
+    if isinstance(previous, str) and previous in layouts:
+        remembered.setdefault(str(layouts[previous].get('mode', 'manual')), previous)
+    remembered[str(layouts[name].get('mode', 'manual'))] = name
+    return {'current_layout': name, 'last_layouts': remembered}
+
+
 def save_current_layout(layout_name: str) -> None:
     """保存已存在的当前布局名称。
 
@@ -701,7 +755,7 @@ def save_current_layout(layout_name: str) -> None:
     """
     if layout_name not in WINDOW_LAYOUTS:
         raise ValueError(f"布局不存在: {layout_name}")
-    _save_values({"current_layout": layout_name})
+    _save_values(_layout_selection_values(layout_name, WINDOW_LAYOUTS, read_config(CONFIG_PATH)))
     globals()["CURRENT_LAYOUT"] = layout_name
 
 
@@ -735,7 +789,7 @@ def save_window_layout(
     layouts[layout_name] = layout
     updates: dict[str, object] = {"window_layouts": layouts}
     if set_current:
-        updates["current_layout"] = layout_name
+        updates.update(_layout_selection_values(layout_name, layouts, cfg))
     _save_values(updates)
     globals()["WINDOW_LAYOUTS"] = layouts
     if set_current:
@@ -763,9 +817,11 @@ def delete_window_layout(layout_name: str) -> str:
         raise ValueError("至少需要保留一个布局")
     del layouts[layout_name]
     current = cfg.get("current_layout", CURRENT_LAYOUT)
-    if current not in layouts:
+    if not isinstance(current, str) or current not in layouts:
         current = next(iter(layouts))
-    _save_values({"window_layouts": layouts, "current_layout": current})
+    updates = _layout_selection_values(current, layouts, cfg)
+    updates['window_layouts'] = layouts
+    _save_values(updates)
     globals()["WINDOW_LAYOUTS"] = layouts
     globals()["CURRENT_LAYOUT"] = current
     return cast(str, current)

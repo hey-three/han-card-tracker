@@ -13,7 +13,7 @@
 | 一个模型兼容原图与拼图 | [训练与拼图](模型训练与拼图约定.md) | config/packing_profile.py、训练仓库 |
 | 首扣缺张证据与待查项、缺帧恢复与清理 | [V4.3.2故障回归](V4.3.2问题回归与诊断机制.md) | 真实日志脱敏fixture、Tracker/诊断回归 |
 | 日常日志、完整逐帧证据、容量和后台保存 | [诊断记录](诊断记录.md) | diagnostics.py、diagnostic_storage.py、diagnostic_state.py |
-| 出错时已有材料、测试证据与未测项 | [排查与验证](排查与验证.md) | image_saver.py、tests/ |
+| 出错时已有材料、测试证据与未测项 | [排查与验证](排查与验证.md) | diagnostics.py、tests/ |
 | 为什么采用这些规则、哪些路线已放弃 | [设计决策](设计决策.md) | 核心契约摘要 |
 | 维护文档、仓库简介、Topics与发布 | [维护与发布](维护与发布.md) | 文档与公开元信息 |
 

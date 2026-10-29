@@ -4,12 +4,12 @@
 
 ## 报告问题
 
-使用[Issue模板](https://github.com/hey-three/han-card-tracker/issues/new/choose)，说明源码提交/发布包、模型和后端、窗口及布局、手动原图或拼图、期望与实际及最短复现步骤。参考[排查指南](docs/排查与验证.md)提供当前能保存的原图/最终标注；逐帧诊断包还未实现，不要求提供不存在的产物。
+使用[Issue模板](https://github.com/hey-three/han-card-tracker/issues/new/choose)，说明源码提交/发布包、模型和后端、窗口及布局、手动原图或拼图、期望与实际及最短复现步骤。参考[排查指南](docs/排查与验证.md)提供脱敏后的逐帧诊断目录或相关原图/标注/状态；自动打包导出尚未实现。
 
 ## 提交变更
 
-1. 阅读[AGENTS](AGENTS.md)及AI开发标准。函数、类和构造器需中文Google风格Docstring及完整类型注解。
-2. 从当前main建立工作分支，聚焦一项问题；不要提交个人config/config.yaml、tmp/、tests/.tmp/、games_images/或本地编辑器文件。
+1. 阅读[AGENTS](AGENTS.md)中的统一开发约束。函数、类和构造器需中文Google风格Docstring及完整类型注解。
+2. 从当前main建立工作分支，聚焦一项问题；通常不提交个人config/config.yaml或权重替换，维护者明确授权同步时例外。tmp/、tests/.tmp/、诊断、参考图和本地编辑器文件不提交。
 3. 业务规则、视觉归属与推理后端保持分层；子进程不操作Qt，设置只有主进程原子保存。
 4. 对逻辑变化添加有意义回归；纯文档变化检查本地链接、示例路径和前后一致性，不新增镜像实现的测试。
 5. 更新相关专题文档、README摘要、AGENTS和CHANGELOG，说明实际验证与未测范围。

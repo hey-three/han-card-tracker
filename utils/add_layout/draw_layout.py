@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
-from typing import Dict, Tuple, Union
-import argparse
+from collections.abc import Sequence
+from typing import Dict, Union
 import sys
 import os
 
@@ -12,7 +12,7 @@ sys.path.insert(0, project_root)
 
 from config import settings
 
-def get_layout_by_name(layout_name: str = None):
+def get_layout_by_name(layout_name: str | None = None) -> tuple[dict[str, Sequence[float]], str]:
     """
     根据layout名称获取配置，如果没有指定则使用第一个配置
     
@@ -20,7 +20,10 @@ def get_layout_by_name(layout_name: str = None):
         layout_name: layout名称，如果为None则使用第一个配置
     
     Returns:
-        layout配置字典
+        区域配置字典及实际使用的布局名称。
+
+    Raises:
+        ValueError: 没有可用布局。
     """
     available_layouts = list(settings.WINDOW_LAYOUTS.keys())
     

@@ -39,11 +39,11 @@ Weights are stored in `yolo/weights/<model-name>/best.pt`. Custom models must pr
 ## First use
 
 1. Open the game window and keep it visible.
-2. Select automatic layout in settings, or define the hand, own play, left play, right play and bottom-card regions in the visual editor.
-3. For a manual layout, choose packed or original inference in advanced settings. This preference applies to all manual layouts.
+2. Create a named automatic preset in basic settings and select its game window, or define the five regions in a manual preset. Each mode remembers its last successfully used preset; clicking a mode applies it.
+3. For a manual layout, choose packed or original inference under Basic settings → Manual layout. This preference applies to all manual layouts.
 4. Start before the round begins and inspect the actual YOLO input preview.
 
-Any detected bottom card opens a round. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays only add history and never trigger another deduction or retroactive initial-hand correction.
+Any bottom card in two consecutive screenshots opens a round; card identities and counts need not match. The second screenshot begins initial-hand confirmation using the configured stable-frame threshold. A stable, nonempty legal hand is deducted once; an exact 17/20-card hand is not required. The count excludes the user's initial hand and confirmed opponent plays; the user's plays only add history and never trigger another deduction or retroactive initial-hand correction.
 
 Missing bottom cards pause updates. A consecutive-frame and elapsed-time threshold ends the round internally while preserving the displayed history until the next round starts. See the [counting contract](docs/斗地主记牌设计说明.md).
 
@@ -53,9 +53,13 @@ As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-track
 
 The diagnostic update passed 203 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) groups evidence into per-round folders under a recording session. Its total disk budget defaults to 1 GiB and is adjustable in advanced settings (0.1–1024 GiB); retention removes sealed old rounds while protecting the current round. It records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Queue/memory backpressure recovers automatically with explicit gap records. Disk/write failures still pause diagnostics. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
 
+The included configuration is the maintainer's current setup. Choose your own game window/layout, model and device in basic settings, and enable or disable full diagnostics as needed in advanced settings.
+
 ## Support this project
 
 If this project has helped you, optional donations via the [WeChat Pay or Alipay QR codes](SUPPORT.md) support its maintenance. You can also view the local QR code in the app under Settings → Support. Stars, issue reports and code contributions are welcome too.
+
+![WeChat Pay and Alipay donation QR codes](images/QR.png)
 
 ## Contributing and license
 

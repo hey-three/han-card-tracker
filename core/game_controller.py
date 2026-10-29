@@ -17,7 +17,7 @@ import config.settings as settings
 from config.packing_profile import PACKED_INPUT_SIZE, stage_selection
 from core.base_tracker import BaseCardTracker
 from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
-from core.games.doudizhu import DoudizhuTracker
+from core.games.doudizhu import BOTTOM_START_FRAMES, DoudizhuTracker
 from core.packed_pipeline import PackedPipeline
 
 if TYPE_CHECKING:
@@ -309,14 +309,18 @@ class GameController:
     @property
     def layout_status(self) -> str:
         """返回当前布局、真实识别路线及等待状态。"""
+        capture = getattr(self.screen_capture, 'last_capture_method', '')
+        suffix = ' · 桌面回退（需无遮挡）' if capture == 'desktop' else ''
         if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
-            return self.layout_analyzer.last_observation.message + " · " + self.packed_pipeline.route
+            return self.layout_analyzer.last_observation.message + " · " + self.packed_pipeline.route + suffix
         state = "记牌中"
         if isinstance(self.tracker, DoudizhuTracker) and self.tracker.state != settings.STARTED_RECORD_CARD:
             state = "保留上一局，等待底牌出现" if self.tracker.awaiting_next_round else "等待底牌出现"
             if self.tracker.state == settings.HAS_STARTED:
                 state = "已开局，等待非空手牌稳定"
-        return f"手动布局 · {self.packed_pipeline.route} · {state}"
+            elif self.tracker._bottom_start_frames:
+                state = f"底牌确认 {self.tracker._bottom_start_frames}/{BOTTOM_START_FRAMES}"
+        return f"手动布局 · {self.packed_pipeline.route} · {state}{suffix}"
 
     @staticmethod
     def _create_analyzer(config: settings.LayoutConfig) -> LayoutAnalyzer | AutoLayoutAnalyzer:

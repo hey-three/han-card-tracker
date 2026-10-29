@@ -14,6 +14,7 @@ from config import settings
 from core.controller_process import run_controller_loop
 from core.inference_protocol import Command, Response
 
+_MODEL_COMMANDS = frozenset(("switch_model", "switch_device"))
 
 class InferenceWorker(QObject):
     """主进程中的推理服务；每次启动使用新队列。
@@ -28,6 +29,7 @@ class InferenceWorker(QObject):
         screenshot_ready: 当前截图 JPEG 数据及自动布局返回的区域边界。
         performance_ready: 当前代次的分阶段耗时，不含图像。
         diagnostic_status_changed: 保存线程的纯数据状态，不能解锁检测。
+        model_loading_changed: 模型/设备切换的加载提示，不改变busy或命令回执。
         state: 当前生命周期状态。
     """
 
@@ -40,6 +42,7 @@ class InferenceWorker(QObject):
     screenshot_ready = Signal(bytes, dict)
     performance_ready = Signal(dict)
     diagnostic_status_changed = Signal(dict)
+    model_loading_changed = Signal(bool)
 
     def __init__(self, layout_name: str, parent: QObject | None = None) -> None:
         """创建服务，启动前不分配跨进程资源。
@@ -60,6 +63,12 @@ class InferenceWorker(QObject):
         self._poll_timer = QTimer(self)
         self._poll_timer.setInterval(20)
         self._poll_timer.timeout.connect(self._poll_result)
+
+    @property
+    def is_loading_model(self) -> bool:
+        """返回是否正在启动或仍有模型/设备切换待完成，不触碰请求状态。"""
+        return self.state == 'starting' or (self.state == 'ready' and
+                any(command.name in _MODEL_COMMANDS for command in self._pending.values()))
 
     def _set_state(self, state: str) -> None:
         """发布生命周期变更。
@@ -171,6 +180,8 @@ class InferenceWorker(QObject):
             self.fail(f"发送推理命令失败: {exc}")
             return None
         self._pending[command.request_id] = command
+        if name in _MODEL_COMMANDS:
+            self.model_loading_changed.emit(True)
         return command.request_id
 
     def request_detect(self) -> bool:
@@ -284,13 +295,15 @@ class InferenceWorker(QObject):
             command = self._pending.pop(response.request_id, None)
             if command is None:
                 continue
+            if command.name in _MODEL_COMMANDS:
+                self.model_loading_changed.emit(self.is_loading_model)
             if command.name == "detect":
                 if response.generation == self._generation:
                     if response.status == "ok":
                         self.layout_status_changed.emit(response.layout_status)
-                        if response.screenshot_jpeg is not None:
+                        if response.screenshot_jpeg is not None or settings.SHOW_CURRENT_SCREENSHOT:
                             self.screenshot_ready.emit(
-                                response.screenshot_jpeg, response.screenshot_regions or {},
+                                response.screenshot_jpeg or b'', response.screenshot_regions or {},
                             )
                         if response.performance is not None:
                             self.performance_ready.emit(response.performance)

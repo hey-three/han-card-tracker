@@ -43,6 +43,28 @@ class WorkerTests(unittest.TestCase):
             self.worker._process.is_alive.return_value = False
         self.worker.stop()
 
+    def test_model_loading_hint_follows_all_model_commands_without_finishing_detection(self) -> None:
+        """提示保持到全部模型/设备请求完成，诊断通知不结束提示、不释放检测。"""
+        from PySide6.QtTest import QSignalSpy
+        spy = QSignalSpy(self.worker.model_loading_changed)
+        self.worker.switch_model('next')
+        first = self.worker._cmd_queue.get_nowait()
+        self.worker.switch_device('cpu')
+        second = self.worker._cmd_queue.get_nowait()
+        self.assertTrue(self.worker.is_loading_model)
+        self.worker._result_queue.put(Response('diagnostic', diagnostic_status={'state': 'disabled'}))
+        self.worker._poll_result()
+        self.assertTrue(self.worker.is_loading_model)
+        self.worker._result_queue.put(Response('ok', first.request_id, first.generation))
+        self.worker._poll_result()
+        self.assertTrue(self.worker.is_loading_model)
+        self.worker._result_queue.put(Response('error', second.request_id, second.generation, error='failed'))
+        self.worker._poll_result()
+        self.assertFalse(self.worker.is_loading_model)
+        self.assertEqual(spy.at(spy.count()-1), [False])
+        self.finished.assert_not_called()
+        self.assertFalse(self.worker._pending)
+
     def test_diagnostic_notification_never_completes_pending_detection(self) -> None:
         """异步保存故障只报告状态，不能提前解锁识别请求。"""
         diagnostics = Mock()
@@ -55,6 +77,24 @@ class WorkerTests(unittest.TestCase):
         self.finished.assert_not_called()
         self.assertIn(command.request_id, self.worker._pending)
         self.assertEqual(self.worker.state, 'ready')
+
+    def test_missing_frame_clears_preview_only_for_current_generation(self) -> None:
+        """当前无有效截图发送清空预览，旧代次无图不能擦掉新画面。"""
+        from config import settings
+        from PySide6.QtTest import QSignalSpy
+        spy = QSignalSpy(self.worker.screenshot_ready)
+        with patch.object(settings,'SHOW_CURRENT_SCREENSHOT',True):
+            self.worker.request_detect()
+            command = self.worker._cmd_queue.get_nowait()
+            self.worker._result_queue.put(Response('ok',command.request_id,command.generation))
+            self.worker._poll_result()
+            self.assertEqual(spy.at(0),[b'',{}])
+            self.worker.request_detect()
+            command = self.worker._cmd_queue.get_nowait()
+            self.worker._generation += 1
+            self.worker._result_queue.put(Response('ok',command.request_id,command.generation))
+            self.worker._poll_result()
+            self.assertEqual(spy.count(),1)
 
     def test_crash_stops_new_detection(self) -> None:
         """子进程崩溃后不会再发出永远等不到结果的请求。"""

@@ -5,6 +5,7 @@ from copy import deepcopy
 from typing import cast
 
 from core.base_tracker import BaseCardTracker
+from core.games.doudizhu import BOTTOM_START_FRAMES
 
 
 def tracker_snapshot(tracker: BaseCardTracker) -> dict[str, object]:
@@ -20,6 +21,7 @@ def tracker_snapshot(tracker: BaseCardTracker) -> dict[str, object]:
             'has_found_empty': dict(tracker.has_found_empty),
             'initial_hand': list(getattr(tracker, '_initial_hand', [])),
             'bottom_visible': getattr(tracker, '_bottom_visible', False),
+            'bottom_start_frames': getattr(tracker, '_bottom_start_frames', 0),
             'empty_frames': getattr(tracker, '_empty_frames', 0),
             'empty_since_monotonic': getattr(tracker, '_empty_since', None),
             'awaiting_next_round': getattr(tracker, 'awaiting_next_round', False),
@@ -49,6 +51,9 @@ def decision_reasons(before: dict[str, object], after: dict[str, object], data: 
         result.append({'code': 'bottom_missing_pause', 'empty_frames': after['empty_frames']})
     if before['state'] == 0 and after['state'] != 0:
         result.append({'code': 'game_started'})
+    elif after['state'] == 0 and data.get('landlord_cards') and 'landlord_cards' in known:
+        result.append({'code': 'bottom_start_pending', 'observed': after.get('bottom_start_frames', 0),
+                       'required': BOTTOM_START_FRAMES})
     if before['state'] != 2 and after['state'] == 2:
         result.append({'code': 'initial_hand_deducted', 'cards': after['initial_hand']})
     if not before['awaiting_next_round'] and after['awaiting_next_round']:
@@ -60,6 +65,8 @@ def decision_reasons(before: dict[str, object], after: dict[str, object], data: 
         result.append({'code': 'remaining_changed', 'delta': delta})
     if before['show_cards'] != after['show_cards']:
         result.append({'code': 'play_history_changed'})
+    if after['state'] == 0:
+        return result or [{'code': 'no_state_change'}]
     caches = cast(dict[str, list[list[str]]], after['frame_caches'])
     for key in known:
         cards = data.get(key, [])

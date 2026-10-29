@@ -1,12 +1,13 @@
 always_on_top: true
 big_joker_shown: 🃏
-current_layout: JJ斗地主(含控件)
+current_layout: 自动布局 · MuMu安卓设备
 debug_mode: false
 detect_interval_sec: 0.2
 device_choice: cuda
 frame_length: 3
 little_joker_shown: 🃟
-reset_time: 3.0
+reset_time: 2.0
+show_current_screenshot: false
 show_played_cards: true
 show_timing: true
 window_layouts:
@@ -66,9 +67,45 @@ window_layouts:
       - 0.96
       - 0.6
     window_title: JJ斗地主
+  自动布局 · MuMu安卓设备:
+    window_title: MuMu安卓设备
+    layout: {}
+    mode: auto
+  欢乐斗地主:
+    window_title: MuMu安卓设备
+    layout:
+      player_hand:
+      - 0.12062256809338522
+      - 0.6199813258636788
+      - 0.9516397998888271
+      - 0.7992530345471522
+      player_played:
+      - 0.1851028349082824
+      - 0.47992530345471524
+      - 0.8510283490828238
+      - 0.5536881419234361
+      opponent_left:
+      - 0.21011673151750973
+      - 0.27450980392156865
+      - 0.45136186770428016
+      - 0.4407096171802054
+      opponent_right:
+      - 0.4919399666481378
+      - 0.2819794584500467
+      - 0.725958866036687
+      - 0.4407096171802054
+      landlord_cards:
+      - 0.41856586992773764
+      - 0.04481792717086835
+      - 0.7759866592551418
+      - 0.14752567693744165
+  自动布局 · MuMu模拟器:
+    window_title: MuMu模拟器
+    layout: {}
+    mode: auto
 yolo_confidence_threshold: 0.6
 yolo_iou_threshold: 0.45
-yolo_model_name: yolov11s_imgsz_960
+yolo_model_name: yolov11s
 yolo_to_card_mapping:
   A: A
   J: J
@@ -85,3 +122,11 @@ yolo_to_card_mapping:
   ten: '10'
   three: '3'
   two: '2'
+show_layout_status: true
+packed_inference: true
+full_diagnostics: true
+diagnostic_disk_gib: 2.6
+panel_arrangement: horizontal
+last_layouts:
+  auto: 自动布局 · MuMu安卓设备
+  manual: JJ斗地主(全屏)

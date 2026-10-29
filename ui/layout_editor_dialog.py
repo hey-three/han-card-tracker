@@ -4,7 +4,7 @@ from PIL import Image
 from typing import Dict, Optional, Tuple
 
 from PIL.ImageQt import ImageQt
-from PySide6.QtCore import QEvent, QObject, QPoint, QRect, QSize, QTimer, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, QPoint, QSize, QTimer, Qt, Signal
 from PySide6.QtGui import QCloseEvent, QMouseEvent, QPainter, QPen, QPixmap
 from PySide6.QtWidgets import (
     QApplication,

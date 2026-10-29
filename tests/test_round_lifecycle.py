@@ -37,7 +37,7 @@ class RoundLifecycleTests(unittest.TestCase):
         self.manual_plan = None
         self.now = 0.
         self.enterContext(patch("core.games.doudizhu.monotonic", side_effect=lambda: self.now))
-        self.feed(self.hand)
+        self.feed(self.hand, 4)
 
     @property
     def tracker(self) -> DoudizhuTracker:
@@ -104,7 +104,7 @@ class RoundLifecycleTests(unittest.TestCase):
         for recording in (False, True):
             _, regions, scales = stage_regions(config["layout"], recording)
             self.manual_plans[recording] = make_rect_plan(self.image.size, regions, scales, PACKED_INPUT_SIZE)
-        self.feed(self.hand)
+        self.feed(self.hand, 4)
 
     def test_diagnostic_folders_follow_real_round_start_and_first_frame(self) -> None:
         """真实Tracker结束再开局后换文件夹，等待帧及开局首帧不串局。"""
@@ -120,7 +120,7 @@ class RoundLifecycleTests(unittest.TestCase):
                     self.controller.attach_diagnostics(recorder)
                 self.feed(self.hand, 1, bottom=[])
                 recorder._queue.join()
-                for _ in range(3):
+                for _ in range(4):
                     self.feed(self.hand, 1)
                     recorder._queue.join()
                 self.assertEqual(self.tracker.state, settings.STARTED_RECORD_CARD)
@@ -128,7 +128,7 @@ class RoundLifecycleTests(unittest.TestCase):
                     self.feed(self.hand, 1, bottom=[])
                     recorder._queue.join()
                 self.assertTrue(self.tracker.awaiting_next_round)
-                for _ in range(3):
+                for _ in range(4):
                     self.feed(self.hand, 1)
                     recorder._queue.join()
                 self.assertEqual(self.tracker.state, settings.STARTED_RECORD_CARD)
@@ -161,27 +161,30 @@ class RoundLifecycleTests(unittest.TestCase):
         self.controller.reset()
         self.controller.attach_diagnostics(recorder)
         self.controller.request_context = (42, 4)
-        self.feed(self.hand, count=3)
+        self.feed(self.hand, count=4)
         self.assertTrue(recorder.stop(3))
-        self.assertEqual(recorder.status()['saved_frames'], 3)
+        self.assertEqual(recorder.status()['saved_frames'], 4)
         frames = sorted(Path(directory.name).glob('diagnostics/session_*/**/frames/*/frame.json'))
         data = [json.loads(p.read_text(encoding='utf-8')) for p in frames]
+        data.sort(key=lambda item: item['frame_id'])
         self.assertEqual(data[0]['context']['request_id'], 42)
         self.assertEqual(data[0]['context']['generation'], 4)
         self.assertTrue(all(p['before'] and p['after'] and p['calls'] and p['region_boxes'] for p in data))
         self.assertTrue(any(r['code']=='initial_hand_deducted' for p in data for r in p['reasons']))
         self.assertEqual(data[-1]['after']['remain_cards'], self.controller.tracker.remain_cards)
 
-    def test_one_bottom_card_starts_immediately_before_hand_confirmation(self) -> None:
-        """第一帧底牌进入已开局，手牌另等稳定，空手牌不能漏扣初始牌。"""
+    def test_two_bottom_frames_start_before_hand_confirmation(self) -> None:
+        """底牌第二帧才开局并开始手牌累计，空手牌不能通过。"""
         for manual in (False, True):
             with self.subTest(manual=manual):
                 if manual:
                     self.use_manual_layout()
                 self.controller.reset()
                 self.feed([], 1)
+                self.assertEqual(self.tracker.state, settings.WAIT_BEGIN)
+                self.feed([], 1)
                 self.assertEqual(self.tracker.state, settings.HAS_STARTED)
-                self.feed([], 4)
+                self.feed([], 3)
                 self.assertEqual(self.tracker.state, settings.HAS_STARTED)
                 self.assertEqual(sum(self.tracker.remain_cards.values()), 54)
                 self.feed(self.hand[:1], 2)
@@ -199,7 +202,7 @@ class RoundLifecycleTests(unittest.TestCase):
                 with self.subTest(manual=manual, count=count):
                     self.controller.reset()
                     cards = row(["three"]*4+["four"]*4+["five"]*4+["six"]*4+["seven"]*4, .1, .76)[:count]
-                    self.feed(cards)
+                    self.feed(cards, 4)
                     self.assertEqual(sum(self.tracker.remain_cards.values()), 54-count)
                     self.feed(self.hand, 6)
                     self.assertEqual(sum(self.tracker.remain_cards.values()), 54-count)
@@ -215,6 +218,8 @@ class RoundLifecycleTests(unittest.TestCase):
             self.assertEqual(sum(self.tracker.remain_cards.values()), 54)
             self.assertTrue(all(not cards for cards in self.tracker.show_cards.values()))
             self.feed(self.hand, 1)
+            self.assertEqual(self.tracker.state, settings.WAIT_BEGIN)
+            self.feed(self.hand, 1)
             self.assertEqual(self.tracker.state, settings.HAS_STARTED)
             self.feed(self.hand, 2)
             self.assertEqual(sum(self.tracker.remain_cards.values()), 37)
@@ -226,7 +231,7 @@ class RoundLifecycleTests(unittest.TestCase):
             if manual:
                 self.use_manual_layout()
             self.controller.reset()
-            for names in (["A"], ["K", "Q"], ["J", "ten", "nine"]):
+            for names in (["A"], ["K", "Q"], ["J", "ten", "nine"], ["A"]):
                 self.feed(self.hand, 1, bottom=row(names, .43, .1, .035, .035))
             self.assertEqual(sum(self.tracker.remain_cards.values()), 37)
 
@@ -244,6 +249,8 @@ class RoundLifecycleTests(unittest.TestCase):
             self.assertTrue(self.tracker.awaiting_next_round)
             self.assertEqual((self.tracker.remain_cards, self.tracker.show_cards), old)
             self.feed(self.hand[:5], 5, bottom=[])
+            self.assertEqual((self.tracker.remain_cards, self.tracker.show_cards), old)
+            self.feed(self.hand[:5], 1)
             self.assertEqual((self.tracker.remain_cards, self.tracker.show_cards), old)
             self.feed(self.hand[:5], 1)
             self.assertEqual(self.tracker.state, settings.HAS_STARTED)
@@ -293,7 +300,7 @@ class RoundLifecycleTests(unittest.TestCase):
     def test_end_applies_even_before_hand_has_been_confirmed(self) -> None:
         """已经看到底牌开局但还没有手牌时，底牌消失也能进入等待。"""
         self.controller.reset()
-        self.feed([], 1)
+        self.feed([], 2)
         self.assertEqual(self.tracker.state, settings.HAS_STARTED)
         self.feed([], 3, bottom=[])
         self.assertTrue(self.tracker.awaiting_next_round)
@@ -384,6 +391,8 @@ class RoundLifecycleTests(unittest.TestCase):
         """已开局但手牌未稳定仍用二区；扣牌后用四区且裁片不再包含手牌。"""
         self.use_manual_layout()
         self.controller.reset()
+        self.feed(self.hand, 1)
+        self.assertEqual(self.tracker.state, settings.WAIT_BEGIN)
         self.feed(self.hand, 1)
         self.assertEqual(self.tracker.state, settings.HAS_STARTED)
         self.assertIn("2 区", self.controller.packed_pipeline.route)

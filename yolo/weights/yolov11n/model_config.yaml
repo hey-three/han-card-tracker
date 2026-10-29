@@ -1,13 +1,10 @@
-# train3 权重的预测配置；请与权重文件放在同一个文件夹中。
-# 记牌器读取本文件，统一原图、拼图及静态导出的固定输入尺寸。
-model: YOLO11s
+# 训练开始时权重文件可能尚未生成；训练结束后会更新权重列表。
+model: yolo11n
 weights:
-  - best.pt
-  - last.pt
-
+- best.pt
+- last.pt
 input:
   width: 960
   height: 608
-  # 按原比例缩放并补边，使用固定尺寸画布。
   resize: letterbox
   rect: false

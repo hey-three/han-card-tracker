@@ -182,6 +182,10 @@ class InferenceSizeTests(unittest.TestCase):
                                                  dynamic=False, half=False, device='cpu', simplify=False)
             simplify.assert_called_once()
             self.assertEqual(weight.read_bytes(), b'fake PT')
+            self.assertTrue((path / 'best.onnx').is_file())
+            self.assertTrue((path / 'best.onnx.meta.json').is_file())
+            self.assertFalse((path / 'model_cache').exists())
+            self.assertFalse(list(path.glob('.model-export-*')))
 
 
 if __name__ == '__main__':
