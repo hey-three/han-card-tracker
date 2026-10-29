@@ -9,7 +9,7 @@ from typing import TYPE_CHECKING, Protocol, cast
 
 from PIL import Image
 
-from core.auto_layout import Box, YoloResult
+from core.auto_layout import Box
 from core.frame_packing import Detection, PackingPlan, read_detections
 from core.square_packing import make_square_plan, make_rect_plan, plan_metrics
 from core.packing_scales import AdaptivePackingScales

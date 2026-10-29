@@ -10,13 +10,14 @@ from collections.abc import Callable
 from PySide6.QtCore import QEvent, QMargins, Qt, QTimer, Slot
 from PySide6.QtGui import QCloseEvent, QResizeEvent, QShowEvent
 from PySide6.QtWidgets import (
-    QWidget, QLabel, QVBoxLayout, QGridLayout, QHBoxLayout, QMainWindow, QSizePolicy, QMessageBox,
-    QBoxLayout, QFrame, QInputDialog, QStyle,
+    QWidget, QLabel, QVBoxLayout, QGridLayout, QMainWindow, QSizePolicy, QMessageBox,
+    QBoxLayout, QFrame, QStyle,
 )
 from core.inference_process import InferenceWorker
 from config.settings import TOTAL_CARDS
 from utils.trans_yolo_names_to_string import trans_yolo_names_to_string
 from ui.layout_editor_dialog import LayoutEditorDialog
+from ui.auto_layout_dialog import AutoLayoutDialog
 from ui.settings_dialog import SettingsDialog
 from ui.settings_controller import SettingsController
 from ui.title_bar import MainTitleBar, clip_native_title_overlay, native_caption_button_width
@@ -133,11 +134,13 @@ class CardUI(QMainWindow):
             on_pause_clicked=self.on_pause_clicked,
             on_reset_clicked=self.on_reset_clicked,
             on_restart_clicked=self.on_restart_clicked,
+            on_donation_clicked=self.on_donation_clicked,
         )
         self.title_bar.set_caption(self.windowTitle())
         self.btn_settings = self.title_bar.settings_button
         self.btn_pause = self.title_bar.pause_button
         self.btn_reset = self.title_bar.reset_button
+        self.btn_donation = self.title_bar.donation_button
         self.btn_retry = self.title_bar.retry_button
         self.root_layout.addWidget(self.title_bar)
         self._title_bar_update_timer = QTimer(self)
@@ -242,6 +245,7 @@ class CardUI(QMainWindow):
         self.worker.result_ready.connect(self.on_result_ready)
         self.worker.performance_ready.connect(self.on_performance_ready)
         self.worker.diagnostic_status_changed.connect(self.on_diagnostic_status)
+        self.worker.model_loading_changed.connect(self.on_model_loading_changed)
         self.worker.error.connect(self.on_worker_error)
         self.worker.screenshot_ready.connect(self.on_screenshot_ready)
         self._screenshot_preview: ScreenshotPreviewDialog | None = None
@@ -280,9 +284,25 @@ class CardUI(QMainWindow):
         self._apply_screenshot_preview_visibility()
 
     def on_settings_clicked(self) -> None:
+        """点击设置按钮时打开既有设置对话框。"""
+        self._open_settings()
+
+    def on_donation_clicked(self) -> None:
+        """打开同一个设置对话框并直接选中赞赏页，不建立额外页面。"""
+        self._open_settings(donation=True)
+
+    def _open_settings(self, *, donation: bool = False) -> None:
+        """统一打开设置并暂停检测，赞赏入口复用正常关闭恢复流程。
+
+        Args:
+            donation: True直接显示既有赞赏页，False保持默认基本页。
         """
-        点击设置按钮时打开设置对话框
-        """
+        if self._settings_dialog is not None:
+            if donation:
+                self._settings_dialog.tab_widget.setCurrentWidget(self._settings_dialog.tab4)
+            self._settings_dialog.raise_()
+            self._settings_dialog.activateWindow()
+            return
         # 打开设置期间暂停检测
         self._is_settings_open = True
         try:
@@ -315,6 +335,7 @@ class CardUI(QMainWindow):
 
         self._settings_dialog = dialog
         dialog.auto_layout_requested.connect(lambda: self.on_auto_layout_clicked(dialog))
+        dialog.auto_layout_edit_requested.connect(lambda name: self.on_auto_layout_clicked(dialog, name))
         dialog.layout_edit_requested.connect(lambda name: self.on_layout_editor_clicked(dialog, name))
         dialog.layout_status_changed.connect(self.on_show_layout_status_changed)
         dialog.panel_arrangement_changed.connect(self.on_panel_arrangement_changed)
@@ -322,6 +343,8 @@ class CardUI(QMainWindow):
         if settings.ALWAYS_ON_TOP:
             dialog.setWindowFlag(Qt.WindowType.WindowStaysOnTopHint, True)
         self._refresh_open_settings()
+        if donation:
+            dialog.tab_widget.setCurrentWidget(dialog.tab4)
 
         try:
             dialog.exec()
@@ -372,8 +395,6 @@ class CardUI(QMainWindow):
         from config.settings import DEBUG_MODE
         dialog.set_current_debug_mode(DEBUG_MODE)
 
-        # 设置当前保存游戏图片
-
         dialog.set_current_show_current_screenshot(self._preview_requested)
         dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
         dialog.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
@@ -417,26 +438,26 @@ class CardUI(QMainWindow):
         if apply_saved:
             self.on_layout_changed(saved_name)
 
-    def on_auto_layout_clicked(self, dialog: SettingsDialog) -> None:
-        """选择窗口后提交自动布局，后端确认成功才保存窗口配置。
+    def on_auto_layout_clicked(self, dialog: SettingsDialog, layout_name: str | None = None) -> None:
+        """命名创建或编辑自动布局，后端确认成功才保存并设为当前。
 
         Args:
             dialog: 当前设置窗口。
+            layout_name: 已有自动布局名称，None为新建。
         """
         try:
             titles = [title for title in list_visible_window_titles()
                       if not title.startswith("Han记牌器") and title != dialog.windowTitle()]
-            if not titles:
+            if not titles and layout_name is None:
                 QMessageBox.information(dialog, "自动布局", "请先打开游戏窗口，再选择自动布局。")
                 return
-            title, accepted = QInputDialog.getItem(
-                dialog, "自动布局", "选择游戏窗口（请在开局前启动）：", titles, 0, False,
-            )
-            if not accepted or not title:
-                return
-            name = f"自动布局 · {title}"
-            while name in settings.WINDOW_LAYOUTS and settings.WINDOW_LAYOUTS[name].get("mode") != "auto":
-                name += "（自动）"
+            editor = AutoLayoutDialog(titles, dialog, initial_layout_name=layout_name)
+            try:
+                if editor.exec() != editor.DialogCode.Accepted:
+                    return
+                name, title = editor.layout_name, editor.window_title
+            finally:
+                editor.deleteLater()
             config = settings.validate_layout({"window_title": title, "mode": "auto", "layout": {}})
             self.settings_controller.apply(
                 save=lambda: settings.save_window_layout(name, title, {}, mode="auto"),
@@ -477,6 +498,9 @@ class CardUI(QMainWindow):
             text = '识别异常' if self._status_error else '识别已停止'
             if not self._status_error:
                 alerts.insert(0, '识别已停止，请点击顶部“重启”恢复')
+        elif self.worker.is_loading_model:
+            text = '首次可能较久'
+            alerts.insert(0, '正在加载模型。首次需要转换ONNX或TensorRT时可能较久，请稍候。')
         elif self._diagnostic_warning:
             text = '诊断暂停' if self._diagnostic_status.get('state') == 'paused' else '日志异常'
         elif self._diagnostic_notice:
@@ -707,13 +731,13 @@ class CardUI(QMainWindow):
             self._apply_setting("detect_interval_sec", value, after=self._apply_interval)
 
     def on_layout_changed(self, layout_name: str) -> None:
-        """提交选中的手动布局，成功后确认选择并清空牌局。
+        """提交选中的命名布局，成功后确认选择并清空牌局。
 
         Args:
-            layout_name: 已保存的手动布局名称。
+            layout_name: 已保存的自动或手动布局名称。
         """
         layout_config = settings.WINDOW_LAYOUTS.get(layout_name)
-        if not isinstance(layout_config, dict) or layout_config.get("mode") == "auto":
+        if not isinstance(layout_config, dict):
             return
         try:
             validated_layout = settings.validate_layout(layout_config)
@@ -937,7 +961,13 @@ class CardUI(QMainWindow):
             index: 0为拼图，1为原图。
         """
         if index in (0, 1):
-            self._apply_setting('packed_inference', index == 0, 'PACKED_INFERENCE')
+            self._apply_setting('packed_inference', index == 0, 'PACKED_INFERENCE',
+                                after=self._clear_input_preview)
+
+    def _clear_input_preview(self) -> None:
+        """检测方式切换确认后丢弃旧画面，设置窗口关闭并继续检测后接收新帧。"""
+        if self._screenshot_preview is not None:
+            self._screenshot_preview.reset_frame('检测方式已切换；关闭设置并继续检测后显示新的完整输入。')
 
 
     def on_show_timing_changed(self, index: int) -> None:
@@ -1004,8 +1034,12 @@ class CardUI(QMainWindow):
             return
         self._show_screenshot_preview()
         if self._screenshot_preview is not None:
+            if not image_data:
+                self._screenshot_preview.reset_frame('当前未取得有效画面，请恢复目标窗口并继续检测。')
+                return
             region_labels = {item["key"]: item["label"] for item in settings.LAYOUT_REGIONS}
-            self._screenshot_preview.update_image(image_data, regions or {}, region_labels)
+            self._screenshot_preview.update_image(image_data, regions or {}, region_labels,
+                                                  source_description=self._layout_status)
 
     @Slot(dict)
     def on_performance_ready(self, performance: dict[str, float]) -> None:
@@ -1124,7 +1158,7 @@ class CardUI(QMainWindow):
             self._title_bar_update_timer.start(0)
 
     def _refresh_title_bar_geometry(self) -> None:
-        """原生布局生效后更新按钮避让，并在首次可见时收拢一次启动高度。"""
+        """原生布局生效后更新避让、收拢首显高度并修正分数DPI最小尺寸取整。"""
         handle = self.windowHandle()
         if handle is not None:
             self._update_title_bar_safe_area(handle.safeAreaMargins())
@@ -1133,6 +1167,14 @@ class CardUI(QMainWindow):
             # 先清标记，避免本次resize触发的下一次回调继续压缩用户窗口。
             self._initial_size_pending = False
             self._fit_main_window()
+        if handle is not None and self.isVisible() and not (
+            self.isMaximized() or self.isMinimized() or self.isFullScreen()
+        ):
+            # 原生边框取整可能让客户区比minimumSize少1逻辑像素，随后重建窗口才被补齐。
+            # 在既有resize事件回调内补齐，避免首显/预览和置顶后的宽度前后不一致。
+            size = self.size().expandedTo(self.minimumSize())
+            if size != self.size():
+                handle.resize(size)
 
     @Slot()
     def _schedule_title_bar_refresh(self) -> None:
@@ -1157,6 +1199,9 @@ class CardUI(QMainWindow):
         """刷新耗时标题，故障状态保持可见。"""
         if self.worker.state == "failed":
             return
+        if self.worker.is_loading_model:
+            self._set_window_caption("正在加载模型")
+            return
         self._set_window_caption(
             "Han记牌器 · 推理--ms · 整轮--ms" if settings.SHOW_TIMING else "Han记牌器",
         )
@@ -1171,6 +1216,18 @@ class CardUI(QMainWindow):
         self._apply_screenshot_preview_visibility()
         self._refresh_open_settings()
         QMessageBox.warning(self._settings_dialog or self, "设置未生效", message)
+
+    @Slot(bool)
+    def on_model_loading_changed(self, loading: bool) -> None:
+        """模型/设备切换时只刷新顶部提示，不释放检测或设置请求。
+
+        Args:
+            loading: 是否仍有模型加载请求，启动状态由worker生命周期维护。
+        """
+        if loading:
+            self._status_error = ""
+        self._apply_timing_visibility()
+        self._refresh_title_status()
 
     @Slot(str)
     def on_worker_state_changed(self, state: str) -> None:
@@ -1189,7 +1246,7 @@ class CardUI(QMainWindow):
         else:
             self.timer.stop()
             labels = {"starting": "正在加载模型…", "failed": "识别已停止，请重启识别", "stopped": "识别已停止"}
-            self._set_window_caption("Han记牌器  ·  " + labels.get(state, state))
+            self._set_window_caption(labels[state] if state == "starting" else "Han记牌器  ·  " + labels.get(state, state))
         self._refresh_title_status()
 
     @Slot()

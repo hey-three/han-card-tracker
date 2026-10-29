@@ -20,5 +20,6 @@ games_images/
 # 本机布局编辑参考图，不随源码上传
 /config/layout_previews/
 
-# 按权重内容与输入尺寸隔离的本机 ONNX/TensorRT 导出缓存
-/model_cache/
+# 模型同目录的导出校验信息与短期工作区
+/yolo/weights/**/*.meta.json
+/yolo/weights/**/.model-export-*/

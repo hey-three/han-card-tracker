@@ -34,6 +34,34 @@ class SettingsTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
 
+    def test_per_mode_layout_memory_survives_reload_and_deletion(self) -> None:
+        """旧配置切换时记住原模式，重载后仍可恢复，删除清理失效历史。"""
+        keys = ('player_hand', 'player_played', 'opponent_left', 'opponent_right', 'landlord_cards')
+        manual = {'window_title': 'Manual', 'layout': {key: [.1, .1, .4, .3] for key in keys}}
+        # 两模式均可用，但配置最初没有last_layouts字段。
+        layouts = {'M1': manual, 'M2': manual, 'A': {'window_title': 'Auto', 'mode': 'auto', 'layout': {}}}
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), patch.object(settings, 'CURRENT_LAYOUT', 'M2'):
+            settings.save_current_layout('A')
+            saved = read_config(str(self.path))
+            self.assertEqual(saved['last_layouts'], {'manual': 'M2', 'auto': 'A'})
+            with patch.object(settings, 'config', saved):
+                self.assertEqual(settings.preferred_layout('manual'), 'M2')
+                self.assertEqual(settings.preferred_layout('auto'), 'A')
+            settings.delete_window_layout('M2')
+            self.assertEqual(settings.preferred_layout('manual'), 'M1')
+            self.assertNotIn('manual', read_config(str(self.path))['last_layouts'])
+
+    def test_layout_memory_save_failure_preserves_selection_and_history(self) -> None:
+        """原子保存失败时当前选择和分模式历史一起保留。"""
+        name = next(iter(settings.WINDOW_LAYOUTS))
+        before = deepcopy(settings.config)
+        old = settings.CURRENT_LAYOUT
+        with patch('config.settings.write_config', side_effect=PermissionError('locked')):
+            with self.assertRaises(PermissionError):
+                settings.save_current_layout(name)
+        self.assertEqual(settings.CURRENT_LAYOUT, old)
+        self.assertEqual(settings.config, before)
+
     def test_panel_arrangement_persists_and_rejects_invalid_values(self) -> None:
         """排列偏好原子保存并保留其他配置，拒绝非法枚举及类型。"""
         for value in ('horizontal', 'vertical'):

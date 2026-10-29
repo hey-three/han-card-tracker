@@ -33,7 +33,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 from PySide6.QtCore import QEvent, QObject, QPoint, QSize, QTimer, Qt, QRect, Signal, QModelIndex, QPersistentModelIndex
-from PySide6.QtGui import QColor, QHelpEvent, QKeyEvent, QMouseEvent, QPainter, QPalette, QPen, QPixmap, QResizeEvent, QShowEvent
+from PySide6.QtGui import QHelpEvent, QKeyEvent, QMouseEvent, QPainter, QPalette, QPixmap, QResizeEvent, QShowEvent
 
 import config.settings as settings
 from ui.switch_control import SwitchControl
@@ -317,6 +317,7 @@ class SettingsDialog(QDialog):
     PAGE_SPACING = 20
     layout_edit_requested = Signal(str)
     auto_layout_requested = Signal()
+    auto_layout_edit_requested = Signal(str)
     layout_status_changed = Signal(int)
     panel_arrangement_changed = Signal(int)
 
@@ -529,7 +530,7 @@ class SettingsDialog(QDialog):
         self.layout_mode_group.setExclusive(True)
         self.layout_mode_group.addButton(self.btn_layout_auto, 0)
         self.layout_mode_group.addButton(self.btn_layout_manual, 1)
-        self.layout_mode_group.idClicked.connect(self._on_layout_mode_changed)
+        self.layout_mode_group.idClicked.connect(self._on_layout_mode_clicked)
         mode_row.addWidget(self.btn_layout_auto)
         mode_row.addWidget(self.btn_layout_manual)
         mode_row.addStretch(1)
@@ -548,17 +549,33 @@ class SettingsDialog(QDialog):
 
         self.layout_mode_stack = QStackedWidget(self.layout_settings_group)
         self.auto_layout_panel = QWidget(self.layout_mode_stack)
-        auto_panel_layout = QHBoxLayout(self.auto_layout_panel)
+        auto_panel_layout = QVBoxLayout(self.auto_layout_panel)
         auto_panel_layout.setContentsMargins(0, 0, 0, 0)
-        auto_panel_layout.addWidget(QLabel("目标游戏窗口："))
+        auto_row = QHBoxLayout()
+        auto_label = QLabel('选择布局：')
+        auto_label.setMinimumWidth(self.LABEL_MIN_WIDTH)
+        auto_row.addWidget(auto_label)
+        self.combo_auto_layout = QComboBox(self.auto_layout_panel)
+        self.combo_auto_layout.setObjectName('AutoLayoutCombo')
+        self.combo_auto_layout.setMinimumWidth(300)
+        self.combo_auto_layout.setMinimumContentsLength(18)
+        self.combo_auto_layout.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_auto_layout.setView(LayoutComboView(
+            self.combo_auto_layout, self._on_layout_delete_requested, self,
+            edit_handler=self.auto_layout_edit_requested.emit,
+        ))
+        self.combo_auto_layout.activated.connect(self._on_auto_layout_changed)
+        auto_row.addWidget(self.combo_auto_layout, 1)
         self.label_auto_window = QLabel("尚未选择目标窗口")
         self.label_auto_window.setObjectName("AutoLayoutWindowTitle")
-        auto_panel_layout.addWidget(self.label_auto_window, 1)
-        self.btn_auto_layout = QPushButton("选择窗口…")
+        self.label_auto_window.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self.btn_auto_layout = QPushButton("新建布局")
         self.btn_auto_layout.setObjectName("AutoLayoutWindowButton")
-        self.btn_auto_layout.setToolTip("选择要自动定位牌区的游戏窗口")
+        self.btn_auto_layout.setToolTip("选择游戏窗口并命名保存，下次直接选择已保存布局")
         self.btn_auto_layout.clicked.connect(self.auto_layout_requested.emit)
-        auto_panel_layout.addWidget(self.btn_auto_layout)
+        auto_row.addWidget(self.btn_auto_layout)
+        auto_panel_layout.addLayout(auto_row)
+        auto_panel_layout.addWidget(self.label_auto_window)
         self.layout_mode_stack.addWidget(self.auto_layout_panel)
 
         self.manual_layout_panel = QWidget(self.layout_mode_stack)
@@ -592,7 +609,7 @@ class SettingsDialog(QDialog):
             "ManualInferenceCombo",
             ["拼图检测", "原图检测"],
             self.manual_inference_changed.emit,
-            tooltip="仅对手动框选布局生效；自动布局始终使用整图。",
+            tooltip="拼图检测，准确率更高。",
         )
         self.set_current_manual_inference(settings.PACKED_INFERENCE)
         self.layout_mode_stack.addWidget(self.manual_layout_panel)
@@ -770,7 +787,7 @@ class SettingsDialog(QDialog):
             self.on_interval_change_callback(index)
 
     def _on_layout_mode_changed(self, index: int) -> None:
-        """仅切换二级配置区，不在选择布局前改变当前运行布局。
+        """仅同步配置区显示，程序恢复已确认状态时不产生运行请求。
 
         Args:
             index: 0显示自动窗口选择，1显示手动布局设置。
@@ -779,6 +796,32 @@ class SettingsDialog(QDialog):
             return
         self._layout_mode = "auto" if index == 0 else "manual"
         self.layout_mode_stack.setCurrentIndex(index)
+
+    def _on_layout_mode_clicked(self, index: int) -> None:
+        """用户点击模式时直接使用该模式上次的布局，无布局则明确提示新建。
+
+        Args:
+            index: 0为自动，1为手动。
+        """
+        previous_mode = self._layout_mode
+        self._on_layout_mode_changed(index)
+        combo = self.combo_auto_layout if index == 0 else self.combo_layout
+        if not combo.isEnabled():
+            QMessageBox.information(self, '尚无布局', '此模式尚未保存布局，请先点击“新建布局”。')
+            return
+        name = combo.currentText()
+        if (name != settings.CURRENT_LAYOUT or previous_mode != self._layout_mode) and self.on_layout_change_callback:
+            self.on_layout_change_callback(name)
+
+    def _on_auto_layout_changed(self, index: int) -> None:
+        """把已保存自动布局的完整名称交给统一切换入口。
+
+        Args:
+            index: 自动布局下拉索引。
+        """
+        if self.combo_auto_layout.isEnabled() and 0 <= index < self.combo_auto_layout.count():
+            if self.on_layout_change_callback:
+                self.on_layout_change_callback(self.combo_auto_layout.itemText(index))
 
     def _on_layout_changed(self, index: int) -> None:
         """将手动布局下拉项转换为布局名称后交给主窗口处理。
@@ -902,27 +945,28 @@ class SettingsDialog(QDialog):
                 QMessageBox.warning(self, "删除失败", "布局删除失败，请检查配置文件后重试。")
 
     def refresh_layout_list(self, selected_name: str | None = None) -> None:
-        """刷新手动布局列表，并保留可用的当前项。
+        """分别刷新两种模式的命名布局，优先恢复各自上次使用项。
 
         Args:
-            selected_name: 优先显示的手动布局名称；自动布局名称会被忽略。
+            selected_name: 已确认的当前布局，不会跨模式塞入另一个列表。
         """
-        names = [
-            name for name, config in settings.WINDOW_LAYOUTS.items()
-            if config.get("mode", "manual") == "manual"
-        ]
-        display_names = names or ["暂无手动布局"]
-        self._set_combo_items(self.combo_layout, display_names, default_index=0)
-        self.combo_layout.setEnabled(bool(names))
-        self.combo_layout.setToolTip(
-            "选择要使用的手动布局。" if names else "暂无手动布局；可通过“可视化编辑”创建。"
-        )
-        if names:
-            target_name = selected_name if selected_name in names else settings.CURRENT_LAYOUT
-            target_name = target_name if target_name in names else names[0]
-            self._set_combo_current_safely(self.combo_layout, self.combo_layout.findText(str(target_name)))
-        self.combo_layout.update()
-        self.combo_layout.repaint()
+        for combo, mode, label in ((self.combo_layout, 'manual', '手动'),
+                                   (self.combo_auto_layout, 'auto', '自动')):
+            names = [name for name, config in settings.WINDOW_LAYOUTS.items()
+                     if config.get('mode', 'manual') == mode]
+            target = selected_name if selected_name in names else settings.preferred_layout(mode)
+            self._set_combo_items(combo, names or [f'暂无{label}布局'], default_index=0)
+            combo.setEnabled(bool(names))
+            combo.setToolTip(f'选择后立即使用此{label}布局；切换成功后保存。' if names else '请先新建布局。')
+            if target in names:
+                self._set_combo_current_safely(combo, combo.findText(str(target)))
+            for index, name in enumerate(names):
+                title = settings.WINDOW_LAYOUTS[name]['window_title']
+                combo.setItemData(index, f'{name}\n窗口：{title}', Qt.ItemDataRole.ToolTipRole)
+        selected_auto = settings.WINDOW_LAYOUTS.get(self.combo_auto_layout.currentText(), {})
+        title = str(selected_auto.get('window_title', ''))
+        self.label_auto_window.setText(title or '尚未保存自动布局')
+        self.label_auto_window.setToolTip(f'目标窗口：{title}' if title else '请先新建布局')
 
     def set_current_interval(self, interval_text):
         """
@@ -960,7 +1004,9 @@ class SettingsDialog(QDialog):
         if button is not None:
             button.setChecked(True)
         self._on_layout_mode_changed(index)
-        self.label_auto_window.setText(window_title or "尚未选择目标窗口")
+        if mode == 'auto':
+            self.label_auto_window.setText(window_title or "尚未选择目标窗口")
+            self.label_auto_window.setToolTip(window_title)
 
     def set_current_device(self, device_choice):
         """
@@ -1127,10 +1173,8 @@ class SettingsDialog(QDialog):
             if idx >= 0:
                 self._set_combo_current_safely(self.combo_model, idx)
 
-    def _setup_about_settings(self):
-        """
-        在关于标签页中添加控件
-        """
+    def _setup_about_settings(self) -> None:
+        """展示首行缩进的项目介绍、GitHub使用说明和作者联系邮箱。"""
         # 创建关于页面的布局
         about_layout = QVBoxLayout(self.tab3)
         about_layout.setContentsMargins(20, 20, 20, 20)
@@ -1143,10 +1187,26 @@ class SettingsDialog(QDialog):
 
         # 添加描述文字
         description_label = QLabel()
-        description_label.setText("Han 记牌器是一款扑克牌斗地主的棋牌软件。基于 YOLO V11识别。通常不需要繁琐的配置。仅通过识别点数进行统计，不是作弊，也不是外挂，仅提供正常的娱乐使用。")
+        description_label.setObjectName('AboutDescription')
+        description_label.setTextFormat(Qt.TextFormat.PlainText)
+        description_label.setText("　　Han 记牌器是一款扑克牌斗地主的棋牌软件。基于 YOLO V11识别。通常不需要繁琐的配置。仅通过识别点数进行统计，不是作弊，也不是外挂，仅提供正常的娱乐使用。")
         description_label.setWordWrap(True)
         description_label.setStyleSheet("font-size: 12px;")
         about_layout.addWidget(description_label)
+
+        project_url = 'https://github.com/hey-three/han-card-tracker'
+        project_label = QLabel(f'<a href="{project_url}">查看使用说明与更多信息（GitHub）</a>')
+        project_label.setObjectName('AboutProjectLink')
+        project_label.setToolTip(project_url)
+        contact_label = QLabel('联系邮箱：<a href="mailto:jiangfan0519@qq.com">jiangfan0519@qq.com</a>')
+        contact_label.setObjectName('AboutContactEmail')
+        for label in (project_label, contact_label):
+            label.setTextFormat(Qt.TextFormat.RichText)
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
+            label.setOpenExternalLinks(True)
+            label.setStyleSheet('font-size: 12px;')
+            about_layout.addWidget(label)
 
         # 添加弹性空间
         about_layout.addStretch()

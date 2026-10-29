@@ -14,7 +14,8 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PIL import Image
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QApplication, QLabel, QStatusBar
-from PySide6.QtGui import QStatusTipEvent
+from PySide6.QtGui import QGuiApplication, QStatusTipEvent
+from PySide6.QtTest import QTest
 from shiboken6 import delete
 
 from config import settings
@@ -34,6 +35,12 @@ class WindowBehaviorTests(unittest.TestCase):
         """复用 Qt 应用，测试平台可由外部指定。"""
         cls.app = QApplication.instance() or QApplication([])
 
+    def settle_events(self) -> None:
+        """处理Qt事件，原生Windows再等待异步边框与分数DPI尺寸校正完成。"""
+        self.app.processEvents()
+        if QGuiApplication.platformName() == 'windows':
+            QTest.qWait(50)
+
     def setUp(self) -> None:
         """隔离配置文件、运行参数和窗口，禁止加载真实模型。"""
         root = Path(__file__).resolve().parent / ".tmp"
@@ -52,7 +59,7 @@ class WindowBehaviorTests(unittest.TestCase):
         self.window = CardUI()
         self.window.setStyleSheet(Path("ui/ui.qss").read_text(encoding="utf-8"))
         self.window.show()
-        self.app.processEvents()
+        self.settle_events()
         self.addCleanup(self.window.close)
 
     def test_horizontal_startup_matches_switched_height_and_preserves_later_user_resize(self) -> None:
@@ -65,22 +72,22 @@ class WindowBehaviorTests(unittest.TestCase):
             # 模拟原生窗口创建期间留下的临时额外高度，不是显示后的用户调整。
             window.resize(window.width(), window.height() + 60)
             window.show()
-            self.app.processEvents()
-            self.app.processEvents()
+            self.settle_events()
+            self.settle_events()
             startup_height = window.height()
             with patch.object(settings, 'PANEL_ARRANGEMENT', 'vertical'):
                 window._apply_panel_arrangement()
-                self.app.processEvents()
+                self.settle_events()
             window._apply_panel_arrangement()
-            self.app.processEvents()
+            self.settle_events()
             self.assertEqual(startup_height, window.height())
             self.assertLessEqual(abs(window.card_panel.width() - window.played_panel.width()), 1)
             window.resize(window.width(), window.height() + 40)
-            self.app.processEvents()
+            self.settle_events()
             user_size = window.size()
             window.hide()
             window.show()
-            self.app.processEvents()
+            self.settle_events()
             self.assertEqual(window.size(), user_size)
 
     def test_layout_popup_icons_receive_release_without_selecting_a_layout(self) -> None:
@@ -102,7 +109,7 @@ class WindowBehaviorTests(unittest.TestCase):
             dialog.combo_layout.activated.connect(lambda index: activated.append(index))
             dialog.set_current_layout_mode('manual', '')
             dialog.show()
-            self.app.processEvents()
+            self.settle_events()
             combo = dialog.combo_layout
             row_index = combo.findText('测试布局乙')
             for kind in ('edit', 'delete'):
@@ -113,8 +120,8 @@ class WindowBehaviorTests(unittest.TestCase):
                 target = (LayoutItemDelegate.get_edit_button_rect(rect) if kind == 'edit'
                           else LayoutItemDelegate.get_delete_button_rect(rect))
                 QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=target.center())
-                self.app.processEvents()
-                self.app.processEvents()
+                self.settle_events()
+                self.settle_events()
             self.assertEqual(edited, ['测试布局乙'])
             self.assertEqual(deleted, ['测试布局乙'])
             self.assertEqual(activated, [])
@@ -123,7 +130,7 @@ class WindowBehaviorTests(unittest.TestCase):
             view = combo.view()
             rect = view.visualRect(view.model().index(row_index, 0))
             QTest.mouseClick(view.viewport(), Qt.MouseButton.LeftButton, pos=rect.center())
-            self.app.processEvents()
+            self.settle_events()
             self.assertEqual(activated, [row_index])
             self.assertEqual(combo.currentText(), '测试布局乙')
 
@@ -136,7 +143,7 @@ class WindowBehaviorTests(unittest.TestCase):
         with patch("ui.layout_editor_dialog.list_visible_window_titles", return_value=["Test Game"]):
             editor = LayoutEditorDialog(self.window)
         editor.show()
-        self.app.processEvents()
+        self.settle_events()
         self.addCleanup(editor.close)
         return editor
 
@@ -221,15 +228,15 @@ class WindowBehaviorTests(unittest.TestCase):
         preview = ScreenshotPreviewDialog(self.window)
         self.addCleanup(preview.close)
         preview.show()
-        self.app.processEvents()
+        self.settle_events()
         self.assertEqual(preview.width(), self.window.width())
         data = BytesIO()
         Image.new("RGB", (3840, 2160), "white").save(data, format="JPEG")
         preview.update_image(data.getvalue())
         preview.resize(1000, 600)
-        self.app.processEvents()
+        self.settle_events()
         preview.resize(550, 330)
-        self.app.processEvents()
+        self.settle_events()
         self.assertEqual(preview.width(), 550)
         self.assertLessEqual(preview.image_label.pixmap().width(), preview.image_label.width())
         self.assertLessEqual(preview.image_label.pixmap().height(), preview.image_label.height())
@@ -327,7 +334,7 @@ class WindowBehaviorTests(unittest.TestCase):
         height = self.window.height()
         QApplication.sendEvent(self.window, QStatusTipEvent('临时帮助提示'))
         self.window.worker.fail('诊断顶部故障详情')
-        self.app.processEvents()
+        self.settle_events()
         self.assertIsNone(self.window.findChild(QStatusBar))
         self.assertIn('诊断顶部故障详情', self.window.title_bar.status_label.toolTip())
         self.assertTrue(self.window.title_bar.isAncestorOf(self.window.btn_retry))
@@ -339,7 +346,7 @@ class WindowBehaviorTests(unittest.TestCase):
         for visible in (False, True, False, True):
             self.window._show_played_cards = visible
             self.window._update_played_cards_visibility()
-            self.app.processEvents()
+            self.settle_events()
             for label in self.window.played_cards_labels.values():
                 self.assertGreaterEqual(self.window.second_row_layout.indexOf(label), 0)
                 self.assertEqual(label.isVisible(), visible)
@@ -358,7 +365,7 @@ class WindowBehaviorTests(unittest.TestCase):
             for _ in range(3):
                 editor._send_app_windows_to_bottom()
                 editor._restore_app_windows_after_capture()
-                self.app.processEvents()
+                self.settle_events()
                 self.assertEqual([(w.pos(), w.size(), w.windowFlags()) for w in windows], before)
         for label in self.window.count_labels.values():
             self.assertTrue(label.isVisible())
@@ -392,12 +399,12 @@ class WindowBehaviorTests(unittest.TestCase):
     def test_topmost_toggling_preserves_window_geometry(self) -> None:
         """切换置顶不擅自缩小用户调整过的窗口。"""
         self.window.resize(750, 300)
-        self.app.processEvents()
+        self.settle_events()
         before = self.window.size()
         original = bool(self.window.windowFlags() & Qt.WindowType.WindowStaysOnTopHint)
         for enabled in (not original, original):
             self.window._apply_always_on_top_state(enabled)
-            self.app.processEvents()
+            self.settle_events()
             self.assertEqual(self.window.size(), before)
             self.assertTrue(self.window.isVisible())
 

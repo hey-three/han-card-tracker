@@ -100,7 +100,7 @@ class YoloInferencer:
         return model
 
     def _load_configured_export(self, backend: str, device: str) -> YOLO:
-        """加载隔离缓存或按明确高宽导出；不复用来源不明的旧 best.onnx/engine。
+        """加载原权重同目录的可信导出，失效时按明确高宽重新生成。
 
         Args:
             backend: onnx 或 engine。
@@ -113,7 +113,7 @@ class YoloInferencer:
         """
         spec = self.input_spec
         if spec is None:
-            raise RuntimeError("隔离导出需要模型输入配置")
+            raise RuntimeError("固定尺寸导出需要模型输入配置")
         environment: dict[str, str] = {"precision": "fp16" if device == "cuda" else "fp32"}
         packages = ("ultralytics", "torch", "onnx", "onnxslim", "tensorrt" if device == "cuda" else "onnxruntime")
         for package in packages:
@@ -124,26 +124,27 @@ class YoloInferencer:
         if device == "cuda":
             environment["gpu"] = torch.cuda.get_device_name()
             environment["cuda"] = str(torch.version.cuda)
-        cache = ModelExportCache(Path(settings.BASE_DIR) / "model_cache", Path(self.weight_path),
-                                 spec, backend, environment)
+        cache = ModelExportCache(Path(self.weight_path), spec, backend, environment)
         if cache.ready():
             try:
-                return self._prepare_configured_model(YOLO(str(cache.artifact)), device)
+                return self._prepare_configured_model(YOLO(str(cache.artifact), task="detect"), device)
             except Exception as exc:
                 print(f"[YoloInferencer] 缓存无法加载，将重新导出: {exc}")
         self._check_export_dependencies(backend)
-        source = cache.prepare_weight()
         print(f"[YoloInferencer] 首次导出 {backend}, H×W={spec.height}×{spec.width}，可能需要较长时间")
-        exported = YOLO(str(source)).export(format=backend, imgsz=spec.imgsz, batch=1,
-                                           dynamic=False, half=device == "cuda",
-                                           device=0 if device == "cuda" else "cpu", simplify=False)
-        if not exported or Path(str(exported)).resolve() != cache.artifact.resolve():
-            raise RuntimeError(f"导出结果不是预期路径: {exported}")
-        if backend == "onnx":
-            self._simplify_onnx(cache.artifact)
-        model = self._prepare_configured_model(YOLO(str(cache.artifact)), device)
-        cache.seal()
-        return model
+        with cache.export_source() as source:
+            candidate = source.with_suffix(f".{backend}")
+            exported = YOLO(str(source)).export(format=backend, imgsz=spec.imgsz, batch=1,
+                                               dynamic=False, half=device == "cuda",
+                                               device=0 if device == "cuda" else "cpu", simplify=False)
+            if not exported or Path(str(exported)).resolve() != candidate.resolve():
+                raise RuntimeError(f"导出结果不是预期路径: {exported}")
+            if backend == "onnx":
+                self._simplify_onnx(candidate)
+            validated = self._prepare_configured_model(YOLO(str(candidate), task="detect"), device)
+            del validated
+            cache.publish(candidate)
+        return self._prepare_configured_model(YOLO(str(cache.artifact), task="detect"), device)
 
     @staticmethod
     def _check_export_dependencies(backend: str) -> None:

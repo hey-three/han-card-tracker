@@ -101,27 +101,76 @@ class ModelInputTests(unittest.TestCase):
     def test_cache_identity_and_incomplete_or_corrupt_exports(self) -> None:
         """换权重/尺寸/环境隔离缓存，未完成及被改写的导出不可复用。"""
         spec = ModelInput(960, 608, self.config)
-        cache = ModelExportCache(self.root / "cache", self.weight, spec, "onnx", {"version": "a"})
+        cache = ModelExportCache(self.weight, spec, "onnx", {"version": "a"})
         self.assertFalse(cache.ready())
-        copied = cache.prepare_weight()
-        self.assertEqual(copied.read_bytes(), self.weight.read_bytes())
-        cache.artifact.write_bytes(b"fake export")
-        self.assertFalse(cache.ready())
-        cache.seal()
+        self.assertEqual(cache.artifact, self.weight.with_suffix('.onnx'))
+        with cache.export_source() as copied:
+            self.assertNotEqual(copied, self.weight.resolve())
+            self.assertEqual(copied.read_bytes(), self.weight.read_bytes())
+            candidate = copied.with_suffix('.onnx')
+            candidate.write_bytes(b"fake export")
+            self.assertFalse(cache.ready())
+            cache.publish(candidate)
         self.assertTrue(cache.ready())
-        same = ModelExportCache(self.root / "cache", self.weight, spec, "onnx", {"version": "a"})
+        self.assertFalse(copied.parent.exists())
+        same = ModelExportCache(self.weight, spec, "onnx", {"version": "a"})
         self.assertTrue(same.ready())
-        square = ModelExportCache(self.root / "cache", self.weight,
+        square = ModelExportCache(self.weight,
                                   ModelInput(960, 960, self.config), "onnx", {"version": "a"})
-        environment = ModelExportCache(self.root / "cache", self.weight, spec, "onnx", {"version": "b"})
-        self.assertNotEqual(cache.directory, square.directory)
-        self.assertNotEqual(cache.directory, environment.directory)
+        environment = ModelExportCache(self.weight, spec, "onnx", {"version": "b"})
+        self.assertFalse(square.ready())
+        self.assertFalse(environment.ready())
         self.weight.write_bytes(b"replaced model")
-        replaced = ModelExportCache(self.root / "cache", self.weight, spec, "onnx", {"version": "a"})
-        self.assertNotEqual(cache.directory, replaced.directory)
+        replaced = ModelExportCache(self.weight, spec, "onnx", {"version": "a"})
+        self.assertFalse(replaced.ready())
         cache.artifact.write_bytes(b"corrupt")
         self.assertFalse(cache.ready())
         self.assertEqual(self.weight.read_bytes(), b"replaced model")
+
+    def test_failed_export_preserves_source_and_existing_artifact(self) -> None:
+        """临时导出失败不覆盖原PT或旧ONNX，工作区会清理。"""
+        cache = ModelExportCache(self.weight, ModelInput(960, 608, self.config), 'onnx', {})
+        before = self.weight.read_bytes()
+        cache.artifact.write_bytes(b'old ONNX')
+        with self.assertRaisesRegex(RuntimeError, 'export failed'):
+            with cache.export_source() as source:
+                source.with_suffix('.onnx').write_bytes(b'partial ONNX')
+                raise RuntimeError('export failed')
+        self.assertEqual(cache.artifact.read_bytes(), b'old ONNX')
+        self.assertEqual(self.weight.read_bytes(), before)
+        self.assertFalse(list(self.root.glob('.model-export-*')))
+
+    def test_source_change_and_metadata_failure_do_not_replace_old_artifact(self) -> None:
+        """导出中途替换PT或校验记录创建失败时保留旧ONNX。"""
+        from unittest.mock import patch
+        cache = ModelExportCache(self.weight, ModelInput(960, 608, self.config), 'onnx', {})
+        cache.artifact.write_bytes(b'old ONNX')
+        with cache.export_source() as source:
+            candidate = source.with_suffix('.onnx')
+            candidate.write_bytes(b'new ONNX')
+            with patch('core.model_export_cache.tempfile.NamedTemporaryFile', side_effect=OSError('disk full')):
+                with self.assertRaises(OSError):
+                    cache.publish(candidate)
+            self.assertEqual(cache.artifact.read_bytes(), b'old ONNX')
+            self.weight.write_bytes(b'changed PT')
+            with self.assertRaisesRegex(OSError, '权重发生变化'):
+                cache.publish(candidate)
+            self.assertEqual(cache.artifact.read_bytes(), b'old ONNX')
+
+    def test_onnx_and_engine_have_independent_sidecars(self) -> None:
+        """同目录两个静态后端互不覆盖校验记录，也不能把原PT当作导出发布。"""
+        spec = ModelInput(960, 608, self.config)
+        stores = [ModelExportCache(self.weight, spec, kind, {}) for kind in ('onnx', 'engine')]
+        for cache in stores:
+            with cache.export_source() as source:
+                candidate = source.with_suffix(cache.artifact.suffix)
+                candidate.write_bytes(cache.artifact.suffix.encode())
+                cache.publish(candidate)
+            self.assertTrue(cache.ready())
+            with self.assertRaises(ValueError):
+                cache.publish(self.weight)
+        self.assertNotEqual(stores[0].manifest, stores[1].manifest)
+        self.assertTrue(all(cache.ready() for cache in stores))
 
 
 if __name__ == "__main__":

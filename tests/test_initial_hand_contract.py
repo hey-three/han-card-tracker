@@ -44,9 +44,9 @@ class InitialHandContractTests(unittest.TestCase):
         """重放已记录的首扣和出牌顺序，不猜测漏掉的手牌。
 
         Returns:
-            首扣16张、帧间有明确空区的历史观测序列。
+            两帧底牌门槛后的首扣16张、帧间有明确空区的历史观测序列。
         """
-        frames = [self.frame(self.fixture['initial_hand'])]
+        frames = [self.frame(self.fixture['initial_hand']) for _ in range(2)]
         regions = {'left': 'opponent_left', 'self': 'player_played', 'right': 'opponent_right'}
         for event in self.fixture['plays']:
             frames.append(self.frame([]))
@@ -70,6 +70,8 @@ class InitialHandContractTests(unittest.TestCase):
         """首扣已含KK，本家反复显示不扣，对手两张K仍正常扣至零。"""
         tracker = DoudizhuTracker()
         tracker.get_cards_number(self.frame(['K', 'K']), 0.)
+        self.assertEqual(tracker.remain_cards['K'], 4)
+        tracker.get_cards_number(self.frame(['K', 'K']), 0.)
         for _ in range(5):
             tracker.get_cards_number(self.frame([], 'player_played', ['K', 'K']), 0.)
         self.assertEqual(tracker.remain_cards['K'], 2)
@@ -81,6 +83,7 @@ class InitialHandContractTests(unittest.TestCase):
         """经过空区的两手本家K都只更新历史，换局才重新扣新手牌。"""
         tracker = DoudizhuTracker()
         tracker.get_cards_number(self.frame(['K']), 0.)
+        tracker.get_cards_number(self.frame(['K']), 0.)
         tracker.get_cards_number(self.frame([], 'player_played', ['K']), 0.)
         tracker.get_cards_number(self.frame([]), 0.)
         for _ in range(6):
@@ -91,6 +94,8 @@ class InitialHandContractTests(unittest.TestCase):
         tracker.begin_waiting('test')
         self.assertEqual(tracker.remain_cards['K'], 3)
         tracker.get_cards_number(self.frame(['K', 'K']), 0.)
+        self.assertEqual(tracker.remain_cards['K'], 3)
+        tracker.get_cards_number(self.frame(['K', 'K']), 0.)
         self.assertEqual(tracker.remain_cards['K'], 2)
         self.assertEqual(tracker.show_cards['self'], [])
         tracker.reset()
@@ -99,6 +104,7 @@ class InitialHandContractTests(unittest.TestCase):
     def test_own_play_disagreeing_with_initial_hand_still_cannot_change_counts(self) -> None:
         """即使本家牌面与首扣矛盾，也不能额外扣牌或改写原始手牌。"""
         tracker = DoudizhuTracker()
+        tracker.get_cards_number(self.frame(['A']), 0.)
         tracker.get_cards_number(self.frame(['A']), 0.)
         before = dict(tracker.remain_cards)
         tracker.get_cards_number(self.frame([], 'player_played', ['K', 'K']), 0.)

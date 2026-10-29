@@ -1,6 +1,7 @@
-"""按权重内容、输入尺寸及环境隔离静态导出，不覆盖用户原始文件。"""
+"""在原权重同目录保存经过身份校验的静态导出，原始 PT 保持不变。"""
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
+from contextlib import contextmanager
 import hashlib
 import json
 from pathlib import Path
@@ -31,12 +32,11 @@ def file_digest(path: Path) -> str:
 class ModelExportCache:
     """保存一次性导出及完成标记，未完成或内容改变的导出不复用。"""
 
-    def __init__(self, root: Path, weight: Path, spec: ModelInput,
+    def __init__(self, weight: Path, spec: ModelInput,
                  backend: str, environment: Mapping[str, str]) -> None:
         """建立缓存身份，不导出、不创建目录。
 
         Args:
-            root: 可写运行目录中的模型缓存根目录。
             weight: 原始 PT 权重。
             spec: 固定输入契约。
             backend: onnx 或 engine。
@@ -49,14 +49,13 @@ class ModelExportCache:
             raise ValueError("仅支持 onnx/engine 静态导出")
         self.weight = weight
         self.identity: dict[str, object] = {
-            "version": 2, "weight_sha256": file_digest(weight),
+            "version": 3, "weight_sha256": file_digest(weight),
             "imgsz": list(spec.imgsz), "batch": 1, "dynamic": False,
             "format": backend, "environment": dict(environment),
         }
-        key = hashlib.sha256(json.dumps(self.identity, sort_keys=True).encode()).hexdigest()
-        self.directory = root / key
-        self.artifact = self.directory / f"best.{backend}"
-        self.manifest = self.directory / "complete.json"
+        self.directory = weight.parent
+        self.artifact = weight.with_suffix(f".{backend}")
+        self.manifest = self.artifact.with_name(self.artifact.name + ".meta.json")
 
     def ready(self) -> bool:
         """确认身份与导出文件摘要一致，损坏或半成品缓存视为不可用。
@@ -72,29 +71,37 @@ class ModelExportCache:
         except (OSError, ValueError):
             return False
 
-    def prepare_weight(self) -> Path:
-        """复制源权重到隔离目录，使导出器只在缓存中产生文件。
+    @contextmanager
+    def export_source(self) -> Iterator[Path]:
+        """在权重目录内临时导出，验证成功前不覆盖已有正式文件。
 
-        Returns:
-            导出时加载的 best.pt 副本路径。
+        Yields:
+            本次临时工作区中的PT副本；退出后清理工作区。
         Raises:
-            OSError: 创建目录或复制失败，不能使用未完成标记。
+            OSError: 目录不可写、复制失败或源权重在导出期间变化。
         """
-        self.directory.mkdir(parents=True, exist_ok=True)
-        self.manifest.unlink(missing_ok=True)
-        target = self.directory / "best.pt"
-        shutil.copyfile(self.weight, target)
-        if file_digest(target) != self.identity["weight_sha256"]:
-            raise OSError("导出期间源权重发生变化，请停止替换权重后重试")
-        return target
+        with tempfile.TemporaryDirectory(dir=self.directory, prefix=".model-export-") as temporary:
+            target = Path(temporary).resolve() / self.weight.name
+            shutil.copyfile(self.weight, target)
+            if file_digest(target) != self.identity["weight_sha256"]:
+                raise OSError("导出期间源权重发生变化，请停止替换权重后重试")
+            yield target
 
-    def seal(self) -> None:
-        """在导出并验证形状后原子写入完成标记，失败则不留下可信半标记。
+    def publish(self, exported: Path) -> None:
+        """验证后的导出原子替换同目录文件，随后原子保存各自校验记录。
 
+        Args:
+            exported: 本次工作区中的已验证ONNX或engine，不得为原始PT。
         Raises:
-            OSError: 导出文件不可读或完成标记写入失败。
+            ValueError: 导出后缀不是对应后端格式。
+            OSError: 源权重变化、导出不可读或写入/替换失败。
         """
-        data = {"identity": self.identity, "artifact_sha256": file_digest(self.artifact)}
+        if exported.suffix != self.artifact.suffix:
+            raise ValueError("导出文件后缀与后端格式不一致")
+        if file_digest(self.weight) != self.identity["weight_sha256"]:
+            raise OSError("导出期间源权重发生变化，保留原有导出")
+        # 摘要取自本次候选文件，不能在替换后读取可能被另一实例覆盖的目标。
+        data = {"identity": self.identity, "artifact_sha256": file_digest(exported)}
         temporary: str | None = None
         try:
             with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.directory,
@@ -103,6 +110,7 @@ class ModelExportCache:
                 json.dump(data, stream, ensure_ascii=False, sort_keys=True)
                 stream.flush()
                 os.fsync(stream.fileno())
+            os.replace(exported, self.artifact)
             os.replace(temporary, self.manifest)
         finally:
             if temporary is not None:

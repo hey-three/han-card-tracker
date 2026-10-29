@@ -14,7 +14,7 @@ def line_icon(name: str, color: QColor) -> QIcon:
     """绘制24逻辑像素、双倍分辨率的无填充图标。
 
     Args:
-        name: settings、pause、play、reset、edit或delete。
+        name: settings、pause、play、reset、edit、delete或donate。
         color: 当前主题的前景颜色。
     Returns:
         含正常与禁用状态的Qt图标。
@@ -24,7 +24,7 @@ def line_icon(name: str, color: QColor) -> QIcon:
     """
     if not isinstance(name, str) or not isinstance(color, QColor):
         raise TypeError('图标名称和颜色类型错误')
-    if name not in ('settings', 'pause', 'play', 'reset', 'edit', 'delete'):
+    if name not in ('settings', 'pause', 'play', 'reset', 'edit', 'delete', 'donate'):
         raise ValueError(f'不支持的图标：{name}')
     cache_key = (name, color.rgba())
     if cache_key in _ICON_CACHE:
@@ -76,6 +76,13 @@ def line_icon(name: str, color: QColor) -> QIcon:
             path.closeSubpath()
             path.moveTo(13, 7)
             path.lineTo(17, 11)
+        elif name == 'donate':
+            path.moveTo(12, 20)
+            path.cubicTo(9, 17, 3, 13, 3, 8)
+            path.cubicTo(3, 3, 9, 2, 12, 7)
+            path.cubicTo(15, 2, 21, 3, 21, 8)
+            path.cubicTo(21, 13, 15, 17, 12, 20)
+            path.closeSubpath()
         else:
             path.moveTo(4, 7)
             path.lineTo(20, 7)

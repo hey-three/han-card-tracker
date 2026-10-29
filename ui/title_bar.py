@@ -8,8 +8,8 @@ from collections.abc import Callable
 import math
 import sys
 
-from PySide6.QtCore import QEvent, QRectF, QSize, Qt
-from PySide6.QtGui import QColor, QIcon, QMouseEvent, QPainter, QPalette, QPen, QPixmap, QPaintEvent
+from PySide6.QtCore import QEvent, QSize, Qt
+from PySide6.QtGui import QMouseEvent, QPainter, QPalette, QPaintEvent
 from PySide6.QtWidgets import QHBoxLayout, QLabel, QPushButton, QSizePolicy, QToolButton, QWidget
 from ui.icons import line_icon
 
@@ -121,12 +121,13 @@ class ElidingCaption(QLabel):
 
 
 class MainTitleBar(QWidget):
-    """显示设置、暂停/继续、重置图标和窗口标题。
+    """显示设置、暂停/继续、重置、赞赏图标和窗口标题。
 
     Attributes:
         settings_button: 打开设置对话框的无文字图标按钮。
         pause_button: 切换暂停和继续的图标按钮。
         reset_button: 重置记牌器的无文字图标按钮。
+        donation_button: 直达既有赞赏页的无文字图标按钮。
         caption_label: 显示程序状态与检测耗时的标题。
         status_label: 耗时后的布局、故障或诊断短状态，悬停显示详情。
         retry_button: 识别故障时显示的顶部重启入口。
@@ -139,8 +140,9 @@ class MainTitleBar(QWidget):
         on_pause_clicked: Callable[[], None],
         on_reset_clicked: Callable[[], None],
         on_restart_clicked: Callable[[], None] | None = None,
+        on_donation_clicked: Callable[[], None] | None = None,
     ) -> None:
-        """创建标题栏控件并连接三个应用操作。
+        """创建标题栏控件并连接应用操作。
 
         Args:
             parent: 主窗口中央部件。
@@ -148,6 +150,7 @@ class MainTitleBar(QWidget):
             on_pause_clicked: 暂停或恢复检测的回调。
             on_reset_clicked: 重置记牌器的回调。
             on_restart_clicked: 可选的识别服务重启回调，省略时不启用入口。
+            on_donation_clicked: 可选的赞赏页回调，省略时禁用按钮。
         """
         super().__init__(parent)
         self.setObjectName("MainTitleBar")
@@ -171,6 +174,9 @@ class MainTitleBar(QWidget):
         self.reset_button = self._create_button("重置记牌器", on_reset_clicked)
         self.reset_button.setAccessibleName("重置记牌器")
         self._layout.addWidget(self.reset_button)
+
+        self.donation_button = self._create_button('赞赏', on_donation_clicked)
+        self._layout.addWidget(self.donation_button)
 
         self.caption_label = ElidingCaption(self)
         self.caption_label.setObjectName("MainTitleBarCaption")
@@ -196,15 +202,15 @@ class MainTitleBar(QWidget):
 
         self.set_paused(False)
 
-    def _create_button(self, tooltip: str, callback: Callable[[], None]) -> QToolButton:
+    def _create_button(self, tooltip: str, callback: Callable[[], None] | None) -> QToolButton:
         """创建尺寸统一且仅显示图标的标题栏操作按钮。
 
         Args:
             tooltip: 鼠标悬停时显示的操作说明。
-            callback: 按钮触发的操作。
+            callback: 按钮触发的操作；None时禁用入口。
 
         Returns:
-            QToolButton: 已连接回调的图标按钮。
+            QToolButton: 按回调是否存在启用的图标按钮。
         """
         button = QToolButton(self)
         button.setObjectName("MainTitleBarAction")
@@ -215,7 +221,9 @@ class MainTitleBar(QWidget):
         button.setCursor(Qt.CursorShape.PointingHandCursor)
         button.setToolTip(tooltip)
         button.setAccessibleName(tooltip)
-        button.clicked.connect(callback)
+        button.setEnabled(callback is not None)
+        if callback is not None:
+            button.clicked.connect(callback)
         return button
 
     def set_caption(self, caption: str) -> None:
@@ -240,12 +248,13 @@ class MainTitleBar(QWidget):
         self.pause_button.setAccessibleName(tooltip)
 
     def _refresh_icons(self) -> None:
-        """使用同一前景色和细线样式绘制三个操作图标。"""
+        """使用同一前景色和细线样式绘制操作图标。"""
         color = self.palette().color(QPalette.ColorRole.WindowText)
         color.setAlphaF(.85)
         self.settings_button.setIcon(line_icon('settings', color))
         self.pause_button.setIcon(line_icon('play' if self._paused else 'pause', color))
         self.reset_button.setIcon(line_icon('reset', color))
+        self.donation_button.setIcon(line_icon('donate', color))
 
     def changeEvent(self, event: QEvent) -> None:
         """明暗主题或样式变化后同步图标颜色。
@@ -255,7 +264,7 @@ class MainTitleBar(QWidget):
         """
         super().changeEvent(event)
         if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.ApplicationPaletteChange, QEvent.Type.StyleChange):
-            if hasattr(self, 'reset_button'):
+            if hasattr(self, 'donation_button'):
                 self._refresh_icons()
 
     def set_layout_status(self, text: str, detail: str = '') -> None:

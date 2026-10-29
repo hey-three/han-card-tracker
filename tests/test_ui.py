@@ -36,6 +36,7 @@ class UITests(unittest.TestCase):
         config_path = directory / 'config.yaml'
         config_path.write_text('custom_key: retained\n', encoding='utf-8')
         self.addCleanup(settings.apply_runtime_settings, settings.runtime_snapshot())
+        self.addCleanup(setattr, settings, 'CURRENT_LAYOUT', settings.CURRENT_LAYOUT)
         self.addCleanup(setattr, settings, 'config', deepcopy(settings.config))
         self.enterContext(patch.object(settings, 'CONFIG_PATH', str(config_path)))
         with patch.object(InferenceWorker, "start"):
@@ -54,6 +55,34 @@ class UITests(unittest.TestCase):
         window.close()
         window.deleteLater()
         QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
+
+    def test_loading_notice_is_topmost_visible_and_cleared_after_startup(self) -> None:
+        """关闭普通布局提示也显示首次较久提示，就绪后恢复正常标题。"""
+        from PySide6.QtWidgets import QStatusBar
+        with patch.object(settings, 'SHOW_LAYOUT_STATUS', False):
+            self.window.worker._set_state('starting')
+            self.assertEqual(self.window.title_bar.caption_label.text(), '正在加载模型…')
+            self.assertIn('首次', self.window.title_bar.status_label.text())
+            self.assertIn('转换', self.window.title_bar.status_label.toolTip())
+            self.assertFalse(self.window.findChildren(QStatusBar))
+            self.window.worker._set_state('ready')
+            self.assertNotIn('正在加载模型', self.window.title_bar.caption_label.text())
+            self.assertNotIn('首次', self.window.title_bar.status_label.text())
+
+    def test_switch_loading_notice_does_not_release_inflight_detection(self) -> None:
+        """模型切换提示只改标题，待完成检测的busy不受影响。"""
+        from core.inference_protocol import Command
+        self.window.worker.state = 'ready'
+        self.window._busy = True
+        self.window.worker._pending[123] = Command(123, 1, 'switch_model', 'next')
+        self.window.worker.model_loading_changed.emit(True)
+        self.assertEqual(self.window.title_bar.caption_label.text(), '正在加载模型')
+        self.assertIn('首次', self.window.title_bar.status_label.text())
+        self.assertTrue(self.window._busy)
+        self.window.worker._pending.clear()
+        self.window.worker.model_loading_changed.emit(False)
+        self.assertNotIn('正在加载模型', self.window.title_bar.caption_label.text())
+        self.assertTrue(self.window._busy)
 
     def test_overwritten_current_layout_submits_new_coordinates_even_when_name_is_unchanged(self) -> None:
         """同名当前布局编辑后必须提交完整新配置，不能因名称相同跳过。"""
@@ -151,7 +180,7 @@ class UITests(unittest.TestCase):
         dialog.close()
 
     def test_layout_mode_shows_only_matching_layout_choices(self) -> None:
-        """自动模式只选窗口，手动模式只列手动布局并传递布局名。"""
+        """两种模式各列已保存布局，用户点击模式立即传递对应名称。"""
         layouts = {
             "手动布局 A": {"window_title": "Game A", "layout": {}},
             "自动布局 · Game B": {"window_title": "Game B", "layout": {}, "mode": "auto"},
@@ -170,12 +199,13 @@ class UITests(unittest.TestCase):
             dialog.set_current_layout_mode("auto", "Game B")
             self.assertEqual(dialog.layout_mode_stack.currentIndex(), 0)
             self.assertEqual(dialog.label_auto_window.text(), "Game B")
+            self.assertEqual(dialog.combo_auto_layout.currentText(), '自动布局 · Game B')
             dialog.btn_layout_manual.click()
             dialog.combo_layout.setCurrentIndex(1)
             dialog.combo_layout.activated.emit(1)
 
             self.assertEqual(dialog.layout_mode_stack.currentIndex(), 1)
-            self.assertEqual(selected_names, ["手动布局 C"])
+            self.assertEqual(selected_names, ["手动布局 A", "手动布局 C"])
 
     def test_donation_tab_order_and_image_fill_available_area(self) -> None:
         """赞赏页排在关于前面，二维码随页面尺寸变化且保持比例。"""
@@ -214,6 +244,15 @@ class UITests(unittest.TestCase):
         from config.store import read_config
 
         settings.PACKED_INFERENCE = True
+        from io import BytesIO
+        buffer = BytesIO()
+        from PIL import Image
+        Image.new('RGB',(960,608)).save(buffer,format='JPEG')
+        with patch.object(settings,'SHOW_CURRENT_SCREENSHOT',True):
+            self.window._preview_requested = True
+            self.window._layout_status = '手动2区拼图'
+            self.window.on_screenshot_ready(buffer.getvalue())
+        self.assertIn('拼图',self.window._screenshot_preview.windowTitle())
         dialog = SettingsDialog(self.window)
         dialog.manual_inference_changed.connect(self.window.on_manual_inference_changed)
         self.window._settings_dialog = dialog
@@ -223,6 +262,8 @@ class UITests(unittest.TestCase):
             update.assert_called_once_with({'PACKED_INFERENCE': False})
             self.assertNotIn('packed_inference', read_config(settings.CONFIG_PATH))
             self.window.worker.command_completed.emit(41, 'update_settings', True, '')
+        self.assertTrue(self.window._screenshot_preview.image_label._source_pixmap.isNull())
+        self.assertIn('等待新帧',self.window._screenshot_preview.windowTitle())
         self.assertFalse(read_config(settings.CONFIG_PATH)['packed_inference'])
         reopened = SettingsDialog(self.window)
         self.assertEqual(reopened.combo_manual_inference.currentText(), '原图检测')
@@ -290,29 +331,193 @@ class UITests(unittest.TestCase):
         dialog = SettingsDialog(self.window)
         self.window.worker.state = "ready"
         with patch("ui.main_window.list_visible_window_titles", return_value=["Game"]), patch(
-            "ui.main_window.QInputDialog.getItem", return_value=("Game", True),
-        ), patch.object(self.window.worker, "switch_layout", return_value=51) as switch, patch.object(
+            "ui.main_window.AutoLayoutDialog",
+        ) as editor, patch.object(self.window.worker, "switch_layout", return_value=51) as switch, patch.object(
             settings, "save_window_layout",
         ) as save:
+            editor.return_value.exec.return_value = 1
+            editor.return_value.DialogCode.Accepted = 1
+            editor.return_value.layout_name = '我的自动布局'
+            editor.return_value.window_title = 'Game'
             self.window.on_auto_layout_clicked(dialog)
             save.assert_not_called()
-            switch.assert_called_once_with("自动布局 · Game", {"window_title": "Game", "layout": {}, "mode": "auto"})
+            switch.assert_called_once_with("我的自动布局", {"window_title": "Game", "layout": {}, "mode": "auto"})
             self.window.worker.command_completed.emit(51, "switch_layout", True, "")
-            save.assert_called_once_with("自动布局 · Game", "Game", {}, mode="auto")
+            save.assert_called_once_with("我的自动布局", "Game", {}, mode="auto")
         dialog.close()
 
     def test_auto_layout_cancel_does_not_change_configuration(self) -> None:
         """取消窗口选择不发命令也不写配置。"""
         dialog = SettingsDialog(self.window)
         with patch("ui.main_window.list_visible_window_titles", return_value=["Game"]), patch(
-            "ui.main_window.QInputDialog.getItem", return_value=("", False),
-        ), patch.object(self.window.worker, "switch_layout") as switch, patch.object(
+            "ui.main_window.AutoLayoutDialog",
+        ) as editor, patch.object(self.window.worker, "switch_layout") as switch, patch.object(
             settings, "save_window_layout",
         ) as save:
+            editor.return_value.exec.return_value = 0
+            editor.return_value.DialogCode.Accepted = 1
             self.window.on_auto_layout_clicked(dialog)
             switch.assert_not_called()
             save.assert_not_called()
         dialog.close()
+
+    def test_named_auto_preset_persists_after_ack_and_is_reusable_without_window_picker(self) -> None:
+        """命名自动布局保存完整目标，重开后直接选用而不再次枚举窗口。"""
+        from config.store import read_config
+        dialog = SettingsDialog(self.window, on_layout_change_callback=self.window.on_layout_changed)
+        self.addCleanup(dialog.close)
+        self.window._settings_dialog = dialog
+        self.window.worker.state = 'ready'
+        with patch('ui.main_window.list_visible_window_titles', return_value=['Game']), \
+                patch('ui.main_window.AutoLayoutDialog') as editor, \
+                patch.object(self.window.worker, 'switch_layout', return_value=71):
+            editor.return_value.exec.return_value = 1
+            editor.return_value.DialogCode.Accepted = 1
+            editor.return_value.layout_name = '可复用自动布局'
+            editor.return_value.window_title = 'Game'
+            self.window.on_auto_layout_clicked(dialog)
+            self.assertNotIn('可复用自动布局', settings.WINDOW_LAYOUTS)
+            self.window.worker.command_completed.emit(71, 'switch_layout', True, '')
+        saved = read_config(settings.CONFIG_PATH)
+        expected = {'window_title': 'Game', 'mode': 'auto', 'layout': {}}
+        self.assertEqual(saved['window_layouts']['可复用自动布局'], expected)
+        self.assertEqual(saved['current_layout'], '可复用自动布局')
+        reopened = SettingsDialog(self.window, on_layout_change_callback=self.window.on_layout_changed)
+        self.addCleanup(reopened.close)
+        self.assertEqual(reopened.combo_auto_layout.currentText(), '可复用自动布局')
+        with patch('ui.main_window.list_visible_window_titles') as picker, \
+                patch.object(self.window.worker, 'switch_layout', return_value=72) as switch:
+            reopened.combo_auto_layout.activated.emit(reopened.combo_auto_layout.currentIndex())
+            switch.assert_called_once_with('可复用自动布局', expected)
+            picker.assert_not_called()
+            self.window.worker.command_completed.emit(72, 'switch_layout', True, '')
+
+    def test_failed_auto_preset_creation_does_not_save_or_change_current_layout(self) -> None:
+        """后端拒绝新自动布局时不写入草稿，也不更改活动布局。"""
+        old_name = self.window.layout_name
+        dialog = SettingsDialog(self.window)
+        self.addCleanup(dialog.close)
+        self.window.worker.state = 'ready'
+        with patch('ui.main_window.list_visible_window_titles', return_value=['Game']), \
+                patch('ui.main_window.AutoLayoutDialog') as editor, \
+                patch.object(self.window.worker, 'switch_layout', return_value=73), \
+                patch.object(settings, 'save_window_layout') as save:
+            editor.return_value.exec.return_value = 1
+            editor.return_value.DialogCode.Accepted = 1
+            editor.return_value.layout_name = '未成功的自动布局'
+            editor.return_value.window_title = 'Game'
+            self.window.on_auto_layout_clicked(dialog)
+            self.window.worker.command_completed.emit(73, 'switch_layout', False, '拒绝')
+            save.assert_not_called()
+        self.assertEqual(self.window.layout_name, old_name)
+
+    def test_mode_click_switches_saved_layout_and_rolls_back_after_failure(self) -> None:
+        """模式点击提交完整配置，失败恢复实际模式，不把默认首项冒充已应用。"""
+        manual = deepcopy(next(value for value in settings.WINDOW_LAYOUTS.values() if value.get('mode') != 'auto'))
+        layouts = {'手动一': manual, '手动二': manual,
+                   '自动一': {'window_title': 'Game A', 'mode': 'auto', 'layout': {}}}
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), patch.object(settings, 'CURRENT_LAYOUT', '自动一'), \
+                patch.dict(settings.config, {'last_layouts': {'manual': '手动二', 'auto': '自动一'}}):
+            self.window.layout_name = '自动一'
+            dialog = SettingsDialog(self.window, on_layout_change_callback=self.window.on_layout_changed)
+            self.addCleanup(dialog.close)
+            self.window._settings_dialog = dialog
+            self.window.worker.state = 'ready'
+            with patch.object(self.window.worker, 'switch_layout', return_value=63) as switch:
+                dialog.btn_layout_manual.click()
+                switch.assert_called_once_with('手动二', settings.validate_layout(manual))
+                self.assertEqual(settings.CURRENT_LAYOUT, '自动一')
+                self.window.worker.command_completed.emit(63, 'switch_layout', False, '失败')
+            self.assertEqual(dialog.layout_mode_stack.currentIndex(), 0)
+            self.assertEqual(settings.CURRENT_LAYOUT, '自动一')
+            self.assertEqual(self.window.layout_name, '自动一')
+
+    def test_mode_ack_persists_both_choices_and_reopens_the_same_layout(self) -> None:
+        """模式切换成功原子保存两类历史，重开恢复确认过的模式和名称。"""
+        from config.store import read_config
+        manual = deepcopy(next(value for value in settings.WINDOW_LAYOUTS.values() if value.get('mode') != 'auto'))
+        layouts = {'手动一': manual, '自动一': {'window_title': 'Game A', 'mode': 'auto', 'layout': {}}}
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), patch.object(settings, 'CURRENT_LAYOUT', '自动一'), \
+                patch.dict(settings.config, {'last_layouts': {'manual': '手动一', 'auto': '自动一'}}):
+            self.window.layout_name = '自动一'
+            dialog = SettingsDialog(self.window, on_layout_change_callback=self.window.on_layout_changed)
+            self.addCleanup(dialog.close)
+            self.window._settings_dialog = dialog
+            self.window.worker.state = 'ready'
+            with patch.object(self.window.worker, 'switch_layout', return_value=64):
+                dialog.btn_layout_manual.click()
+                self.window.worker.command_completed.emit(64, 'switch_layout', True, '')
+            saved = read_config(settings.CONFIG_PATH)
+            self.assertEqual(saved['current_layout'], '手动一')
+            self.assertEqual(saved['last_layouts'], {'manual': '手动一', 'auto': '自动一'})
+            # 首次旧配置缺历史时，也应保留切换前的活动自动布局。
+            reopened = SettingsDialog(self.window)
+            self.addCleanup(reopened.close)
+            self.assertEqual(reopened.layout_mode_stack.currentIndex(), 1)
+            self.assertEqual(reopened.combo_layout.currentText(), '手动一')
+            self.assertEqual(reopened.combo_auto_layout.currentText(), '自动一')
+
+    def test_empty_mode_does_not_silently_apply_another_mode(self) -> None:
+        """无自动布局时明确提示新建，不发出手动项或占位名称。"""
+        layouts = {'手动一': next(value for value in settings.WINDOW_LAYOUTS.values() if value.get('mode') != 'auto')}
+        calls: list[str] = []
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), patch.object(settings, 'CURRENT_LAYOUT', '手动一'):
+            dialog = SettingsDialog(self.window, on_layout_change_callback=calls.append)
+            self.addCleanup(dialog.close)
+            with patch('ui.settings_dialog.QMessageBox.information') as notice:
+                dialog.btn_layout_auto.click()
+                notice.assert_called_once()
+            self.assertFalse(dialog.combo_auto_layout.isEnabled())
+            self.assertEqual(calls, [])
+
+    def test_returning_to_original_mode_before_ack_still_submits_latest_choice(self) -> None:
+        """切换尚未回执时点回原模式也发请求，不因旧current_layout误判无操作。"""
+        manual = deepcopy(next(value for value in settings.WINDOW_LAYOUTS.values() if value.get('mode') != 'auto'))
+        layouts = {'手动一': manual, '自动一': {'window_title': 'Game', 'mode': 'auto', 'layout': {}}}
+        calls: list[str] = []
+        with patch.object(settings, 'WINDOW_LAYOUTS', layouts), patch.object(settings, 'CURRENT_LAYOUT', '自动一'):
+            dialog = SettingsDialog(self.window, on_layout_change_callback=calls.append)
+            self.addCleanup(dialog.close)
+            dialog.btn_layout_manual.click()
+            dialog.btn_layout_auto.click()
+            self.assertEqual(calls, ['手动一', '自动一'])
+
+    def test_donation_button_opens_existing_settings_donation_tab(self) -> None:
+        """标题栏入口复用正常设置页与暂停恢复流程，不新建二维码页面。"""
+        from PySide6.QtWidgets import QDialog
+        opened: list[SettingsDialog] = []
+
+        def fake_exec(dialog: SettingsDialog) -> int:
+            """检查模态设置当前页并模拟关闭。
+
+            Args:
+                dialog: 正常设置对话框实例。
+            Returns:
+                模拟用户关闭的返回码。
+            """
+            opened.append(dialog)
+            self.assertIs(dialog.tab_widget.currentWidget(), dialog.tab4)
+            self.assertTrue(self.window._is_settings_open)
+            return QDialog.DialogCode.Rejected
+
+        self.assertFalse(self.window.btn_donation.icon().isNull())
+        self.assertEqual(self.window.btn_donation.toolTip(), '赞赏')
+        with patch.object(SettingsDialog, 'exec', new=fake_exec):
+            self.window.btn_donation.click()
+        self.assertEqual(len(opened), 1)
+        self.assertFalse(self.window._is_settings_open)
+        self.assertIsNone(self.window._settings_dialog)
+        opened[0].close()
+
+    def test_donation_entry_reuses_already_open_settings(self) -> None:
+        """设置已经打开时只跳页，不再建立第二个设置窗口。"""
+        dialog = SettingsDialog(self.window)
+        self.addCleanup(dialog.close)
+        self.window._settings_dialog = dialog
+        with patch('ui.main_window.SettingsDialog') as factory:
+            self.window.on_donation_clicked()
+            factory.assert_not_called()
+        self.assertIs(dialog.tab_widget.currentWidget(), dialog.tab4)
 
     def test_layout_status_does_not_overwrite_worker_failure(self) -> None:
         """自动定位提示不能覆盖进程异常原因。"""
