@@ -30,7 +30,7 @@ This repository currently maintains the **Windows Dou Dizhu application**. It do
 
 ## Source installation
 
-Use Windows and 64-bit Python 3.11. Alternatively, download the CPU or CPU/GPU Windows ZIP from [Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3). The [usage guide](docs/使用指南.md) covers EXE operation and settings first, then source installation.
+Use Windows and 64-bit Python 3.11. Alternatively, download a CPU ZIP or CPU/GPU 7z archive from [Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3). The [usage guide](docs/使用指南.md) covers EXE operation and settings first, then source installation.
 
 ```powershell
 git clone https://github.com/hey-three/han-card-tracker.git
@@ -57,7 +57,7 @@ Missing bottom cards pause updates. A consecutive-frame and elapsed-time thresho
 
 ## Releases and verification
 
-[Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3) provides a CPU-only ZIP without CUDA libraries and a larger CPU/GPU ZIP supporting CPU and compatible NVIDIA CUDA GPUs. Extract the entire archive before launching HanCardTracker.exe. See [CHANGELOG](CHANGELOG.md).
+[Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3) provides a CPU-only ZIP without CUDA libraries and a larger CPU/GPU 7z archive supporting CPU and compatible NVIDIA CUDA GPUs. Extract the entire archive before launching HanCardTracker.exe; the 7z format can be opened with [7-Zip](https://www.7-zip.org/). See [CHANGELOG](CHANGELOG.md).
 
 The diagnostic update passed 203 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) groups evidence into per-round folders under a recording session. Its total disk budget defaults to 1 GiB and is adjustable in advanced settings (0.1–1024 GiB); retention removes sealed old rounds while protecting the current round. It records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Queue/memory backpressure recovers automatically with explicit gap records. Disk/write failures still pause diagnostics. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
 
