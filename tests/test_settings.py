@@ -181,6 +181,18 @@ class SettingsTests(unittest.TestCase):
                 settings.save_window_layout("new", "Window", existing["layout"])
         self.assertNotIn("new", settings.WINDOW_LAYOUTS)
 
+    def test_cpu_bundle_rejects_gpu_without_changing_saved_device(self) -> None:
+        """CPU发布版本拒绝GPU配置，持久化和运行时都不留下伪GPU选择。"""
+        settings.save_setting('device_choice', 'cpu')
+        before = self.path.read_bytes()
+        with patch.object(settings, 'CPU_ONLY_BUILD', True):
+            with self.assertRaisesRegex(ValueError, 'CPU版'):
+                settings.save_setting('device_choice', 'cuda')
+            with self.assertRaisesRegex(ValueError, 'CPU版'):
+                settings.apply_runtime_settings({'DEVICE_CHOICE': 'cuda'})
+        self.assertEqual(settings.DEVICE_CHOICE, 'cpu')
+        self.assertEqual(self.path.read_bytes(), before)
+
     def test_new_layout_roundtrip_and_delete(self) -> None:
         """保存完整布局后，删除它会选择仍存在的布局。"""
         existing = next(iter(settings.WINDOW_LAYOUTS.values()))

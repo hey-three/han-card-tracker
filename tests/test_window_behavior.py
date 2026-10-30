@@ -222,6 +222,101 @@ class WindowBehaviorTests(unittest.TestCase):
         self.assertTrue(dialog.switch_full_diagnostics.isChecked())
         self.assertEqual(dialog.switch_full_diagnostics.receivers('2value_changed(int)'), 1)
 
+    def test_preview_click_does_not_restore_pending_disabled_diagnostics(self) -> None:
+        """关闭诊断回执未到时打开预览，整页刷新不能把诊断开关改回开启。"""
+        settings.save_setting('full_diagnostics', True)
+        self.window.worker.state = 'ready'
+        dialog = SettingsDialog(self.window,
+            on_show_current_screenshot_change_callback=self.window.on_show_current_screenshot_changed)
+        self.addCleanup(delete, dialog)
+        self.addCleanup(dialog.close)
+        dialog.diagnostics_changed.connect(self.window.on_full_diagnostics_changed)
+        self.window._settings_dialog = dialog
+        self.window._refresh_open_settings()
+        dialog.tab_widget.setCurrentWidget(dialog.tab2)
+        dialog.show()
+        self.settle_events()
+        with patch.object(self.window.worker, 'update_settings', side_effect=[211, 212]) as update:
+            QTest.mouseClick(dialog.switch_full_diagnostics, Qt.MouseButton.LeftButton)
+            self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+            self.assertTrue(settings.FULL_DIAGNOSTICS)  # 保存必须等待回执。
+            QTest.mouseClick(dialog.switch_show_current_screenshot, Qt.MouseButton.LeftButton)
+            self.assertTrue(dialog.switch_show_current_screenshot.isChecked())
+            self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+            self.assertEqual([call.args[0] for call in update.call_args_list],
+                             [{'FULL_DIAGNOSTICS': False}, {'SHOW_CURRENT_SCREENSHOT': True}])
+            self.window.worker.command_completed.emit(212, 'update_settings', True, '')
+            self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+            self.window.worker.command_completed.emit(211, 'update_settings', True, '')
+        self.assertFalse(settings.FULL_DIAGNOSTICS)
+        saved = read_config(str(self.config_path))
+        self.assertFalse(saved['full_diagnostics'])
+        self.assertTrue(saved['show_current_screenshot'])
+
+    def test_pending_diagnostics_survives_reopen_and_failure_rolls_back_only_itself(self) -> None:
+        """等待诊断开启回执时重开设置保留选择；失败只恢复诊断，不关闭预览。"""
+        settings.save_setting('full_diagnostics', False)
+        self.window.worker.state = 'ready'
+        dialog = SettingsDialog(self.window,
+            on_show_current_screenshot_change_callback=self.window.on_show_current_screenshot_changed)
+        self.addCleanup(delete, dialog)
+        self.addCleanup(dialog.close)
+        dialog.diagnostics_changed.connect(self.window.on_full_diagnostics_changed)
+        self.window._settings_dialog = dialog
+        self.window._refresh_open_settings()
+        with patch.object(self.window.worker, 'update_settings', side_effect=[221, 222]):
+            dialog.switch_full_diagnostics.click()
+            dialog.switch_show_current_screenshot.click()
+            self.assertTrue(dialog.switch_full_diagnostics.isChecked())
+            dialog.close()
+            reopened = SettingsDialog(self.window)
+            self.addCleanup(delete, reopened)
+            self.addCleanup(reopened.close)
+            self.window._settings_dialog = reopened
+            self.window._refresh_open_settings()
+            self.assertTrue(reopened.switch_full_diagnostics.isChecked())
+            self.assertFalse(settings.FULL_DIAGNOSTICS)
+            self.window.worker.command_completed.emit(222, 'update_settings', True, '')
+            self.assertTrue(reopened.switch_full_diagnostics.isChecked())
+            self.window.worker.command_completed.emit(221, 'update_settings', False, 'writer unavailable')
+        self.assertFalse(reopened.switch_full_diagnostics.isChecked())
+        self.assertTrue(reopened.switch_show_current_screenshot.isChecked())
+        self.assertFalse(settings.FULL_DIAGNOSTICS)
+        self.assertTrue(settings.SHOW_CURRENT_SCREENSHOT)
+
+    def test_older_diagnostic_ack_does_not_override_latest_choice(self) -> None:
+        """快速开关诊断并打开预览，较早回执不能覆盖最后一次选择。"""
+        settings.save_setting('full_diagnostics', False)
+        self.window.worker.state = 'ready'
+        dialog = SettingsDialog(self.window,
+            on_show_current_screenshot_change_callback=self.window.on_show_current_screenshot_changed)
+        self.addCleanup(delete, dialog)
+        self.addCleanup(dialog.close)
+        dialog.diagnostics_changed.connect(self.window.on_full_diagnostics_changed)
+        self.window._settings_dialog = dialog
+        self.window._refresh_open_settings()
+        with patch.object(self.window.worker, 'update_settings', side_effect=[231, 232, 233, 234]) as update:
+            dialog.switch_full_diagnostics.click()
+            dialog.switch_full_diagnostics.click()
+            dialog.switch_show_current_screenshot.click()
+            self.window.worker.command_completed.emit(231, 'update_settings', True, '')
+            self.assertTrue(settings.FULL_DIAGNOSTICS)
+            self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+            self.window.worker.command_completed.emit(233, 'update_settings', True, '')
+            self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+            self.window.worker.command_completed.emit(232, 'update_settings', True, '')
+            self.assertFalse(settings.FULL_DIAGNOSTICS)
+            dialog.switch_show_current_screenshot.click()
+            self.window.worker.command_completed.emit(234, 'update_settings', True, '')
+        self.assertFalse(dialog.switch_full_diagnostics.isChecked())
+        self.assertFalse(dialog.switch_show_current_screenshot.isChecked())
+        self.assertEqual([call.args[0] for call in update.call_args_list],
+                         [{'FULL_DIAGNOSTICS': True}, {'FULL_DIAGNOSTICS': False},
+                          {'SHOW_CURRENT_SCREENSHOT': True}, {'SHOW_CURRENT_SCREENSHOT': False}])
+        saved = read_config(str(self.config_path))
+        self.assertFalse(saved['full_diagnostics'])
+        self.assertFalse(saved['show_current_screenshot'])
+
     def test_preview_width_and_shrinking_after_large_image(self) -> None:
         """预览按上下排列默认宽度，大图不强迫扩大，仍可手动缩小。"""
         from ui.window_metrics import COMPACT_WINDOW_WIDTH

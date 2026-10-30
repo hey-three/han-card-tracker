@@ -1,106 +1,46 @@
 always_on_top: true
 big_joker_shown: 🃏
-current_layout: 欢乐斗地主
+current_layout: 自动布局 · MuMu欢乐斗地主
 debug_mode: false
-detect_interval_sec: 0.2
+detect_interval_sec: 0.25
 device_choice: cuda
 frame_length: 3
 little_joker_shown: 🃟
 reset_time: 2.0
-show_current_screenshot: true
+show_current_screenshot: false
 show_played_cards: true
 show_timing: true
 window_layouts:
-  JJ斗地主(全屏):
-    layout:
-      landlord_cards:
-      - 0.37
-      - 0
-      - 0.55
-      - 0.08
-      opponent_left:
-      - 0.2
-      - 0.25
-      - 0.47
-      - 0.45
-      opponent_right:
-      - 0.48
-      - 0.25
-      - 0.85
-      - 0.45
-      player_hand:
-      - 0.04
-      - 0.7
-      - 0.96
-      - 0.85
-      player_played:
-      - 0.04
-      - 0.46
-      - 0.96
-      - 0.57
-    window_title: JJ斗地主
-  JJ斗地主(含控件):
-    layout:
-      landlord_cards:
-      - 0.35
-      - 0.08
-      - 0.45
-      - 0.15
-      opponent_left:
-      - 0.2
-      - 0.32
-      - 0.455
-      - 0.49
-      opponent_right:
-      - 0.46
-      - 0.32
-      - 0.8
-      - 0.49
-      player_hand:
-      - 0.04
-      - 0.7
-      - 0.96
-      - 0.85
-      player_played:
-      - 0.04
-      - 0.5
-      - 0.96
-      - 0.6
-    window_title: JJ斗地主
-  自动布局 · MuMu安卓设备:
-    window_title: MuMu安卓设备
-    layout: {}
-    mode: auto
   欢乐斗地主:
     window_title: MuMu安卓设备
     layout:
       player_hand:
-      - 0.12062256809338522
-      - 0.6199813258636788
-      - 0.9516397998888271
-      - 0.7992530345471522
+      - 0.12055555555555555
+      - 0.6203358208955224
+      - 0.9516666666666667
+      - 0.7994402985074627
       player_played:
-      - 0.1851028349082824
-      - 0.47992530345471524
-      - 0.8510283490828238
-      - 0.5536881419234361
+      - 0.21777777777777776
+      - 0.4766791044776119
+      - 0.82
+      - 0.5970149253731343
       opponent_left:
-      - 0.21011673151750973
-      - 0.27450980392156865
-      - 0.45136186770428016
-      - 0.4407096171802054
+      - 0.16166666666666665
+      - 0.2826492537313433
+      - 0.4688888888888889
+      - 0.435634328358209
       opponent_right:
-      - 0.49082823790994995
-      - 0.2819794584500467
-      - 0.7537520844913841
-      - 0.4304388422035481
+      - 0.4811111111111111
+      - 0.28451492537313433
+      - 0.7933333333333333
+      - 0.435634328358209
       landlord_cards:
-      - 0.41856586992773764
-      - 0.04481792717086835
-      - 0.7759866592551418
-      - 0.14752567693744165
-  自动布局 · MuMu模拟器:
-    window_title: MuMu模拟器
+      - 0.43722222222222223
+      - 0.03451492537313433
+      - 0.5672222222222222
+      - 0.15298507462686567
+  自动布局 · MuMu欢乐斗地主:
+    window_title: MuMu安卓设备
     layout: {}
     mode: auto
 yolo_confidence_threshold: 0.6
@@ -124,9 +64,9 @@ yolo_to_card_mapping:
   two: '2'
 show_layout_status: true
 packed_inference: false
-full_diagnostics: true
-diagnostic_disk_gib: 6.6
+full_diagnostics: false
+diagnostic_disk_gib: 2.1
 panel_arrangement: horizontal
 last_layouts:
-  auto: 自动布局 · MuMu安卓设备
   manual: 欢乐斗地主
+  auto: 自动布局 · MuMu欢乐斗地主

@@ -6,7 +6,14 @@
 
 A Windows Dou Dizhu card counter and playing-card detection application built with Python, YOLO and PySide6. It tracks remaining cards and play history from a visible game window, with automatic layout detection or user-defined regions and packed inference.
 
-![Han记牌器Windows界面：剩余牌数量与出牌历史，界面示意可能早于当前源码](images/1%20%281%29.png)
+![Han记牌器上下排列：剩余牌数量与出牌历史](images/interface1.png)
+
+![Han记牌器左右排列：长条界面](images/interface2.png)
+
+## 使用注意
+
+1. **当前优先使用原图检测。** 随附YOLO模型的训练数据全部是游戏原图，尚未充分覆盖本程序生成的拼图，当前拼图检测的识别准确率和稳定性较低。手动布局可在“基本设置 → 手动框选 → 检测方式”切换为原图；自动布局始终整图识别。
+2. **框选大小王时必须包含完整的 J、O、K 三个字母。** 训练标注覆盖的是这三个字母，不能只框住 J，或只框住 J、O。请给手牌和出牌区域留足空间，让大小王的三个字母都落在框内，否则可能漏检或误识别。
 
 ## 能做什么
 
@@ -27,22 +34,19 @@ A Windows Dou Dizhu card counter and playing-card detection application built wi
 ## 下载与版本
 
 - 当前功能以 `main` 源码与 [更新记录](CHANGELOG.md) 为准。
-- [Releases](https://github.com/hey-three/han-card-tracker/releases) 中目前可见的是历史 `v2.3` 压缩包；它不代表当前 V4.3.3 源码已打包。此状态于2026-10-27核对。
+- Windows发布包分为 **CPU版** 和 **CPU/GPU版**，下载入口与使用方法见[使用指南](docs/使用指南.md)。CPU版不包含CUDA运行库，体积较小；CPU/GPU版支持CPU以及兼容CUDA的NVIDIA显卡。请完整解压后运行包内EXE。
 - YOLO 权重位于仓库 `yolo/weights/<模型目录>/best.pt`。训练代码在独立的 [yolo-for-han-card-tracker](https://github.com/hey-three/yolo-for-han-card-tracker) 仓库；不把旧版发布包描述成已提供训练数据集。
 
 ## 从源码启动
 
-需要 Windows。源码采用 Python 3.10+ 语法；安装还需满足固定依赖的 Python 版本与平台要求。建议先用 Python 3.11/3.12 建立独立环境，完整步骤和限制见[安装说明](docs/使用指南.md#安装依赖)。新增模型须在best.pt旁放置model_config.yaml，填写实际训练输入宽高，参考[模型放置与尺寸规范](docs/模型训练与拼图约定.md)。
+需要 Windows 和 Python 3.11（64位）。[使用指南](docs/使用指南.md)先介绍 EXE 使用与常用设置，再给出[源码安装步骤](docs/使用指南.md#安装依赖)。新增模型须在best.pt旁放置model_config.yaml，填写实际训练输入宽高，参考[模型放置与尺寸规范](docs/模型训练与拼图约定.md)。
 
 ```powershell
 git clone https://github.com/hey-three/han-card-tracker.git
 cd han-card-tracker
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install -r requirements.txt
-python main.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+.\.venv\Scripts\python.exe main.py
 ```
 
 `requirements.txt` 固定了 CUDA 12.1 版 PyTorch，不能假定任意 Python 或仅用默认包索引都可安装。上述安装路径遵循 [PyTorch 官方旧版本说明](https://pytorch.org/get-started/previous-versions/)，本次文档维护没有重做全新环境安装或升级依赖。
@@ -52,7 +56,7 @@ python main.py
 1. 打开目标游戏窗口，保持可见且未被遮挡。
 2. 在“设置 → 基本设置”新建自动布局，选择游戏窗口并命名保存；或新建手动布局，框选手牌、本家出牌、上家出牌、下家出牌、底牌五区。两种模式分别记住上次使用的布局，点击模式即可切换。
 3. 手动布局可在“基本设置 → 手动框选 → 检测方式”选择**拼图检测／原图检测**。该选择为所有手动布局共用；自动布局始终整图。
-4. 建议从开局前启用，观察底部状态及“实时显示 YOLO 输入”，核对第一次扣牌与后续出牌。
+4. 建议从开局前启用，观察顶部状态及“实时显示 YOLO 输入”，核对第一次扣牌与后续出牌。
 
 ## 开局与计数规则
 
@@ -89,3 +93,14 @@ python main.py
 - 贡献：[CONTRIBUTING.md](CONTRIBUTING.md) · [AGENTS.md](AGENTS.md) · [维护与发布](docs/维护与发布.md)
 
 仓库许可证为 [MIT](LICENSE)；第三方组件、模型及数据使用各自许可证。使用时遵守目标软件的适用规则。
+
+## 下一步开发计划
+
+- 改善拼图检测：补充实际拼图训练样本，检查缩放与切片对识别的影响。
+- 优先改善地主底牌检测：当前误检和漏检主要集中在底牌区，原图中的底牌目标较小，且地主打出对应底牌后牌面颜色会变淡，需要补充这类训练样本并改进识别稳定性。
+- 改善大小王识别，并修复漏检变化造成同一手牌被重复记入历史的问题。
+- 推进Android移植，适配手机截图、浮窗和端侧推理；尚未提供安卓APK。
+
+## Star 趋势
+
+[![Star History Chart](https://api.star-history.com/svg?repos=hey-three/han-card-tracker&type=Date)](https://www.star-history.com/#hey-three/han-card-tracker&Date)

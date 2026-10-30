@@ -647,7 +647,7 @@ class SettingsDialog(QDialog):
             basic_layout,
             "设备选择：",
             "DeviceCombo",
-            ["CPU", "GPU"],
+            ["CPU"] if settings.CPU_ONLY_BUILD else ["CPU", "GPU"],
             self._on_device_changed,
         )
 
@@ -1174,7 +1174,7 @@ class SettingsDialog(QDialog):
                 self._set_combo_current_safely(self.combo_model, idx)
 
     def _setup_about_settings(self) -> None:
-        """展示首行缩进的项目介绍、GitHub使用说明和作者联系邮箱。"""
+        """优先展示使用指南入口，并保留项目介绍、GitHub主页和联系邮箱。"""
         # 创建关于页面的布局
         about_layout = QVBoxLayout(self.tab3)
         about_layout.setContentsMargins(20, 20, 20, 20)
@@ -1195,18 +1195,24 @@ class SettingsDialog(QDialog):
         about_layout.addWidget(description_label)
 
         project_url = 'https://github.com/hey-three/han-card-tracker'
-        project_label = QLabel(f'<a href="{project_url}">查看使用说明与更多信息（GitHub）</a>')
+        guide_url = project_url+'/blob/main/docs/%E4%BD%BF%E7%94%A8%E6%8C%87%E5%8D%97.md'
+        guide_label = QLabel(f'<a href="{guide_url}">使用说明（安装与操作指南）</a>')
+        guide_label.setObjectName('AboutUsageGuideLink')
+        guide_label.setToolTip(guide_url)
+        project_label = QLabel(f'<a href="{project_url}">GitHub 项目主页</a>')
         project_label.setObjectName('AboutProjectLink')
         project_label.setToolTip(project_url)
         contact_label = QLabel('联系邮箱：<a href="mailto:jiangfan0519@qq.com">jiangfan0519@qq.com</a>')
         contact_label.setObjectName('AboutContactEmail')
-        for label in (project_label, contact_label):
+        for label in (guide_label, project_label, contact_label):
             label.setTextFormat(Qt.TextFormat.RichText)
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextBrowserInteraction)
             label.setOpenExternalLinks(True)
             label.setStyleSheet('font-size: 12px;')
-            about_layout.addWidget(label)
+        about_layout.insertWidget(1, guide_label)
+        about_layout.addWidget(project_label)
+        about_layout.addWidget(contact_label)
 
         # 添加弹性空间
         about_layout.addStretch()

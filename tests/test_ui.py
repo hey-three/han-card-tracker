@@ -28,6 +28,15 @@ class UITests(unittest.TestCase):
         """保留 QApplication 实例。"""
         cls.app = QApplication.instance() or QApplication([])
 
+    def test_cpu_bundle_only_offers_cpu_device(self) -> None:
+        """CPU发布版本只展示CPU，普通源码与CPU/GPU版仍保留两个选项。"""
+        for cpu_only, expected in ((True, ['CPU']), (False, ['CPU', 'GPU'])):
+            with self.subTest(cpu_only=cpu_only), patch.object(settings, 'CPU_ONLY_BUILD', cpu_only):
+                dialog = SettingsDialog(self.window)
+                self.assertEqual([dialog.combo_device.itemText(i) for i in range(dialog.combo_device.count())], expected)
+                dialog.close()
+                dialog.deleteLater()
+
     def setUp(self) -> None:
         """隔离个人配置并创建真实界面，清理时主动销毁 Qt 对象与子定时器。"""
         directory = Path(__file__).parent / '.tmp' / uuid4().hex

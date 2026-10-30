@@ -9,6 +9,8 @@ from typing import TypedDict, cast
 
 from config.store import read_config, write_config
 
+CPU_ONLY_BUILD = bool(getattr(sys, '_han_cpu_only', False))
+
 # ==================== 路径配置 ====================
 # BASE_DIR: 可写运行目录（用于持久化配置/调试输出）
 # RESOURCE_DIR: 资源读取目录（兼容 PyInstaller 的 _internal 布局）
@@ -327,7 +329,7 @@ PACKED_INFERENCE = config.get('packed_inference', True)  # 手动布局检测方
 
 # ==================== 设备选择配置 ====================
 # 设备选择选项: "cpu" (使用CPU), "cuda" (使用GPU)
-DEVICE_CHOICE = config.get('device_choice', 'cuda')
+DEVICE_CHOICE = 'cpu' if CPU_ONLY_BUILD else config.get('device_choice', 'cuda')
 
 # ==================== 窗口显示配置 ====================
 # 是否显示在最上层
@@ -419,6 +421,8 @@ def _validate_setting(key: str, value: object) -> None:
         raise ValueError(f"{key} 不能为空")
     if key == "device_choice" and value not in ("cpu", "cuda"):
         raise ValueError("设备必须是 cpu 或 cuda")
+    if key == 'device_choice' and CPU_ONLY_BUILD and value != 'cpu':
+        raise ValueError('当前是CPU版，使用GPU请下载CPU/GPU版')
     if key == "panel_arrangement" and value not in ("vertical", "horizontal"):
         raise ValueError('界面排列只能是 vertical 或 horizontal')
 
