@@ -19,7 +19,7 @@ a = Analysis(
     hiddenimports=collect_submodules('ultralytics.nn') + ['win32timezone'],
     runtime_hooks=[str(root/'scripts/packaging/runtime_cpu.py')] if cpu_only else [],
     excludes=['IPython', 'jupyter', 'pytest', 'PyQt5', 'PyQt6', 'tensorflow', 'keras',
-              'jax', 'tensorrt', 'tkinter', 'torchaudio', 'torch.testing._internal', 'torch.utils.tensorboard'],
+              'jax', 'tensorrt', 'tkinter', 'torchaudio', 'torch.utils.tensorboard'],
     noarchive=False,
 )
 # Qt使用Windows自带的无版本后缀ICU API，不能误收PATH中Poppler等工具的ICU。

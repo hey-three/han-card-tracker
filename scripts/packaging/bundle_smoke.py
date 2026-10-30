@@ -103,10 +103,12 @@ def verify_bundle(report: Path, device: str) -> int:
         result['guide_url'] = guide.toolTip()
         dialog.close()
         worker_process = window.worker._process
+        worker_handle = worker_process._popen if worker_process is not None else None
         window.close()
         app.processEvents()
-        if worker_process is not None and worker_process.exitcode != 0:
-            raise RuntimeError(f'冻结Worker未正常退出：{worker_process.exitcode}')
+        # InferenceWorker.stop会关闭Process对象；保留已缓存退出码的Popen引用。
+        if worker_handle is None or worker_handle.returncode != 0:
+            raise RuntimeError('冻结Worker未正常退出')
         context = mp.get_context('spawn')
         channel = context.Queue()
         process = context.Process(target=model_probe, args=(device, channel))
