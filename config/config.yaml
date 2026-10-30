@@ -1,13 +1,13 @@
 always_on_top: true
 big_joker_shown: 🃏
-current_layout: 自动布局 · MuMu安卓设备
+current_layout: 欢乐斗地主
 debug_mode: false
 detect_interval_sec: 0.2
 device_choice: cuda
 frame_length: 3
 little_joker_shown: 🃟
 reset_time: 2.0
-show_current_screenshot: false
+show_current_screenshot: true
 show_played_cards: true
 show_timing: true
 window_layouts:
@@ -90,10 +90,10 @@ window_layouts:
       - 0.45136186770428016
       - 0.4407096171802054
       opponent_right:
-      - 0.4919399666481378
+      - 0.49082823790994995
       - 0.2819794584500467
-      - 0.725958866036687
-      - 0.4407096171802054
+      - 0.7537520844913841
+      - 0.4304388422035481
       landlord_cards:
       - 0.41856586992773764
       - 0.04481792717086835
@@ -105,7 +105,7 @@ window_layouts:
     mode: auto
 yolo_confidence_threshold: 0.6
 yolo_iou_threshold: 0.45
-yolo_model_name: yolov11s
+yolo_model_name: yolov11s960
 yolo_to_card_mapping:
   A: A
   J: J
@@ -123,10 +123,10 @@ yolo_to_card_mapping:
   three: '3'
   two: '2'
 show_layout_status: true
-packed_inference: true
+packed_inference: false
 full_diagnostics: true
-diagnostic_disk_gib: 2.6
+diagnostic_disk_gib: 6.6
 panel_arrangement: horizontal
 last_layouts:
   auto: 自动布局 · MuMu安卓设备
-  manual: JJ斗地主(全屏)
+  manual: 欢乐斗地主

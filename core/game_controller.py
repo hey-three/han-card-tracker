@@ -19,6 +19,9 @@ from core.base_tracker import BaseCardTracker
 from core.auto_layout import AutoLayoutAnalyzer, read_yolo_boxes
 from core.games.doudizhu import BOTTOM_START_FRAMES, DoudizhuTracker
 from core.packed_pipeline import PackedPipeline
+from core.preview_regions import preview_regions
+from core.detection_filter import resolve_duplicate_detections
+from core.frame_packing import read_detections
 
 if TYPE_CHECKING:
     from core.yolo_inferencer import YoloInferencer
@@ -44,7 +47,7 @@ class GameController:
         layout_analyzer: 手动空间分析或自动牌组归属实例。
         tracker: 当前 Tracker 子类实例。
         last_screenshot_jpeg: 预览启用时最近一帧的 JPEG 截图。
-        last_screenshot_regions: 为旧预览协议保留的空区域字典。
+        last_screenshot_regions: 本次实际输入的原图牌区边界或带packed前缀的拼图标签位置。
         packed_pipeline: 同步单帧拼图执行器，处理切口保护和整图回退。
         last_performance: 当前子进程阶段耗时快照，经过回执传回 UI。
     """
@@ -253,6 +256,24 @@ class GameController:
         valid_frame = img is not None and raw_result is not None and getattr(raw_result, "boxes", None) is not None
         size = img.size if img is not None and valid_frame else (0, 0)
         cards = read_yolo_boxes(raw_result, size)
+        visual_started = time.perf_counter()
+        joker_labels = {label for label, card in settings.YOLO_TO_CARD_MAPPING.items() if card in ('大', '小')}
+        jack_labels = {label for label, card in settings.YOLO_TO_CARD_MAPPING.items() if card == 'J'}
+        if img is not None and len(cards) > 1:
+            filtered, removed = resolve_duplicate_detections(
+                read_detections(raw_result), joker_labels=joker_labels, jack_labels=jack_labels,
+            )
+            if removed:
+                raw_result = self.yolo_inferencer.restore_result(raw_result, img, filtered)
+                cards = read_yolo_boxes(raw_result, size)
+                if trace and not trace.cancelled:
+                    trace.payload['visual_filter'] = {
+                        'code': 'duplicate_detections_resolved',
+                        'policy': 'confidence_with_joker_over_j',
+                        'removed': [{'name': item.name, 'bbox': list(item.bbox),
+                                     'confidence': item.confidence} for item in removed],
+                    }
+        visual_filter_ms = (time.perf_counter()-visual_started)*1000
         
         # 几何布局分析（把 raw box 切分到不同区域并做二维排序）
         # 输入：YOLO 原始检测结果 + 图片尺寸
@@ -267,6 +288,20 @@ class GameController:
         else:
             region_boxes = self.layout_analyzer.parse_and_sort(raw_result, img.size if img else (0, 0), names)
             known_regions = set(names) if valid_frame else set()
+        if self.last_screenshot_jpeg is not None:
+            overlay_started = time.perf_counter()
+            if isinstance(self.layout_analyzer, AutoLayoutAnalyzer):
+                self.last_screenshot_regions = preview_regions(
+                    {}, observed=observation.regions, search=self.layout_analyzer.preview_search_regions,
+                    fixed={'landlord_cards': self.layout_analyzer.bottom_region},
+                )
+            else:
+                preview_layout = (self.layout_config['layout'] if self.packed_pipeline.last_input_plan is None else
+                                  {key: self.layout_config['layout'][key] for key in names})
+                self.last_screenshot_regions = preview_regions(
+                    preview_layout, plan=self.packed_pipeline.last_input_plan,
+                )
+            preview_ms += (time.perf_counter()-overlay_started)*1000
         # 业务逻辑映射（将 YOLO 标签转换为游戏牌点名称）
         # 输入：{区域名: [{"bbox": ..., "name": "three"}, ...]}  （YOLO 原始标签）
         # 输出：{区域名: ["3", "A", "小", ...]}  （通过 YOLO_TO_CARD_MAPPING 转换后的业务牌点）
@@ -283,6 +318,7 @@ class GameController:
         finished = time.perf_counter()
         self.last_performance = dict(self.packed_pipeline.timings)
         self.last_performance.update(capture_ms=(captured-started)*1000, model_ms=yolo_ms,
+                                     visual_filter_ms=visual_filter_ms,
                                      preview_ms=preview_ms,
                                      layout_save_ms=(finished-detected)*1000-preview_ms, pipeline_ms=(finished-started)*1000)
         if settings.DEBUG_MODE:

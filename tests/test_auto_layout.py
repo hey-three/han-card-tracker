@@ -272,10 +272,13 @@ class AutoLayoutTests(unittest.TestCase):
         ), patch("core.game_controller.ScreenCapture") as capture:
             capture.return_value.capture_window.return_value = Image.new("RGB", (1000, 800))
             controller = GameController("Auto")
-        controller.yolo_inferencer.detect.return_value = (Mock(), 1.)
-        with patch("core.game_controller.read_yolo_boxes", return_value=self.cards):
-            for _ in range(8):
-                remain, _, _ = controller.detect()
+        from core.frame_packing import Detection
+        from test_packed_pipeline import raw_result
+        detections = [Detection(card.name, tuple(value*(1000 if i % 2 == 0 else 800)
+                                                for i, value in enumerate(card.bbox))) for card in self.cards]
+        controller.yolo_inferencer.detect.return_value = (raw_result(detections), 1.)
+        for _ in range(8):
+            remain, _, _ = controller.detect()
         self.assertEqual(sum(remain.values()), 37)
         self.assertIn("已定位", controller.layout_status)
         controller.reset()

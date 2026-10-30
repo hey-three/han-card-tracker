@@ -223,13 +223,14 @@ class WindowBehaviorTests(unittest.TestCase):
         self.assertEqual(dialog.switch_full_diagnostics.receivers('2value_changed(int)'), 1)
 
     def test_preview_width_and_shrinking_after_large_image(self) -> None:
-        """预览与主窗口同宽；大图不会强迫窗口扩大或阻止缩小。"""
+        """预览按上下排列默认宽度，大图不强迫扩大，仍可手动缩小。"""
+        from ui.window_metrics import COMPACT_WINDOW_WIDTH
         self.window.resize(640, self.window.height())
         preview = ScreenshotPreviewDialog(self.window)
         self.addCleanup(preview.close)
         preview.show()
         self.settle_events()
-        self.assertEqual(preview.width(), self.window.width())
+        self.assertEqual(preview.width(), COMPACT_WINDOW_WIDTH)
         data = BytesIO()
         Image.new("RGB", (3840, 2160), "white").save(data, format="JPEG")
         preview.update_image(data.getvalue())

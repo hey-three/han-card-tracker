@@ -1,0 +1,11 @@
+# 训练开始时权重文件可能尚未生成；训练结束后会更新权重列表。
+model: yolo11n
+initial_weights: E:\ongoing_projects\yolov11\runs\detect\train7\weights\best.pt
+weights:
+- best.pt
+- last.pt
+input:
+  width: 768
+  height: 480
+  resize: letterbox
+  rect: false

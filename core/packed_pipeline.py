@@ -63,6 +63,7 @@ class PackedPipeline:
         route: str，当前路线及回退原因。
         timings: dict[str, float]，当前分阶段毫秒、画布尺寸和模型调用次数。
         last_input: 当前帧最后一次模型调用的原图或拼图，供同步预览编码。
+        last_input_plan: 对应last_input的实际拼图规划；整图、回退或无图时为空。
         scale_profile: 当前布局的单牌尺度学习器。
         _scale_context: 当前完整布局和截图尺寸，用于隔离不同用户选区。
     """
@@ -71,6 +72,7 @@ class PackedPipeline:
         """建立空会话，不申请模型或大型画布。"""
         self._canvas: Image.Image | None = None
         self.last_input: Image.Image | None = None
+        self.last_input_plan: PackingPlan | None = None
         self._plan_key: tuple[object, ...] | None = None
         self._plan: PackingPlan | None = None
         self._metrics: dict[str, float] = {}
@@ -83,6 +85,7 @@ class PackedPipeline:
         """清除几何和画布；不复用上个模型、布局或会话的规划。"""
         self._canvas = None
         self.last_input = None
+        self.last_input_plan = None
         self._plan_key = None
         self._plan = None
         self._metrics = {}
@@ -199,6 +202,7 @@ class PackedPipeline:
         start = perf_counter()
         self.timings = {"prepare_ms": 0., "restore_ms": 0., "model_calls": 0.}
         self.last_input = None
+        self.last_input_plan = None
         reason = ""
         inference_ms = 0.
         if regions is not None and image is not None:
@@ -224,6 +228,7 @@ class PackedPipeline:
                 self.timings["model_calls"] += 1
                 call_started, call_pending = perf_counter(), True
                 self.last_input = canvas
+                self.last_input_plan = plan
                 raw, elapsed = self._model_call(detector, canvas, True, trace, plan)
                 call_pending = False
                 inference_ms += elapsed
@@ -257,6 +262,7 @@ class PackedPipeline:
         if self.timings["prepare_ms"] == 0.:
             self.timings["prepare_ms"] = (perf_counter()-start)*1000
         self.last_input = image
+        self.last_input_plan = None
         result, elapsed = self._model_call(detector, image, False, trace)
         inference_ms += elapsed
         self.timings["model_calls"] += 1

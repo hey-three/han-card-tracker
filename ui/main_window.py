@@ -23,6 +23,7 @@ from ui.settings_controller import SettingsController
 from ui.title_bar import MainTitleBar, clip_native_title_overlay, native_caption_button_width
 from ui.layout_status import compact_layout_status
 from ui.screenshot_preview import ScreenshotPreviewDialog
+from ui.window_metrics import COMPACT_WINDOW_WIDTH
 from utils.layout_editor.service import list_visible_window_titles
 import config.settings as settings
 import time
@@ -31,7 +32,6 @@ import time
 INTERVAL_TEXT_OPTIONS = ["0.1秒", "0.15秒", "0.2秒", "0.25秒", "0.3秒", "0.35秒", "0.4秒", "0.45秒", "0.5秒"]
 RESET_TIME_OPTIONS = [1.0, 1.5, 2.0, 2.5, 3.0, 3.5, 4.0, 4.5, 5.0]
 FRAME_LENGTH_OPTIONS = [1, 2, 3, 4, 5, 6]
-COMPACT_WINDOW_WIDTH = 495  # 原默认550逻辑像素缩减10%。
 HORIZONTAL_WINDOW_WIDTH = 900
 HORIZONTAL_PANEL_MIN_WIDTH = 440
 PLAYED_ZONE_TITLES = {"left": "上", "self": "本", "right": "下"}
@@ -292,7 +292,7 @@ class CardUI(QMainWindow):
         self._open_settings(donation=True)
 
     def _open_settings(self, *, donation: bool = False) -> None:
-        """统一打开设置并暂停检测，赞赏入口复用正常关闭恢复流程。
+        """打开设置时后台检测继续，赞赏入口复用同一窗口与暂停偏好。
 
         Args:
             donation: True直接显示既有赞赏页，False保持默认基本页。
@@ -303,13 +303,8 @@ class CardUI(QMainWindow):
             self._settings_dialog.raise_()
             self._settings_dialog.activateWindow()
             return
-        # 打开设置期间暂停检测
+        # 模态设置使用嵌套Qt事件循环，检测定时器与结果轮询继续工作。
         self._is_settings_open = True
-        try:
-            if hasattr(self, 'timer') and self.timer.isActive():
-                self.timer.stop()
-        except Exception:
-            pass
 
         # 注意：不要把 on_always_on_top_change_callback 传给 dialog（避免在对话框打开时立即变更窗口 flags 导致显示问题）
         dialog = SettingsDialog(
@@ -359,7 +354,6 @@ class CardUI(QMainWindow):
         finally:
             self._settings_dialog = None
             self._is_settings_open = False
-            self._touch_no_target_time()
             self._start_timer_if_allowed()
 
     def _refresh_open_settings(self) -> None:
@@ -586,9 +580,9 @@ class CardUI(QMainWindow):
             self.worker.touch_time()
 
     def _start_timer_if_allowed(self) -> None:
-        """仅在服务就绪且未暂停、未打开设置时启动检测。"""
+        """服务就绪且用户未暂停时启动检测，设置是否打开不影响后台识别。"""
         if (hasattr(self, "timer") and self.worker.state == "ready"
-                and not self.is_paused and not self._is_settings_open):
+                and not self.is_paused and not self.timer.isActive()):
             self.timer.start()
 
     def _stop_timer_if_exists(self):
@@ -599,7 +593,7 @@ class CardUI(QMainWindow):
     @Slot()
     def request_one_update(self) -> None:
         """只有请求真正入队时才进入 busy 状态。"""
-        if self._busy or self.is_paused or self._is_settings_open:
+        if self._busy or self.is_paused:
             return
         self._last_cycle_start = time.perf_counter()
         self._busy = self.worker.request_detect()
@@ -1028,7 +1022,7 @@ class CardUI(QMainWindow):
 
         Args:
             image_data: JPEG 编码的游戏窗口截图。
-            regions: 自动布局当前确认的各牌区归一化边界；旧调用省略时不画区域。
+            regions: 原图牌区或packed前缀裁片边界；旧调用省略时不画标注。
         """
         if self._closing or not self._preview_requested or not settings.SHOW_CURRENT_SCREENSHOT:
             return

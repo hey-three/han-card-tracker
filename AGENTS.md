@@ -26,7 +26,7 @@
 - Command(request_id,generation,name,payload)，None终止。reset/配置切换递增generation，旧结果丢弃。switch_layout必须携带完整标题与区域，不能只传名称。
 - ready/fatal负责启动，ok/error回执指定请求，finished只负责检测/故障结束，不能解锁其他设置请求。结果计数、历史和performance入队前复制。
 - Worker状态stopped→starting→ready，错误进入failed；恢复新建进程/队列、初始化牌局并保留用户暂停偏好。关闭回收轮询和队列，不等待向已死进程发送残留命令。
-- 业务结果remain_cards、zone_cards、yolo_ms；可选screenshot_jpeg为实际YOLO输入，screenshot_regions当前空字典保留兼容。performance仅发布当前代次。diagnostic_status是独立的运行状态，不能混入牌局代次或检测busy回执。
+- 业务结果remain_cards、zone_cards、yolo_ms；可选screenshot_jpeg为实际YOLO输入，screenshot_regions使用实际输入的归一化坐标：普通区域键画原图框，packed:裁片序号:区域键只显示拼图名称；拆片重复标签允许，帧间清空，整图回退必须清last_input_plan，不能沿用旧拼图坐标。performance仅发布当前代次。diagnostic_status是独立的运行状态，不能混入牌局代次或检测busy回执。
 
 ## 5. 记牌契约
 
@@ -41,6 +41,7 @@
 ## 6. 布局、拼图与尺度
 
 - 自动mode:auto仅需窗口标题和空layout，始终整图。按行组成完整牌组、合并相邻行后归属；短末行不能因初始评分被拆给本家，多重集排序防换行重复扣。回归fixture为tests/fixtures/right_wrapped_play.json。
+- core/bottom_region.py独立判断底牌：检测框中心在横向15%～85%、纵向初搜0～25%内即为候选，不依赖手牌中心、宽高或牌面。高度提议=各候选下沿加半框高的最大值，封顶25%；连续两帧提议差≤屏高3%时取较大值锁定，本局不因少牌/空帧/未知而收缩。学习不增加推理或阻塞既有两帧业务门禁；同帧校准转跟踪只能推进一次。截图尺寸改变仅重学底牌框，长宽比>5%仍按原契约重学全局几何并保留牌账；新局/布局/显式重置也清学习。顶部计数栏误检与搜索范围外布局仍不保证。
 - 自动几何initial是定位通知，Controller不得直接初始化扣牌。底牌是业务门禁，不要求三张，也不作必需几何锚点。中央翻牌不等于上方底牌到位。
 - 自动长宽比变化超过5%只重学几何，保留本局历史；未知/歧义暂停，不保证中途恢复或所有皮肤兼容。
 - 旧布局缺mode视manual。PACKED_INFERENCE/packed_inference是所有手动布局共用的布尔偏好，缺省true；自动不受影响，切手动原图/拼图不重扣牌。
@@ -65,8 +66,8 @@
 - UI增量更新计数/历史；出牌标签保留布局归属仅切可见性。depleted/count动态属性更新需unpolish/polish。
 - panel_arrangement/PANEL_ARRANGEMENT为纯UI偏好，缺省vertical，可选horizontal；基本设置“界面排列”切换上下/左右长条，原子保存后只重排同一对QFrame，不重启推理或清牌局。两区同底色，无外框、无圆角、无区域标题；PlayedCardsPanel的arrangement动态属性控制单边分隔线，上下用横线、左右用竖线，隐藏出牌区时同时隐藏线；出牌行简称上/本/下并靠左，完整历史可悬停查看。上下默认宽495逻辑像素（原550缩10%），左右默认900且两区始终等宽（相同最小宽和1:1伸缩）；左右模式缩减内边距/行距并将最小高度下限降到80，内容最小高度仍优先，实际最小尺寸受字体/DPI影响；显式切换时收拢；首显允许收拢，并在标题栏子QTimer回调中待原生布局生效后补算一次（_initial_size_pending先清再resize），不保留创建期间的临时高度；后续重显及置顶仍保留用户尺寸。布局二级配置用palette(window)/palette(mid)，不再蓝色底纹。
 - 标题栏四个操作统一使用ui/icons.py按主题绘制的细线图标；ui/layout_status.py仅压缩展示文案到最多六字，不改变业务状态。ui/title_bar.py在耗时后显示更小字号的短状态，悬停显示完整说明；正常布局提示不占底行且只刷新标题栏；完整诊断backpressure暂缓仅在标题栏显示“诊断暂缓”，悬停完整原因，不受show_layout_status影响，恢复后回显布局提示；故障、诊断暂停和日志错误也只在顶部显示，优先级为识别故障/错误→持久诊断告警→诊断暂缓→普通布局；悬停详情包含并存告警。完全不创建QStatusBar，并拦截StatusTip事件防止Qt隐式创建；顶部“重启”仅failed时显示，状态变化不计算窗口尺寸。空间不足时标题文字省略，不挤占原生窗口按钮。
-- 主窗口设置、暂停/继续、重置、赞赏图标与运行标题显示在Windows原生标题栏同一行左侧；Qt 6.9+扩展客户区中，CardUI自身及central_widget都关闭WA_ContentsMarginsRespectsSafeArea，避免主窗口把整行再次下推。右侧按钮避让读取DWM物理宽度并按devicePixelRatioF转换；子QTimer在显示/缩放后刷新，不轮询。首次可见在延迟回调中收拢一次；后续重显只按需增高，保留用户尺寸。已撤回无效的底层QWindow标志切换。ui/title_bar.py的clip_native_title_overlay只裁剪本窗口的_q_titlebar子窗口，让Qt标题叠加层仅显示右侧系统按钮，隐藏左侧默认图标/重复文字；显示、缩放和切换屏幕后重新设置，依赖Qt 6.10/6.11的Windows标题层实现。窗口名称固定Han记牌器，运行状态/耗时只交由MainTitleBar显示，保留系统最小化/最大化/关闭提示。NoTitleBarBackgroundHint固定为False，让右侧Qt标题叠加层先绘制不透明主题底色后再画悬停高亮，避免深色半透明白色悬停合成白块；左侧默认内容仍由原有裁剪隐藏，不切换其他底层QWindow标志。右侧系统窗口控制按钮及窗口缩放仍由Windows处理。赞赏爱心仅为静态细线图标，点击复用正常设置打开/暂停/恢复流程并直接选中既有tab4；已经打开设置时只跳页。赞赏页签流光/波动仍在讨论，未实现。关于页介绍使用两字首行缩进，提供GitHub项目主页使用说明入口及mailto:jiangfan0519@qq.com联系链接，支持选择复制；更新项目地址/联系方式时同步使用指南。
-- 窗口置顶仅标志变化时设置并保留几何，不反复adjustSize；普通窗口重显后先QWindow.resize恢复Qt逻辑尺寸，再setPosition恢复位置，避免150%缩放下边框换算漂移1像素；最大化/最小化仍用序列化状态。设置框打开暂停检测，关闭touch_time中断超时连续性。
+- 主窗口设置、暂停/继续、重置、赞赏图标与运行标题显示在Windows原生标题栏同一行左侧；Qt 6.9+扩展客户区中，CardUI自身及central_widget都关闭WA_ContentsMarginsRespectsSafeArea，避免主窗口把整行再次下推。右侧按钮避让读取DWM物理宽度并按devicePixelRatioF转换；子QTimer在显示/缩放后刷新，不轮询。首次可见在延迟回调中收拢一次；后续重显只按需增高，保留用户尺寸。已撤回无效的底层QWindow标志切换。ui/title_bar.py的clip_native_title_overlay只裁剪本窗口的_q_titlebar子窗口，让Qt标题叠加层仅显示右侧系统按钮，隐藏左侧默认图标/重复文字；显示、缩放和切换屏幕后重新设置，依赖Qt 6.10/6.11的Windows标题层实现。窗口名称固定Han记牌器，运行状态/耗时只交由MainTitleBar显示，保留系统最小化/最大化/关闭提示。NoTitleBarBackgroundHint固定为False，让右侧Qt标题叠加层先绘制不透明主题底色后再画悬停高亮，避免深色半透明白色悬停合成白块；左侧默认内容仍由原有裁剪隐藏，不切换其他底层QWindow标志。右侧系统窗口控制按钮及窗口缩放仍由Windows处理。赞赏爱心仅为静态细线图标，点击复用同一设置窗口并直接选中既有tab4，后台识别继续；已经打开设置时只跳页。赞赏页签流光/波动仍在讨论，未实现。关于页介绍使用两字首行缩进，提供GitHub项目主页使用说明入口及mailto:jiangfan0519@qq.com联系链接，支持选择复制；更新项目地址/联系方式时同步使用指南。
+- 窗口置顶仅标志变化时设置并保留几何，不反复adjustSize；普通窗口重显后先QWindow.resize恢复Qt逻辑尺寸，再setPosition恢复位置，避免150%缩放下边框换算漂移1像素；最大化/最小化仍用序列化状态。设置框打开时后台检测继续，关闭不发送touch_time、不重启已运行定时器；保留手动暂停、busy及后端故障保护。
 - 截图下沉/恢复统一Qt逻辑坐标，防止重入，失败也恢复。延迟定时器随窗口销毁。show_layout_status仅隐藏正常提示，故障和恢复按钮始终可见。
 
 ## 8. 图像、计时与模型
@@ -87,9 +88,12 @@
 
 ## 9. 验证与提交边界
 
+- V4.3.3发布纳入此前本地预览、设置继续识别、检测去重及模型回退改动；用户已明确要求新建V4.3.3并合并main，本地同步。预览标签统一上/下/本/底/手，默认495逻辑像素。自动底牌框必须原样显示bottom_region实际判断边界，空区也显示；只有尚未定位手牌保留search:示意，不得再用宽泛底牌示意替代真实范围。拼图按实际Plan标裁片名称。
+- core/detection_filter.py在原图坐标恢复后、区域解析前统一过滤同位置候选：IoU≥0.65通常取最高置信度，同分保留先出现者；J与大小王同位置或符合竖排内嵌字母几何时优先大小王，不额外增加大小王置信度门槛。不同位置相同点数保留。拼图异类完整候选保留到统一过滤器，不再仅因类别冲突回退；内部残片仍优先完整副本，不能拿残片高分替代完整牌。原始调用证据保留；final_boxes为过滤后结果，visual_filter记录duplicate_detections_resolved、策略与移除项，visual_filter_ms包含于布局阶段。不钳制剩余计数，不恢复本家出牌补扣。
+
 - 回归：python -X faulthandler -B -m unittest discover -s tests -v；doctest见排查文档。常规测试不加载真实模型，Qt offscreen；配置测试仅tests/.tmp，主动销毁窗口/DeferredDelete防跨测试遗留事件。原生窗口、截图和DPI测试另以windows平台执行。
 - 模型、真实截图、GPU/静态后端、打包与Android需分别验收；不要把单测、真实spawn测试或静态图调用说成完整实战。依赖锁定环境与既有本机验证环境不同。
-- 通常不提交个人配置与权重替换。本次用户明确授权：以E盘最新版本整理、完整回归后上传V4.3.2并合并main，config/config.yaml与yolo/weights的模型/配置/目录调整也一并上传，取代此前仅本地及排除项约定。
+- 通常不提交个人配置与权重替换。本次用户明确授权：以E盘最新版本整理、完整回归后上传V4.3.3并合并main，config/config.yaml与yolo/weights的模型/配置/目录调整也一并上传，取代此前仅本地及排除项约定。
 - 诊断、日志、tmp参考图、tests/.tmp、games_images、布局参考图、本地编辑器及导出工作区/机器校验缓存仍不提交，也不因清理文档删除用户现有材料。二维码使用原images/QR.png，README中英文直接展示并保留SUPPORT.md入口。
 - 保留诊断按局目录、可配置磁盘额度及8帧/64MiB内存与压力自动恢复。本家出牌补扣仍已撤回，首扣缺张原因保持待查。
 - 模型导出在所选PT同目录，加载提示独立于busy与请求回执。InferenceWorker.is_loading_model/model_loading_changed只服务提示，启动及所有模型/设备请求完成前保持；普通布局提示开关不隐藏加载，故障优先。

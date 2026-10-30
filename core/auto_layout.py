@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections import Counter
+from core.bottom_region import BottomRegion
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass, field
 from math import isfinite
@@ -295,7 +296,8 @@ class AutoLayoutAnalyzer:
         self._anchors: dict[str, tuple[float, float]] = {}
         self._candidate: tuple[str, ...] | None = None
         self._candidate_bounds: Box | None = None
-        self._candidate_bottom_top: float | None = None
+        self._bottom_region = BottomRegion()
+        self._frame_size: tuple[int, int] | None = None
         self._stable = 0
         self._aspect: float | None = None
         self._play_candidates: dict[str, tuple[tuple[str, ...], int, Box]] = {}
@@ -325,6 +327,17 @@ class AutoLayoutAnalyzer:
         """打断未确认序列但保留已学习几何，暂停时间不能连接两段连续确认。"""
         self._stable = 0
         self._play_candidates.clear()
+        self._bottom_region.interrupt()
+
+    @property
+    def bottom_region(self) -> Box:
+        """返回实际底牌判断矩形，供预览原样显示。"""
+        return self._bottom_region.bounds
+
+    @property
+    def preview_search_regions(self) -> dict[str, Box]:
+        """只返回未定位手牌的显示先验；底牌始终另传实际判断框。"""
+        return {} if self.ready else {'player_hand': (0., .6, 1., 1.)}
 
     def observe(self, cards: Sequence[CardBox], size: tuple[int, int], confirm_frames: int) -> LayoutObservation:
         """从一帧检测框更新布局，布局变更和不确定结果均显式返回。
@@ -353,13 +366,18 @@ class AutoLayoutAnalyzer:
             if self._aspect is not None and abs(aspect / self._aspect - 1) > .05:
                 changed = self.ready
                 self.reset()
+            if self._frame_size != size:
+                self._bottom_region.reset()
+                self._frame_size = size
             if self._aspect is None:
                 self._aspect = aspect
         if w <= 0 or h <= 0:
+            self._bottom_region.interrupt()
             self._stable = 0
             self._play_candidates.clear()
             observation = LayoutObservation(message="自动布局：未取得有效画面，保留当前记录")
         elif not cards:
+            self._bottom_region.interrupt()
             self._stable = 0
             self._play_candidates.clear()
             observation = LayoutObservation({"landlord_cards": []},
@@ -384,8 +402,7 @@ class AutoLayoutAnalyzer:
         groups = merge_rows(group_rows(cards))
         hands = [g for g in groups if g.cards and g.bounds[1] > .6]
         hand = hands[0] if len(hands) == 1 else None
-        bottoms = [g for g in group_rows(cards) if self._is_bottom_group(g, hand)]
-        bottom_cards = [c for g in bottoms for c in g.cards]
+        bottom_cards = self._bottom_region.observe(cards)
         regions: dict[str, list[CardBox]] = {"landlord_cards": bottom_cards}
         if not bottom_cards:
             self._stable = 0
@@ -398,42 +415,19 @@ class AutoLayoutAnalyzer:
             return LayoutObservation(regions, "自动布局：手牌数量不合法，等待识别稳定")
         regions["player_hand"] = hand.cards
         bottom = CardGroup(bottom_cards)
-        stable = (self._candidate_bounds is not None and self._candidate_bottom_top is not None
+        stable = (self._candidate_bounds is not None
                   and hand.signature == self._candidate
                   and all(abs(a-b) < .025 for a, b in zip(self._candidate_bounds, hand.bounds))
-                  and abs(bottom.bounds[1]-self._candidate_bottom_top) < .015 and self._stable > 0)
+                  and self._stable > 0)
         self._stable = self._stable+1 if stable else 1
-        if not stable:
-            self._candidate_bottom_top = bottom.bounds[1]
         self._candidate, self._candidate_bounds = hand.signature, hand.bounds
         if self._stable < required:
             return LayoutObservation(regions, f"自动布局：已开局，正在定位手牌 {self._stable}/{required}")
         self._hand, self._bottom, self.ready = hand, bottom, True
         self._previous_hand = hand.signature
-        observation = self._assign(cards, required)
+        observation = self._assign(cards, required, bottom_cards)
         observation.initial = dict(observation.regions)
         return observation
-
-    @staticmethod
-    def _is_bottom_group(group: CardGroup, hand: CardGroup | None) -> bool:
-        """按上方中央和牌框尺度排除中部翻牌，不以底牌张数判断开局。
-
-        Args:
-            group: 上方候选组。
-            hand: 可选手牌几何参照；未知时按窗口比例作保守上方定位。
-        Returns:
-            是否位于支持的上方底牌位置；不是按具体游戏名称查表。
-        """
-        a, top, b, lower = group.bounds
-        if not group.cards or top >= .25 or lower >= .32:
-            return False
-        if hand is None:
-            return b-a <= .32 and group.height <= .08 and abs((a+b)/2-.5) <= .22
-        left, hand_top, right, _ = hand.bounds
-        center = (left+right)/2 if right-left >= .5 else .5
-        return (top < hand_top*.35 and lower < hand_top*.45
-                and b-a <= max(.22, (right-left)*.4) and group.height <= 1.15*hand.height
-                and abs((a+b)/2-center) <= max(.22, (right-left)*.3))
 
     def _reference(self, role: str) -> tuple[float, float]:
         """返回已学习锚点，或由本家手牌和窗口边界推导的初始位置。
@@ -491,12 +485,14 @@ class AutoLayoutAnalyzer:
         sy = max(.055, (hand[1] - self._table_top) * .20)
         return abs(x - rx) / sx + abs(y - ry) / sy
 
-    def _assign(self, cards: Sequence[CardBox], required: int) -> LayoutObservation:
+    def _assign(self, cards: Sequence[CardBox], required: int,
+                bottom_cards: list[CardBox] | None = None) -> LayoutObservation:
         """保留手牌参照，合并跨行出牌，歧义时不输出伪造空区域。
 
         Args:
             cards: 当前检测。
             required: 锚点学习所需连续帧。
+            bottom_cards: 校准同帧已筛选的底牌，避免一张截图重复累计学习次数。
 
         Returns:
             稳定归属或明确的未知状态。
@@ -505,8 +501,7 @@ class AutoLayoutAnalyzer:
         hand_top = self._hand.bounds[1]
         hand_cards = [c for c in cards if c.bbox[1] >= hand_top - .55 * self._hand.height]
         self._update_hand_evidence(hand_cards, required)
-        top_groups = group_rows([c for c in cards if c not in hand_cards])
-        bottom_cards = [c for g in top_groups if self._is_bottom_group(g, self._hand) for c in g.cards]
+        bottom_cards = self._bottom_region.observe(cards) if bottom_cards is None else list(bottom_cards)
         if not hand_cards and len(cards) - len(bottom_cards) >= 8:
             self._play_candidates.clear()
             return LayoutObservation({"landlord_cards": bottom_cards},

@@ -67,6 +67,31 @@ def _scan_model_dirs() -> list[str]:
     return dirs
 
 
+def _select_startup_model(model_name: str | None) -> str:
+    """保留存在的已选模型，否则使用按目录名排序的首个本地权重。
+
+    Args:
+        model_name: 配置中保存的模型子目录名，None或空字符串表示未选择。
+    Returns:
+        实际启动模型名；无可选权重时保留原名称或空字符串，让加载器明确报缺失。
+        可选表示目录内存在best.pt，不掩盖权重损坏、输入配置非法或加载失败。
+        此函数不写配置，运行时手动切换失败仍按原有回执规则回滚。
+    Raises:
+        TypeError: 模型名称不是字符串或None。
+        OSError: 权重目录无法扫描。
+    """
+    if model_name is not None and not isinstance(model_name, str):
+        raise TypeError('模型名称必须是字符串或None')
+    if model_name and os.path.isfile(os.path.join(YOLO_WEIGHTS_DIR, model_name, 'best.pt')):
+        return model_name
+    available = _scan_model_dirs()
+    if available:
+        if model_name:
+            print(f'[模型选择] 已保存的模型 {model_name} 不存在，自动使用 {available[0]}')
+        return available[0]
+    return model_name or ''
+
+
 def _resolve_model_path(model_name: str | None) -> str:
     """根据模型名称解析 best.pt 的完整路径。
 
@@ -219,7 +244,7 @@ LAYOUT_REGIONS = GAME_CONFIG.get('layout_regions', [
 ])
 
 # ==================== YOLO 模型选择 ====================
-YOLO_MODEL_NAME = config.get('yolo_model_name', '') or (_scan_model_dirs()[0] if _scan_model_dirs() else '')
+YOLO_MODEL_NAME = _select_startup_model(config.get('yolo_model_name'))
 YOLO_MODEL_PATH = _resolve_model_path(YOLO_MODEL_NAME)
 
 # ==================== 基本配置 ====================

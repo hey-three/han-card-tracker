@@ -268,7 +268,7 @@ class PackingPlan:
         return PackingPlan(self.size, tiles, canvas_size)
 
     def restore(self, detections: Sequence[Detection]) -> tuple[list[Detection], str]:
-        """还原检测并消除跨块重复，出现未解决的切边或类别冲突时要求回退。
+        """还原检测并消除跨块同类副本，未解决切边要求回退，异类候选交统一过滤。
 
         Args:
             detections: 当前画布的像素检测；同一原始帧，不跨帧合并。
@@ -310,16 +310,16 @@ class PackingPlan:
                 if index == old_index:
                     continue
                 iou = overlap(detection.bbox, old.bbox)
-                if iou >= .65:
-                    if detection.name != old.name:
-                        return [], "同一原图位置的类别冲突"
+                if iou >= .65 and detection.name == old.name:
                     duplicate = True
                     break
             if not duplicate:
                 kept.append((detection, index))
-        # 人工边缘框可以保留，但另一重叠选区已有完整副本时仍须去重。
+        # 人工边缘的小残片优先由完整副本替代；位置高度重叠的完整候选交统一过滤器，
+        # 避免此处按先后顺序提前丢掉更高分结果或大小王候选。
         for detection, index in sorted(user_border, key=lambda item: -item[0].confidence):
-            if not any(old_index != index and _covers_fragment(old, detection) for old, old_index in kept):
+            if not any(old_index != index and _covers_fragment(old, detection)
+                       and overlap(old.bbox, detection.bbox) < .65 for old, old_index in kept):
                 kept.append((detection, index))
         for fragment in clipped:
             # 切口碎片可能错分类，以完整副本为准；但必须覆盖碎片本身的大部分。
