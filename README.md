@@ -14,7 +14,7 @@ A Windows Dou Dizhu card counter and playing-card detection application built wi
 |---|---|
 | 扑克牌识别 | YOLO 检测牌面与坐标，经布局分析分配到对应区域 |
 | 剩余牌统计 | 初始手牌扣一次；对手确认出牌扣除，本家出牌只记历史 |
-| 自动布局 | 根据牌组相对位置学习常见三人斗地主界面，使用整图推理 |
+| 自动布局 | 整图推理；底牌横向居中70%、纵向学习高度，其他牌组按相对位置归属 |
 | 手动布局 | 自己框选五区，可选择原图检测或两阶段拼图检测 |
 | 拼图推理 | 开局前底牌＋手牌，扣手牌后底牌＋三家出牌；严格框内裁剪 |
 | 尺度调整 | 初始固定比例，之后按当前单牌检测框学习；画布按所选模型配置固定像素宽高 |
@@ -27,7 +27,7 @@ A Windows Dou Dizhu card counter and playing-card detection application built wi
 ## 下载与版本
 
 - 当前功能以 `main` 源码与 [更新记录](CHANGELOG.md) 为准。
-- [Releases](https://github.com/hey-three/han-card-tracker/releases) 中目前可见的是历史 `v2.3` 压缩包；它不代表当前 V4.3.2 源码已打包。此状态于2026-10-27核对。
+- [Releases](https://github.com/hey-three/han-card-tracker/releases) 中目前可见的是历史 `v2.3` 压缩包；它不代表当前 V4.3.3 源码已打包。此状态于2026-10-27核对。
 - YOLO 权重位于仓库 `yolo/weights/<模型目录>/best.pt`。训练代码在独立的 [yolo-for-han-card-tracker](https://github.com/hey-three/yolo-for-han-card-tracker) 仓库；不把旧版发布包描述成已提供训练数据集。
 
 ## 从源码启动

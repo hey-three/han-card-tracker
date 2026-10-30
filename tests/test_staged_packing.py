@@ -115,7 +115,8 @@ class StagedPackingTests(unittest.TestCase):
         cards, reason = plan.restore([Detection('A', whole.project((240., 220., 280., 260.))),
                                       Detection('K', partial.project((250., 220., 280., 260.)))])
         self.assertEqual(reason, '')
-        self.assertEqual([card.name for card in cards], ['A'])
+        from core.detection_filter import resolve_duplicate_detections
+        self.assertEqual([card.name for card in resolve_duplicate_detections(cards)[0]], ['A'])
 
 
 if __name__ == "__main__":

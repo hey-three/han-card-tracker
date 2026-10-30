@@ -173,6 +173,34 @@ class RoundLifecycleTests(unittest.TestCase):
         self.assertTrue(any(r['code']=='initial_hand_deducted' for p in data for r in p['reasons']))
         self.assertEqual(data[-1]['after']['remain_cards'], self.controller.tracker.remain_cards)
 
+    def test_diagnostics_preserves_raw_conflicts_and_records_filtered_result(self) -> None:
+        """原始调用保留异类重叠框，业务与最终证据只使用统一过滤后的结果。"""
+        import json
+        import tempfile
+        from pathlib import Path
+        from core.diagnostics import DiagnosticRecorder
+        with tempfile.TemporaryDirectory(dir='tests/.tmp') as directory:
+            recorder = DiagnosticRecorder(directory)
+            try:
+                with patch.object(settings, 'FULL_DIAGNOSTICS', True), \
+                        patch.object(settings, 'YOLO_MODEL_PATH', 'missing-model.pt'):
+                    self.controller.reset()
+                    self.controller.attach_diagnostics(recorder)
+                    self.controller.yolo_inferencer.restore_result.side_effect = lambda raw, image, cards: raw_result(list(cards))
+                    bad_name = 'K' if self.hand[0].name != 'K' else 'Q'
+                    self.feed([*self.hand, CardBox(bad_name, self.hand[0].bbox)], count=4)
+                self.assertTrue(recorder.stop(3))
+                frames = list(Path(directory).glob('diagnostics/session_*/**/frames/*/frame.json'))
+                self.assertEqual(len(frames), 4)
+                for path in frames:
+                    frame = json.loads(path.read_text(encoding='utf-8'))
+                    self.assertEqual(len(frame['calls'][0]['boxes']), len(frame['final_boxes'])+1)
+                    self.assertEqual(frame['visual_filter']['code'], 'duplicate_detections_resolved')
+                    self.assertEqual(frame['visual_filter']['removed'][0]['name'], bad_name)
+                self.assertEqual(len(self.tracker._initial_hand), len(self.hand))
+            finally:
+                recorder.close()
+
     def test_two_bottom_frames_start_before_hand_confirmation(self) -> None:
         """底牌第二帧才开局并开始手牌累计，空手牌不能通过。"""
         for manual in (False, True):
@@ -324,19 +352,36 @@ class RoundLifecycleTests(unittest.TestCase):
         self.assertTrue(all(not cards for cards in self.tracker.show_cards.values()))
 
     def test_preview_shows_last_actual_input_for_full_packed_and_fallback(self) -> None:
-        """JPEG 对应实际模型输入，回退后为原图，拼图不画原图坐标框。"""
+        """JPEG保持原始输入，标注元数据随原图/拼图/同帧回退切换。"""
         settings.SHOW_CURRENT_SCREENSHOT = True
         self.feed(self.hand, 1)
         self.assertEqual(Image.open(BytesIO(self.controller.last_screenshot_jpeg)).size, self.image.size)
+        self.assertIn('player_hand', self.controller.last_screenshot_regions)
+        self.assertIn('landlord_cards', self.controller.last_screenshot_regions)
         self.use_manual_layout()
         self.assertEqual(Image.open(BytesIO(self.controller.last_screenshot_jpeg)).size, PACKED_INPUT_SIZE)
-        self.assertEqual(self.controller.last_screenshot_regions, {})
+        self.assertTrue(self.controller.last_screenshot_regions)
+        self.assertTrue(all(key.startswith('packed:') for key in self.controller.last_screenshot_regions))
+        self.assertTrue(any('landlord_cards' in key for key in self.controller.last_screenshot_regions))
         self.feed(self.hand, 1, packed_bottom=False)
         self.assertEqual(Image.open(BytesIO(self.controller.last_screenshot_jpeg)).size, self.image.size)
         self.assertEqual(self.controller.packed_pipeline.timings["model_calls"], 2.)
+        self.assertEqual(self.controller.last_screenshot_regions,
+                         {key: tuple(bounds) for key, bounds in self.controller.layout_config['layout'].items()})
         settings.SHOW_CURRENT_SCREENSHOT = False
         self.feed(self.hand, 1)
         self.assertIsNone(self.controller.last_screenshot_jpeg)
+        self.assertEqual(self.controller.last_screenshot_regions, {})
+
+    def test_manual_original_preview_uses_all_five_saved_regions(self) -> None:
+        """手动原图显示保存的五框，不仅显示当前参与业务的两区或四区。"""
+        self.use_manual_layout()
+        settings.SHOW_CURRENT_SCREENSHOT = True
+        settings.PACKED_INFERENCE = False
+        self.feed(self.hand, 1)
+        self.assertEqual(self.controller.last_screenshot_regions,
+                         {key: tuple(bounds) for key, bounds in self.controller.layout_config['layout'].items()})
+        self.assertIsNone(self.controller.packed_pipeline.last_input_plan)
 
     def test_invalid_capture_does_not_publish_previous_input_as_new_preview(self) -> None:
         """截图失败时不能重发上一帧的输入图。"""

@@ -3,6 +3,7 @@
 import unittest
 
 from core.frame_packing import Detection, PackingPlan, Tile, make_plan
+from core.detection_filter import resolve_duplicate_detections
 
 
 class PackingTests(unittest.TestCase):
@@ -28,13 +29,16 @@ class PackingTests(unittest.TestCase):
         self.assertEqual(reason, '')
         self.assertEqual(sorted(c.bbox for c in cards), [(100., 30., 120., 80.), (480., 30., 500., 80.)])
 
-    def test_different_class_same_position_requires_full_frame(self) -> None:
-        """原图同一目标被判成不同类别时不能按置信度悄悄选一个。"""
+    def test_different_class_same_position_uses_confidence_after_restoring(self) -> None:
+        """跨裁片异类候选先还原位置，再统一取高分，不再因此强制回退。"""
         plan = make_plan((1000, 200), [(0., 0., 1., 1.)])
         cards, reason = plan.restore([Detection('ten', (480., 30., 500., 80.), .99),
                                       Detection('A', (20., 234., 40., 284.), .8)])
-        self.assertEqual(cards, [])
-        self.assertIn('类别冲突', reason)
+        self.assertEqual(reason, '')
+        self.assertEqual(len(cards), 2)
+        kept, removed = resolve_duplicate_detections(cards)
+        self.assertEqual([card.name for card in kept], ['ten'])
+        self.assertEqual([card.name for card in removed], ['A'])
 
     def test_clipped_fragment_can_be_replaced_by_complete_copy(self) -> None:
         """切口残片即使类别错误，另一块的完整副本仍可消除该残片。"""
@@ -106,14 +110,17 @@ class PackingTests(unittest.TestCase):
                     for actual, expected in zip(restored[0].bbox, source):
                         self.assertAlmostEqual(actual, expected)
 
-    def test_scaled_overlap_still_deduplicates_and_rejects_conflict(self) -> None:
+    def test_scaled_overlap_still_deduplicates_and_resolves_conflict(self) -> None:
         """固定画布缩放后仍按原始位置去重，不能按缩放图中的位置比较。"""
         plan = make_plan((1000, 200), [(0., 0., 1., 1.)]).fit()
         boxes = [Detection('A', tile.project((480., 30., 500., 80.))) for tile in plan.tiles]
         cards, reason = plan.restore(boxes)
         self.assertEqual((len(cards), reason), (1, ''))
         boxes[1].name = 'K'
-        self.assertIn('类别冲突', plan.restore(boxes)[1])
+        boxes[1].confidence = .9
+        restored, reason = plan.restore(boxes)
+        self.assertEqual(reason, '')
+        self.assertEqual([card.name for card in resolve_duplicate_detections(restored)[0]], ['A'])
 
     def test_fixed_canvas_padding_is_not_a_card_region(self) -> None:
         """灰色留白中的伪检测必须触发原图回退。"""

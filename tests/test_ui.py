@@ -483,7 +483,7 @@ class UITests(unittest.TestCase):
             self.assertEqual(calls, ['手动一', '自动一'])
 
     def test_donation_button_opens_existing_settings_donation_tab(self) -> None:
-        """标题栏入口复用正常设置页与暂停恢复流程，不新建二维码页面。"""
+        """标题栏入口复用正常设置页，不新建二维码页面。"""
         from PySide6.QtWidgets import QDialog
         opened: list[SettingsDialog] = []
 
@@ -508,6 +508,38 @@ class UITests(unittest.TestCase):
         self.assertFalse(self.window._is_settings_open)
         self.assertIsNone(self.window._settings_dialog)
         opened[0].close()
+
+    def test_settings_keeps_detection_running_and_preserves_manual_pause(self) -> None:
+        """设置嵌套事件循环继续检测，关闭不打断连续帧，手动暂停仍有效。"""
+        for paused in (False, True):
+            with self.subTest(paused=paused):
+                self.window.worker.state = 'ready'
+                self.window.is_paused = paused
+                self.window._busy = False
+                self.window.timer.stop()
+                self.window._start_timer_if_allowed()
+
+                def fake_exec(dialog: SettingsDialog) -> int:
+                    """在设置打开期间检查真实定时器与检测请求入口。
+
+                    Args:
+                        dialog: 当前设置窗口。
+                    Returns:
+                        模拟取消关闭的返回码。
+                    """
+                    self.assertEqual(self.window.timer.isActive(), not paused)
+                    self.window.request_one_update()
+                    dialog.deleteLater()
+                    return 0
+
+                with patch.object(SettingsDialog, 'exec', new=fake_exec), \
+                        patch.object(self.window.worker, 'request_detect', return_value=True) as detect, \
+                        patch.object(self.window, '_touch_no_target_time') as touch:
+                    self.window._open_settings()
+                    self.assertEqual(detect.call_count, int(not paused))
+                    touch.assert_not_called()
+                self.assertEqual(self.window.is_paused, paused)
+                self.assertEqual(self.window.timer.isActive(), not paused)
 
     def test_donation_entry_reuses_already_open_settings(self) -> None:
         """设置已经打开时只跳页，不再建立第二个设置窗口。"""

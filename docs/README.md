@@ -15,6 +15,7 @@
 | 日常日志、完整逐帧证据、容量和后台保存 | [诊断记录](诊断记录.md) | diagnostics.py、diagnostic_storage.py、diagnostic_state.py |
 | 出错时已有材料、测试证据与未测项 | [排查与验证](排查与验证.md) | diagnostics.py、tests/ |
 | 为什么采用这些规则、哪些路线已放弃 | [设计决策](设计决策.md) | 核心契约摘要 |
+| V4.3.3的方案与实施范围 | [V4.3.3实施记录](V4.3.3实施记录.md) | 自动底牌区域与本地功能汇总 |
 | 维护文档、仓库简介、Topics与发布 | [维护与发布](维护与发布.md) | 文档与公开元信息 |
 
 [更新记录](../CHANGELOG.md) · [贡献指南](../CONTRIBUTING.md) · [开发约束](../AGENTS.md) · [English introduction](../README.en.md)
