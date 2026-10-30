@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+import sys
 import tempfile
 from threading import Event
 import time
@@ -14,7 +15,7 @@ from PIL import Image
 
 from config import settings
 from core.diagnostics import DiagnosticFrame, DiagnosticLimits, DiagnosticRecorder
-from core.diagnostic_storage import DailyLog, SessionStorage, StorageLimitError
+from core.diagnostic_storage import DailyLog, SessionStorage, StorageLimitError, _replace_with_retry
 from core.diagnostic_state import tracker_snapshot, decision_reasons
 from core.frame_packing import Detection
 from core.games.doudizhu import DoudizhuTracker
@@ -212,6 +213,131 @@ class DiagnosticTests(unittest.TestCase):
         self.frame(recorder).finish({})
         self.assertTrue(recorder.stop(2))
         self.assertEqual(recorder.status()['saved_frames'], 1)
+
+    def test_transient_windows_metadata_locks_keep_writer_recording(self) -> None:
+        """会话与局元数据短暂拒绝访问后重试成功，不丢帧或重复追加索引。"""
+        recorder = self.recorder()
+        original = Path.replace
+        remaining = {'manifest.json': 2, 'round.json': 2}
+
+        def locked_replace(source: Path, target: Path) -> Path:
+            """模拟Windows读取占用元数据目标后释放。
+
+            Args:
+                source: 临时元数据文件。
+                target: 正式元数据文件。
+            Returns:
+                发布后的目标路径。
+            Raises:
+                PermissionError: 目标仍被短暂占用。
+            """
+            if remaining.get(target.name, 0):
+                remaining[target.name] -= 1
+                error = PermissionError('临时读取占用')
+                error.winerror = 5
+                raise error
+            return original(source, target)
+
+        with patch.object(Path, 'replace', locked_replace), patch('core.diagnostic_storage.time.sleep') as sleep:
+            recorder.set_enabled(True)
+            self.frame(recorder).finish({})
+            self.assertTrue(recorder.stop(2))
+        self.assertEqual(sleep.call_count, 4)
+        self.assertEqual(recorder.status()['saved_frames'], 1)
+        self.assertEqual(recorder.status()['reason'], '')
+        self.assertEqual(recorder.status()['state'], 'off')
+        _, directory = self.saved()
+        session = directory.parents[2]
+        events = [json.loads(line) for line in (session/'events.jsonl').read_text(encoding='utf-8').splitlines()]
+        self.assertEqual(sum('frame_id' in item for item in events), 1)
+        self.assertTrue(json.loads((session/'manifest.json').read_text(encoding='utf-8'))['complete'])
+
+    def test_persistent_windows_lock_still_pauses_after_bounded_retry(self) -> None:
+        """真正无法替换的权限故障仍停止诊断，重试次数和内存保持有界。"""
+        recorder = self.recorder()
+        original = Path.replace
+        attempts = []
+
+        def denied_replace(source: Path, target: Path) -> Path:
+            """只持续锁住局标记，允许会话保存真实失败状态。
+
+            Args:
+                source: 待发布临时文件。
+                target: 目标文件。
+            Returns:
+                非故障目标的路径。
+            Raises:
+                PermissionError: 局标记始终不可替换。
+            """
+            if target.name == 'round.json':
+                attempts.append(target)
+                error = PermissionError('持续拒绝访问')
+                error.winerror = 32
+                raise error
+            return original(source, target)
+
+        with patch.object(Path, 'replace', denied_replace), patch('core.diagnostic_storage.time.sleep') as sleep:
+            recorder.set_enabled(True)
+            self.frame(recorder).finish({})
+            self.assertTrue(recorder.stop(2))
+        self.assertEqual(len(attempts), 12)  # 初次写入与失败后的封口各最多六次。
+        self.assertEqual(sleep.call_count, 10)
+        self.assertEqual(recorder.status()['state'], 'paused')
+        self.assertIn('持续拒绝访问', recorder.status()['reason'])
+        self.assertEqual(recorder.status()['pending_bytes'], 0)
+        self.assertEqual(recorder.status()['pending_frames'], 0)
+
+    def test_unrelated_replace_error_is_not_retried(self) -> None:
+        """非Windows占用错误立即报告，不把磁盘满或其他故障当成暂态。"""
+        for error in (OSError('disk full'), PermissionError('non-Windows permission error')):
+            with self.subTest(error=error), patch.object(Path, 'replace', side_effect=error) as replace:
+                with patch('core.diagnostic_storage.time.sleep') as sleep:
+                    with self.assertRaises(OSError):
+                        _replace_with_retry(self.base/'source', self.base/'target')
+                self.assertEqual(replace.call_count, 1)
+                sleep.assert_not_called()
+
+    @unittest.skipUnless(sys.platform == 'win32', '需要Windows文件共享锁')
+    def test_real_windows_reader_lock_recovers_atomic_replace(self) -> None:
+        """真实Windows读句柄短暂禁止删除时，后台重试后原子发布新文件。"""
+        import ctypes
+        from ctypes import wintypes
+
+        kernel32 = ctypes.WinDLL('kernel32', use_last_error=True)
+        kernel32.CreateFileW.argtypes = (wintypes.LPCWSTR, wintypes.DWORD, wintypes.DWORD,
+                                        wintypes.LPVOID, wintypes.DWORD, wintypes.DWORD, wintypes.HANDLE)
+        kernel32.CreateFileW.restype = wintypes.HANDLE
+        kernel32.CloseHandle.argtypes = (wintypes.HANDLE,)
+        kernel32.CloseHandle.restype = wintypes.BOOL
+        source, target = self.base/'round.tmp', self.base/'round.json'
+        source.write_text('new', encoding='utf-8')
+        target.write_text('old', encoding='utf-8')
+        # 允许读共享但不允许删除共享，复现文件观察者持有目标的场景。
+        handle = kernel32.CreateFileW(str(target), 0x80000000, 1, None, 3, 128, None)
+        if handle == wintypes.HANDLE(-1).value:
+            raise ctypes.WinError(ctypes.get_last_error())
+        closed = False
+
+        def release_reader(delay: float) -> None:
+            """在首次重试间隔释放读者句柄，避免测试依赖实际等待时长。
+
+            Args:
+                delay: 重试器计划等待的秒数。
+            """
+            nonlocal closed
+            self.assertEqual(delay, .02)
+            self.assertTrue(kernel32.CloseHandle(handle))
+            closed = True
+
+        try:
+            with patch('core.diagnostic_storage.time.sleep', side_effect=release_reader) as sleep:
+                _replace_with_retry(source, target)
+            self.assertEqual(sleep.call_count, 1)
+            self.assertEqual(target.read_text(encoding='utf-8'), 'new')
+            self.assertFalse(source.exists())
+        finally:
+            if not closed:
+                kernel32.CloseHandle(handle)
 
     def test_storage_init_failure_does_not_throw_into_producer(self) -> None:
         """诊断目录不可写时通过状态报告，识别调用方不收到磁盘异常。"""

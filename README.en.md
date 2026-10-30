@@ -6,6 +6,15 @@
 
 V4.3.3 uses a centered 70% horizontal bottom-card region with a learned, round-stable height. Preview labels are 上/下/本/底/手 and show the actual bottom-card decision region. Settings remain open while background recognition continues.
 
+![Han Card Tracker with vertically arranged panels](images/interface1.png)
+
+![Han Card Tracker with horizontally arranged panels](images/interface2.png)
+
+## Usage notes
+
+- **Prefer original-image inference with the bundled models.** Their training data consists entirely of original game screenshots. Packed inputs are not yet adequately represented, and currently have lower recognition accuracy and stability. Manual layouts can switch to original inference; automatic layouts always use the full image.
+- **Include all three J, O and K letters when selecting joker regions.** The training annotations cover those three letters. Selecting only J or J/O can cause missed or incorrect detections.
+
 ## Features
 
 - YOLO object detection with CPU/CUDA execution and optional ONNX Runtime/TensorRT backends.
@@ -21,17 +30,14 @@ This repository currently maintains the **Windows Dou Dizhu application**. It do
 
 ## Source installation
 
-Windows is required. Source syntax requires Python 3.10+, but the pinned binary packages impose additional version constraints. Start with a separate Python 3.11/3.12 environment; the pinned dependency combination has not been reinstalled from scratch during this documentation update.
+Use Windows and 64-bit Python 3.11. Alternatively, download a CPU ZIP or CPU/GPU 7z archive from [Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3). The [usage guide](docs/使用指南.md) covers EXE operation and settings first, then source installation.
 
 ```powershell
 git clone https://github.com/hey-three/han-card-tracker.git
 cd han-card-tracker
 py -3.11 -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install torch==2.5.1 torchvision==0.20.1 torchaudio==2.5.1 --index-url https://download.pytorch.org/whl/cu121
-python -m pip install -r requirements.txt
-python main.py
+.\.venv\Scripts\python.exe -m pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu121
+.\.venv\Scripts\python.exe main.py
 ```
 
 The dependency file pins CUDA 12.1 PyTorch wheels. Follow the [official PyTorch instructions](https://pytorch.org/get-started/previous-versions/) rather than assuming the default index or any Python version will work. [Installation details](docs/使用指南.md) are maintained in Chinese.
@@ -51,7 +57,7 @@ Missing bottom cards pause updates. A consecutive-frame and elapsed-time thresho
 
 ## Releases and verification
 
-As checked on 2026-10-27, [Releases](https://github.com/hey-three/han-card-tracker/releases) contains a historical `v2.3` archive. It is not a packaged build of the current V4.3.3 source. See [CHANGELOG](CHANGELOG.md).
+[Releases](https://github.com/hey-three/han-card-tracker/releases/tag/v4.3.3) provides a CPU-only ZIP without CUDA libraries and a larger CPU/GPU 7z archive supporting CPU and compatible NVIDIA CUDA GPUs. Extract the entire archive before launching HanCardTracker.exe; the 7z format can be opened with [7-Zip](https://www.7-zip.org/). See [CHANGELOG](CHANGELOG.md).
 
 The diagnostic update passed 203 unit tests, including a real Windows spawn/worker-shutdown test, and compared recorder modes on repeated static reference images. This does not establish complete live-game accuracy, GPU/backend compatibility, or a 200 ms latency target. Optional [full diagnostics](docs/诊断记录.md) groups evidence into per-round folders under a recording session. Its total disk budget defaults to 1 GiB and is adjustable in advanced settings (0.1–1024 GiB); retention removes sealed old rounds while protecting the current round. It records each model input/output and before/after tracker state through one bounded background writer; daily key-event logs rotate automatically. Queue/memory backpressure recovers automatically with explicit gap records. Disk/write failures still pause diagnostics. Replay and one-click export are not implemented. Details: [verification and troubleshooting](docs/排查与验证.md).
 
@@ -68,3 +74,14 @@ If this project has helped you, optional donations via the [WeChat Pay or Alipay
 Read [CONTRIBUTING](CONTRIBUTING.md) and [AGENTS](AGENTS.md). Please include the source revision, model/backend, layout mode, reproduction steps and relevant sanitized screenshots in bug reports.
 
 The repository license is [MIT](LICENSE). Third-party packages, models and datasets retain their own licenses.
+
+## Development roadmap
+
+- Improve packed inference with actual packed training examples and evaluate resizing and slicing effects.
+- Prioritize bottom-card detection: current recognition problems are concentrated in this area, where targets are small in full screenshots and fade after the landlord plays the corresponding cards. Add representative training examples and improve stability.
+- Improve joker recognition and prevent changing partial detections from creating duplicate play-history entries.
+- Port capture, overlay and inference workflows to Android. No Android APK is released yet.
+
+## Star history
+
+[![Star History Chart](https://api.star-history.com/svg?repos=hey-three/han-card-tracker&type=Date)](https://www.star-history.com/#hey-three/han-card-tracker&Date)

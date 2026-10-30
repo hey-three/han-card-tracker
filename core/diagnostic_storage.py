@@ -13,9 +13,31 @@ import shutil
 import sys
 import subprocess
 import platform
+import time
 from typing import cast
 
 from PIL import Image, ImageDraw
+
+
+def _replace_with_retry(source: Path, target: Path) -> None:
+    """后台原子替换遇到Windows短暂文件占用时有界重试。
+
+    Args:
+        source: 已完整写入的临时文件或目录。
+        target: 要原子发布的目标路径。
+    Raises:
+        OSError: 非Windows占用错误，或六次替换后仍无法发布。
+    """
+    delays = (.02, .05, .1, .2, .4)
+    for attempt in range(len(delays)+1):
+        try:
+            source.replace(target)
+            return
+        except OSError as exc:
+            # 5为访问拒绝，32/33为共享或锁冲突；真正权限故障最终仍须报告。
+            if getattr(exc, 'winerror', None) not in (5, 32, 33) or attempt == len(delays):
+                raise
+            time.sleep(delays[attempt])
 
 
 class QuietRotatingHandler(RotatingFileHandler):
@@ -260,7 +282,7 @@ class SessionStorage:
         data = json.dumps({'schema': 'han-diagnostic-round/v1', **self._round_info}, ensure_ascii=False, indent=2).encode('utf-8')
         temporary = target.with_suffix('.tmp')
         temporary.write_bytes(data)
-        temporary.replace(target)
+        _replace_with_retry(temporary, target)
         self.used += len(data)-previous
 
     def finish_round(self, state: str = 'closed', reason: str = 'diagnostics_stopped') -> None:
@@ -357,7 +379,7 @@ class SessionStorage:
                          ensure_ascii=False, indent=2).encode('utf-8')
         temporary = self.directory/'manifest.tmp'
         temporary.write_bytes(data)
-        temporary.replace(target)
+        _replace_with_retry(temporary, target)
         self.used += len(data)-previous
 
     def _model_hash(self, payload: dict[str, object], path_key: str = 'weight_path') -> str | None:
@@ -417,7 +439,7 @@ class SessionStorage:
             payload['model_file_sha256_at_write'] = self._model_hash(payload)
             payload['model_artifact_sha256_at_write'] = self._model_hash(payload, 'artifact_path')
             self._blob(pending/'frame.json', json.dumps(payload, ensure_ascii=False, indent=2).encode('utf-8'))
-            pending.replace(final)
+            _replace_with_retry(pending, final)
             line = json.dumps({'frame_id': number, 'path': f'{group.name}/frames/{number:08d}/frame.json',
                                'reasons': payload.get('reasons'), 'error': payload.get('error')}, ensure_ascii=False).encode('utf-8')+b'\n'
             self._ensure_space(len(line))

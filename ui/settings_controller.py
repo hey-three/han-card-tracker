@@ -13,7 +13,7 @@ class SettingsController(QObject):
     Attributes:
         failed: 设置操作失败的说明。
         worker: 推理服务。
-        _pending: 请求编号到保存、刷新回调的映射。
+        _pending: 请求编号到保存、刷新回调及可选设置草稿的映射。
     """
 
     failed = Signal(str)
@@ -28,13 +28,15 @@ class SettingsController(QObject):
         """
         super().__init__(parent)
         self.worker = worker
-        self._pending: dict[int, tuple[Callable[[], None], Callable[[], None] | None]] = {}
+        self._pending: dict[int, tuple[Callable[[], None], Callable[[], None] | None,
+                                      tuple[str, object] | None]] = {}
         worker.command_completed.connect(self._complete)
         worker.state_changed.connect(self._on_state_changed)
 
     def apply(
         self, save: Callable[[], None], request: Callable[[], int | None] | None = None,
         after: Callable[[], None] | None = None,
+        *, setting: tuple[str, object] | None = None,
     ) -> bool:
         """应用设置；服务故障时允许先修正保存值，供手动重启使用。
 
@@ -42,6 +44,7 @@ class SettingsController(QObject):
             save: 仅在后端成功后执行的主进程保存操作。
             request: 后端请求，纯 UI 设置可省略。
             after: 保存成功后的 UI 刷新。
+            setting: 可选的字段名和期望值，供等待回执期间独立回显。
 
         Returns:
             已保存或已排入请求时为 True，失败时为 False。
@@ -57,11 +60,25 @@ class SettingsController(QObject):
             if request_id is None:
                 self.failed.emit("推理服务不可用，设置未应用；请重启识别后再试。")
                 return False
-            self._pending[request_id] = (save, after)
+            self._pending[request_id] = (save, after, setting)
             return True
         except Exception as exc:
             self.failed.emit(f"设置未应用: {exc}")
             return False
+
+    def value_for_display(self, key: str, confirmed: object) -> object:
+        """优先返回该项最新待确认值，避免其他设置刷新覆盖用户选择。
+
+        Args:
+            key: 持久化设置字段名。
+            confirmed: 已确认保存的值。
+        Returns:
+            该项最后一次在途请求的期望值；无在途请求时为confirmed。
+        """
+        for _, _, setting in reversed(self._pending.values()):
+            if setting is not None and setting[0] == key:
+                return setting[1]
+        return confirmed
 
     def _complete(self, request_id: int, name: str, success: bool, error: str) -> None:
         """处理对应请求回执，失败时保留原持久化设置。
@@ -78,7 +95,7 @@ class SettingsController(QObject):
         if not success:
             self.failed.emit(f"{name} 未生效，保留原设置。\n{error}")
             return
-        save, after = action
+        save, after, _ = action
         try:
             save()
             if after is not None:

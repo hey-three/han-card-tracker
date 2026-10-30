@@ -391,7 +391,8 @@ class CardUI(QMainWindow):
 
         dialog.set_current_show_current_screenshot(self._preview_requested)
         dialog.set_current_manual_inference(settings.PACKED_INFERENCE)
-        dialog.set_current_full_diagnostics(settings.FULL_DIAGNOSTICS)
+        dialog.set_current_full_diagnostics(bool(self.settings_controller.value_for_display(
+            'full_diagnostics', settings.FULL_DIAGNOSTICS)))
         dialog.set_current_diagnostic_disk(float(settings.DIAGNOSTIC_DISK_GIB))
         dialog.set_diagnostic_status(self._diagnostic_status)
         dialog.set_current_show_layout_status(settings.SHOW_LAYOUT_STATUS)
@@ -1075,7 +1076,8 @@ class CardUI(QMainWindow):
         request = None
         if runtime_key is not None:
             request = lambda: self.worker.update_settings({runtime_key: value})
-        self.settings_controller.apply(lambda: settings.save_setting(key, value), request, after)
+        self.settings_controller.apply(lambda: settings.save_setting(key, value), request, after,
+                                       setting=(key, value))
 
     def _apply_layout_selection(self, name: str) -> None:
         """发布已确认的布局并重置显示。

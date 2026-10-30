@@ -1,6 +1,6 @@
 # 训练开始时权重文件可能尚未生成；训练结束后会更新权重列表。
 model: yolo11n
-initial_weights: E:\ongoing_projects\yolov11\runs\my_weights\weights2\best.pt
+initial_weights: E:\ongoing_projects\yolov11\runs\detect\train4\weights\best.pt
 weights:
 - best.pt
 - last.pt

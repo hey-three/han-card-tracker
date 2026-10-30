@@ -27,6 +27,18 @@ class ControllerTests(unittest.TestCase):
         self.controller.yolo_inferencer = Mock()
         self.controller.packed_pipeline = PackedPipeline()
 
+    def test_preview_updates_never_toggle_diagnostics(self) -> None:
+        """预览开关只影响传图，诊断无论已开或已关都不被联动。"""
+        recorder = Mock()
+        self.controller.diagnostics = recorder
+        for diagnostics in (False, True):
+            settings.FULL_DIAGNOSTICS = diagnostics
+            for preview in (True, False):
+                self.controller.update_settings({'SHOW_CURRENT_SCREENSHOT': preview})
+                self.assertEqual(settings.FULL_DIAGNOSTICS, diagnostics)
+                self.assertEqual(settings.SHOW_CURRENT_SCREENSHOT, preview)
+        recorder.set_enabled.assert_not_called()
+
     def test_model_shape_is_forwarded_to_manual_packing(self) -> None:
         """控制器使用所选模型的实际像素画布，而不是继续硬编码 768×480。"""
         from PIL import Image
