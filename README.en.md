@@ -14,6 +14,7 @@ V4.3.3 uses a centered 70% horizontal bottom-card region with a learned, round-s
 
 - **Prefer original-image inference with the bundled models.** Their training data consists entirely of original game screenshots. Packed inputs are not yet adequately represented, and currently have lower recognition accuracy and stability. Manual layouts can switch to original inference; automatic layouts always use the full image.
 - **Include all three J, O and K letters when selecting joker regions.** The training annotations cover those three letters. Selecting only J or J/O can cause missed or incorrect detections.
+- **The current YOLO models were trained mainly on screenshots from 欢乐斗地主 (Happy Dou Dizhu).** Other Dou Dizhu games may be recognized less accurately because their card designs, colors and interfaces differ.
 
 ## Features
 
